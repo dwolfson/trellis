@@ -35,13 +35,13 @@ def reattach_after():
 @pytest.fixture
 def staleness_installed(tmp_path, monkeypatch):
     project = tomllib.loads((EXAMPLE / "pyproject.toml").read_text())["project"]
-    eps = project["entry-points"]["trellis.analytics"]
+    eps = project["entry-points"]["pyegeria.analytics"]
     version = re.search(r'__version__ = "([^"]+)"',
                         (EXAMPLE / "src" / "database_staleness" / "__init__.py").read_text()).group(1)
     d = tmp_path / f"trellis_step_database_staleness-{version}.dist-info"
     d.mkdir()
     (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
-    (d / "entry_points.txt").write_text("[trellis.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
+    (d / "entry_points.txt").write_text("[pyegeria.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.syspath_prepend(str(EXAMPLE / "src"))
     return version
@@ -299,8 +299,8 @@ def library_installed(tmp_path, monkeypatch):
         d = tmp_path / f"{project['name'].replace('-', '_')}-{version}.dist-info"
         d.mkdir()
         (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
-        (d / "entry_points.txt").write_text("[trellis.analytics]\n" + "".join(
-            f"{k} = {v}\n" for k, v in project["entry-points"]["trellis.analytics"].items()))
+        (d / "entry_points.txt").write_text("[pyegeria.analytics]\n" + "".join(
+            f"{k} = {v}\n" for k, v in project["entry-points"]["pyegeria.analytics"].items()))
         monkeypatch.syspath_prepend(str(pkg / "src"))
     monkeypatch.syspath_prepend(str(tmp_path))
 

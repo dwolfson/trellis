@@ -28,7 +28,7 @@ def install(tmp_path: Path, name: str = "database_staleness") -> tuple[str, str]
     """(dist-info directory's parent, the step's source root). Writes the dist-info once per tmp_path."""
     example = STEPS / name
     project = tomllib.loads((example / "pyproject.toml").read_text())["project"]
-    eps = project["entry-points"]["trellis.analytics"]
+    eps = project["entry-points"]["pyegeria.analytics"]
     version = re.search(r'__version__ = "([^"]+)"', (example / "src" / name / "__init__.py").read_text()).group(1)
     root = tmp_path / "site"
     d = root / f"{project['name'].replace('-', '_')}-{version}.dist-info"
@@ -36,7 +36,7 @@ def install(tmp_path: Path, name: str = "database_staleness") -> tuple[str, str]
         d.mkdir(parents=True)
         (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
         (d / "entry_points.txt").write_text(
-            "[trellis.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
+            "[pyegeria.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
     return str(root), str(example / "src")
 
 

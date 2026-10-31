@@ -1,6 +1,6 @@
 """The adapter plugin point for open data (entry point group `trellis.open_data`).
 
-Same shape as the Analytic Library's (`trellis.analytics`) and DESIGN-FILES-REMOTE-REACH §3's: a package ships an
+Same shape as the Analytic Library's (`pyegeria.analytics`) and DESIGN-FILES-REMOTE-REACH §3's: a package ships an
 adapter class carrying a `manifest`, and installing it registers it; RE changes nothing. The built-ins in this
 tree (`ckan`, `dataportals`, `datacite`) are always present, and an entry point of the same name replaces one, so
 a venv installed before this slice (whose entry-point metadata has not been regenerated) still has them.

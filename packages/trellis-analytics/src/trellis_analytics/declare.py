@@ -16,6 +16,7 @@ dispatch), which is retired.
 """
 from __future__ import annotations
 
+from trellis_analytics.discovery import GROUP
 from trellis_analytics.manifest import StepManifest
 
 
@@ -30,7 +31,7 @@ def manifest_properties(manifest: StepManifest, origin: dict[str, str]) -> list[
         ("perspectives", ", ".join(m.perspectives)), ("credential_tier", m.credential_tier),
         ("inputs", ", ".join(m.inputs)), ("measures", ", ".join(m.measure_names())), ("family", m.family),
         ("function", m.function),
-        ("package", origin.get("package", "")), ("entry_point", f"trellis.analytics:{origin.get('entry_point', '')}"),
+        ("package", origin.get("package", "")), ("entry_point", f"{origin.get('group', GROUP)}:{origin.get('entry_point', '')}"),
         # Only when a measure is published as another Egeria type than the step's own (a step with none says nothing).
         # Only when the step declares parameters: the values its code reads (`inputs.parameters`).
         *([("parameters", ", ".join(f"{k}={v}" for k, v in m.parameters.items()))] if m.parameters else []),

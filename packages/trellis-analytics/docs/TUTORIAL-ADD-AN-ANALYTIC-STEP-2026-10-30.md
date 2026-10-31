@@ -71,12 +71,16 @@ Open `pyproject.toml` and change three things: the package name, and the two pla
 [project]
 name = "trellis-step-my-row-changes"
 
-[project.entry-points."trellis.analytics"]
+[project.entry-points."pyegeria.analytics"]
 my_row_changes = "my_row_changes.manifest:MANIFEST"
 ```
 
-That last block is the entry point. It tells Resource Explorer where to find your manifest once the package is
-installed. Nothing else announces your step.
+That last block is the entry point. It tells Resource Explorer, and the Egeria Portal, where to find your manifest
+once the package is installed. Nothing else announces your step: installing the package registers it. There is no
+environment variable to set and no list of modules to edit.
+
+(Older step packages say `trellis.analytics` here. It still works for now, as an alias, but write
+`pyegeria.analytics`.)
 
 ## Step 3. Write the code
 
@@ -294,5 +298,6 @@ Explain to anyone what a 0 meant.
 
 - The reference: `packages/trellis-analytics/README.md`, every field and rule.
 - Putting your result on a Portal dashboard: the Portal's *Local Dashboards* tutorial. Your step is already listed in
-  the Portal's Analytic Functions Browser, because the same registry serves both.
+  the Portal's Analytic Functions Browser, because the same registry serves both. A report spec names it by its
+  registered name, `my_row_changes`, never by its Python path.
 - How steps are versioned, retired and governed: the lifecycle design note.

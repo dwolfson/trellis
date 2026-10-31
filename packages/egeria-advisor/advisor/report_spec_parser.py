@@ -121,7 +121,7 @@ def parse_report_spec_markdown(content: str) -> FormatSet:
     # Action Parameter parsing
     action_function = attrs.get("Action Function")
     action_obj = None
-    analytic_function = attrs.get("Analytic Function") or None      # a Python dotted path (extra_find)
+    analytic_function = attrs.get("Analytic Function") or None      # a registered name (Q2(b)), not a Python path
     analytic_spec_params = _parse_spec_params(attrs.get("Analytic Spec Params", ""))
     if analytic_function and not action_function:
         # an analytic-only spec (no find method), as pyegeria's analytic demo specs are

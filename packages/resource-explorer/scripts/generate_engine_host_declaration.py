@@ -20,7 +20,7 @@ one SurveyActionService, one SupportedGovernanceService link carrying the reques
 the GovernanceActionType `ResourceExplorerSurvey::<request type>` with the manifest's fields as Additional Properties
 (`trellis_analytics.declare.manifest_properties`) and its GovernanceActionExecutor. One document per step, so
 declaring a new step never re-runs another step's "Link Action to Action Executor", which is not safe to repeat.
-The manifests are read from the `trellis.analytics` entry point, so the steps' packages must be installed where
+The manifests are read from the `pyegeria.analytics` entry point, so the steps' packages must be installed where
 this runs:
 
     uv run --with-editable packages/trellis-analytics/examples/steps/database_staleness \

@@ -23,6 +23,6 @@ def test_the_document_parses_to_the_python_formatset():
     expected = report_specs()[TILE_LABEL]
     assert parsed.model_dump() == expected.model_dump()
     # and the fields that make it a presentation spec are really there
-    assert parsed.action.analytic_function == "trellis_analytics.portal.curation_coverage_tile"
+    assert parsed.action.analytic_function == "curation_coverage_tile"
     assert parsed.action.analytic_spec_params == {"resource_type": "database"}
     assert [f.types for f in parsed.formats] == [["DICT", "JSON", "BAR"]]

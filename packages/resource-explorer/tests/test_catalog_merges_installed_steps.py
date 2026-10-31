@@ -1,4 +1,4 @@
-"""F1 (2026-10-29): the analysis catalog merges the INSTALLED `trellis.analytics` step manifests when it is read, so
+"""F1 (2026-10-29): the analysis catalog merges the INSTALLED `pyegeria.analytics` step manifests when it is read, so
 adding a step needs no commit in Resource Explorer.
 
 The fixture installs a fake step package the way pip would (a dist-info with an entry point) under a name the
@@ -33,7 +33,7 @@ def _install_fake(tmp_path, monkeypatch, resource_type="database", version="0.3.
     d = site / f"trellis_step_fake_zz-{version}.dist-info"
     d.mkdir(exist_ok=True)
     (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: trellis-step-fake-zz\nVersion: {version}\n")
-    (d / "entry_points.txt").write_text(f"[trellis.analytics]\n{NAME} = {NAME}:MANIFEST\n")
+    (d / "entry_points.txt").write_text(f"[pyegeria.analytics]\n{NAME} = {NAME}:MANIFEST\n")
     monkeypatch.syspath_prepend(str(site))
     survey_step_host.refresh("database")
     survey_step_host.refresh("filesystem")

@@ -23,7 +23,7 @@ Coverage
 ### Output Types
 DICT, JSON, BAR
 ### Analytic Function
-trellis_analytics.portal.curation_coverage_tile
+curation_coverage_tile
 """
 
 

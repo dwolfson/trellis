@@ -76,7 +76,12 @@ my_step/
 
 ### The entry point: how RE finds the step
 
-The entry-point group is **`trellis.analytics`**. Its value names the manifest object:
+The entry-point group is **`pyegeria.analytics`**. Installing the package registers the step: Resource Explorer and
+the Egeria Portal both read this group, so there is nothing else to configure. A report spec names the step by its
+registered name (the manifest's `name`), never by its Python path. Steps built before 2026-10-31 declare
+`trellis.analytics`, which is still read as an alias for now; write `pyegeria.analytics` in anything new.
+
+Its value names the manifest object:
 
 ```toml
 [project]
@@ -85,7 +90,7 @@ dynamic = ["version"]
 dependencies = ["trellis-analytics>=0.1.0"]
 
 # Installation is registration: Resource Explorer finds the step through this entry point.
-[project.entry-points."trellis.analytics"]
+[project.entry-points."pyegeria.analytics"]
 my_step = "my_step.manifest:MANIFEST"
 ```
 
@@ -146,7 +151,7 @@ ignored:** every declaration model forbids extra keys.
 | field | notes |
 |---|---|
 | `name` | the step key. It is also the name of the step's primary measure |
-| `function` | dotted path to `run`, for example `"my_step.step.run"`. Resolved at each run, so the installed version is the one that runs |
+| `function` | dotted path to `run`, for example `"my_step.step.run"`. Resolved at each run, so the installed version is the one that runs. Only the manifest holds this path; everything else, report specs included, names the step by `name` |
 | `version` | stamped on every result. Read it from `__version__` |
 | `source` | `"ods"`, `"egeria"` or `"resource"`: where the data comes from |
 | `resource_types` | `["database"]`. RE accepts nothing else yet |
@@ -254,7 +259,7 @@ RE's own entries, and a library step with code has no use for it.
 ## 3. The catalog entry: merged for you, no commit in RE
 
 RE shows an analysis card only for an analysis in its catalog. For library steps **you do not write or commit that
-entry any more.** When RE reads `analysis_catalog.yaml` it also reads every installed `trellis.analytics` manifest and
+entry any more.** When RE reads `analysis_catalog.yaml` it also reads every installed `pyegeria.analytics` manifest and
 merges it in, so installing the package is enough: the card, the run, the declaration, Chat's compile and the publish
 table all see the step after RE restarts. The reasoning is in
 [`DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md`](design-notes/DESIGN-STEP-MANIFESTS-MERGED-AT-READ-TIME.md).
@@ -423,7 +428,7 @@ written confidence method, one extent and a question named by id.
 
 ## Checklist (the tutorial has the steps in full)
 
-1. Write the package: `pyproject.toml` with the `trellis.analytics` entry point, `run()`, and `MANIFEST`.
+1. Write the package: `pyproject.toml` with the `pyegeria.analytics` entry point, `run()`, and `MANIFEST`.
 2. Make every path return a result with a state, and every absence carry a reason.
 3. Declare in full: units, as-ofs, value fields, four absence sentences, confidence with a written
    method, extents, scope, and `questions` by id.

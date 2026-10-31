@@ -19,12 +19,12 @@ def _install(tmp_path, monkeypatch, name):
     """The step installed the way pip would: a dist-info carrying its pyproject's entry points, its source on the path."""
     example = STEPS / name
     project = tomllib.loads((example / "pyproject.toml").read_text())["project"]
-    eps = project["entry-points"]["trellis.analytics"]
+    eps = project["entry-points"]["pyegeria.analytics"]
     version = re.search(r'__version__ = "([^"]+)"', (example / "src" / name / "__init__.py").read_text()).group(1)
     d = tmp_path / f"{project['name'].replace('-', '_')}-{version}.dist-info"
     d.mkdir()
     (d / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {project['name']}\nVersion: {version}\n")
-    (d / "entry_points.txt").write_text("[trellis.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
+    (d / "entry_points.txt").write_text("[pyegeria.analytics]\n" + "".join(f"{k} = {v}\n" for k, v in eps.items()))
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.syspath_prepend(str(example / "src"))
     return version

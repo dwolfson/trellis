@@ -31,7 +31,7 @@ For people who use the results, not write them: see the "Analytic Library" secti
 |---|---|
 | `trellis_analytics.envelope` | `Envelope` and the four states. |
 | `trellis_analytics.manifest` | `RoutineManifest` and `StepManifest`, the declaration of an analysis (subclasses of pyegeria's `AnalyticFunctionSpec`). |
-| `trellis_analytics.discovery` | `discover()` finds installed manifests; `register()` puts them in pyegeria's analytic registry. |
+| `trellis_analytics.discovery` | `discover()` finds installed manifests. (`register()` is redundant since pyegeria 6.2.17, which reads the same entry points itself; it warns and adds nothing.) |
 | `trellis_analytics.readers.ods` | Read-only access to RE's registry (a SQLite file or Postgres). |
 | `trellis_analytics.routines.curation_coverage` | Published, not yet published and blocked, counted from RE's curation record. |
 | `trellis_analytics.routines.context_pack` | Packages what Egeria holds about one database for one kind of consumer, each fact with a state word and provenance. |
@@ -53,7 +53,7 @@ print(result.envelope.result_state.words, "·", result.summary)
 print(result.to_dict())
 ```
 
-To make it discoverable, give it a **manifest** and list the manifest as an entry point. `manifests.py` in this
+To make it available, give it a **manifest** and list the manifest as an entry point. `manifests.py` in this
 package does it for its own routines:
 
 ```python
@@ -74,12 +74,19 @@ CURATION_COVERAGE = RoutineManifest(
 
 ```toml
 # pyproject.toml of the package that ships it
-[project.entry-points."trellis.analytics"]
+[project.entry-points."pyegeria.analytics"]
 curation_coverage = "trellis_analytics.manifests:CURATION_COVERAGE"
 ```
 
-**Installation is registration.** Install the package and `discover()` finds the entry point. A broken entry
-point raises, naming it; it is never skipped silently.
+**Installing the package registers it; report specs name the function by its registered name.** Install the
+package and pyegeria (the Portal, Dr.Egeria) and Resource Explorer both find the entry point. There is no
+environment variable or list of modules to keep up to date. A report spec says `curation_coverage`, the manifest's
+`name`, never the Python path `trellis_analytics.routines.curation_coverage.curation_coverage`. A broken entry point
+raises, naming it; it is never skipped silently.
+
+The group is `pyegeria.analytics`. `trellis.analytics`, the group this library used before 2026-10-31, is still read
+as an alias while the library is split out of trellis, so a step package built earlier keeps working. Declare
+`pyegeria.analytics` in anything new.
 
 Optional manifest fields `purposes` (investigation purposes it serves) and `questions` (question ids such as
 `Q-0041`, never wording) are checked at load against Resource Explorer's lists. They are suggestive: an unknown
@@ -133,7 +140,7 @@ What the wrapper guarantees, so the code does not have to:
   is refused, and **nothing from that run is stored**: a partial store would read as the whole answer.
 
 A complete example, installable on its own, is `examples/steps/database_staleness/`. It registers itself
-through the same `trellis.analytics` entry point.
+through the same `pyegeria.analytics` entry point.
 
 RE merges an installed step's manifest into its analysis catalog when it reads it, so a step needs no commit in RE to
 show a card. To tell Egeria about it, and optionally to refresh the committed fallback entry that keeps a package-less
@@ -187,7 +194,7 @@ The same routine can run in three places. None counts anything of its own; each 
 |---|---|
 | **Script** | `python examples/curation_coverage.py <ods-url> <database-slug>` |
 | **Notebook** | `examples/curation_coverage.ipynb`, run with papermill and the parameters `slug` and `ods_url`: `papermill examples/curation_coverage.ipynb out.ipynb -p slug coco_pharma -p ods_url <url>`. An empty `ods_url` reads `REGISTRY_DATABASE_URL`. |
-| **Portal tile** | `trellis_analytics.portal.curation_coverage_tile`, shown as **Trellis - Curation Coverage** in the Egeria Portal. Load its spec with `PYEGERIA_REPORT_SPEC_MODULES=trellis_analytics.portal:report_specs`. `examples/curation_coverage_tile.md` is the same spec as a Dr.Egeria report-spec document. |
+| **Portal tile** | The registered function `curation_coverage_tile`, shown as **Trellis - Curation Coverage** in the Egeria Portal. Installing this package registers the function, and (from pyegeria 6.2.18) the tile's report spec too. With pyegeria 6.2.17 the spec is still loaded with `PYEGERIA_REPORT_SPEC_MODULES=trellis_analytics.portal:report_specs`, which pyegeria will warn about for one release and then remove (see "How analytics are found"). `examples/curation_coverage_tile.md` is the same spec as a Dr.Egeria report-spec document. |
 
 A **step** is run by RE itself: RE's `survey_step_host` attaches installed steps beside the built-in ones, so the
 executor runs them the same way and records their cost. The step's annotations are kept, with their envelope, in
@@ -195,6 +202,26 @@ RE's own table. When Egeria dispatches the step to RE's engine host, they are al
 the action's SurveyReport.
 
 Resource Explorer's Curate page uses `curation_coverage` directly for its **By analysis** view of a database.
+
+## How analytics are found
+
+**Decision (project owner, 2026-10-31):** "yes to (b)", on Q2 of the Analytic Library split design (2026-10-30, §11):
+one way to find analytics, and report specs that name only registered functions.
+
+- **Installing the package registers it.** pyegeria reads the `pyegeria.analytics` entry points of every installed
+  package (`trellis.analytics` as an alias during the split). Nothing else to configure.
+- **Report specs name the function by its registered name.** `analytic_function: curation_coverage_tile`, not
+  `trellis_analytics.portal.curation_coverage_tile`. A report spec is data, and naming only registered functions
+  means a report spec cannot make the Portal import arbitrary code. A dotted path still resolves under the allowed
+  prefixes (`pyegeria`, `trellis_analytics`): silently in 6.2.17, with a DeprecationWarning naming the registered
+  name in 6.2.18, and 6.2.19 refuses it.
+- **Report specs register the same way.** **Decision (project owner, 2026-10-31):** "a". A package's report specs
+  (its FormatSets) are an entry point too, in the `pyegeria.report_specs` group (`trellis.report_specs` as an
+  alias). The value is a callable returning a FormatSetDict, the same loader `PYEGERIA_REPORT_SPEC_MODULES` takes
+  today. This package declares `trellis = "trellis_analytics.portal:report_specs"`.
+- **`PYEGERIA_REPORT_SPEC_MODULES` is going.** pyegeria 6.2.18 reads the entry points and warns about the variable;
+  6.2.19 removes it. pyegeria 6.2.17 does not read `pyegeria.report_specs`, so until 6.2.18 the tile's spec is still
+  loaded with the variable as shown above.
 
 ## Install and test
 

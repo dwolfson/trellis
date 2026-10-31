@@ -6,7 +6,7 @@ Each step's Egeria declaration is the engine host's, written by `scripts/generat
 `docs/dr-egeria/engine-host/library/<step>.md` (engine host, step 3). This script used to write a provisional one to
 `docs/dr-egeria/analytic-functions/<step>.md` (a GovernanceActionType with no executor); that document is retired.
 
-Manifests are read from the `trellis.analytics` entry point, so the step's package must be installed where this
+Manifests are read from the `pyegeria.analytics` entry point, so the step's package must be installed where this
 runs, for example:
 
     uv run --with-editable packages/trellis-analytics/examples/steps/database_staleness \\

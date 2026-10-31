@@ -55,7 +55,7 @@ ACTIVE
 | family | Freshness |
 | function | statistics_freshness.step.run |
 | package | trellis-step-statistics-freshness |
-| entry_point | trellis.analytics:statistics_freshness |
+| entry_point | pyegeria.analytics:statistics_freshness |
 
 ___
 
