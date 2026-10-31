@@ -113,6 +113,8 @@ class Fact:
     #: True when the headline's figure is a lower bound (a declared `capped_field` was true): the step line says so in a
     #: title. Carried beside the sentence, never parsed back out of it.
     headline_capped: bool = False
+    #: The legend for the categories the analysis declares (declared_words.categories_legend), shown beside the step line.
+    headline_categories: str = ""
     #: The headline for a particular question, by question id, when one analysis backs two questions that ask
     #: different things of it (quality_checks: "which checks should it have?" and "which hold and which fail?").
     #: `FactLayer.answer` puts the question's own sentence into `headline`; not serialized.
@@ -168,6 +170,7 @@ class Fact:
         return {
             "analysis_id": self.analysis_id, "state": self.state,
             "headline": self.headline, "headline_capped": self.headline_capped,
+            "headline_categories": self.headline_categories,
             "value": value, "provenance": self.provenance,
             "last_run_at": self.last_run_at, "as_of": self.as_of, "can_run": self.can_run,
             "runnable": self.runnable, "runnable_reason": self.runnable_reason, "library": self.library,
@@ -1417,7 +1420,7 @@ class FactLayer:
                 return Fact(
                     analysis_id=analysis_id, state=self._state_for(value, run), value=value,
                     headline=str(head.get("label") or ""), headline_by_question=head.get("by_question") or {},
-                    headline_capped=bool(head.get("capped")),
+                    headline_capped=bool(head.get("capped")), headline_categories=str(head.get("categories") or ""),
                     provenance=self._provenance_for(value), can_run=can_run,
                     note="Read live from data refreshed at ingestion, not from a "
                          "recorded survey run — current regardless of when a survey "
@@ -1465,7 +1468,7 @@ class FactLayer:
         return Fact(
             analysis_id=analysis_id, state=state, value=value,
             headline=str(head.get("label") or ""), headline_by_question=head.get("by_question") or {},
-                    headline_capped=bool(head.get("capped")),
+                    headline_capped=bool(head.get("capped")), headline_categories=str(head.get("categories") or ""),
             provenance=self._provenance_for(value),
             last_run_at=run.get("last_run_at", ""), can_run=can_run,
             note=self._note_for(state, value, run),

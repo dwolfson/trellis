@@ -76,3 +76,16 @@ test('a capped step line carries the lower-bound flag and an uncapped one does n
   assert.equal(by.c.capped, false);
   assert.match(by.b.sentence, /^at least 500 rows/);
 });
+
+test('a step line carries the categories legend the server gave it, and none when there is none', () => {
+  const esc = (s) => String(s); const tnum = (s) => s;
+  const env = { facts: [
+    { analysis_id: 'a', library: false, is_known: true, state: 'measured', headline: 'x' },
+    { analysis_id: 'b', library: true, is_known: true, state: 'measured', headline: '3 tables', headline_categories: 'each item is in one category' },
+    { analysis_id: 'c', library: true, is_known: true, state: 'measured', headline: '3 tables' },
+  ] };
+  const lines = readEnvelope({ analysis_ids: ['a'] }, env, esc, tnum);
+  const by = Object.fromEntries(lines.stepLines.map((s) => [s.id, s]));
+  assert.equal(by.b.categories, 'each item is in one category');
+  assert.equal(by.c.categories, '');
+});
