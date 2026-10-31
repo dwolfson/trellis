@@ -29,7 +29,7 @@ def tile(monkeypatch):
     from pyegeria.view import base_report_formats as brf
     from trellis_analytics.portal import report_specs
     monkeypatch.setattr(fse, "EgeriaTech", NoEgeria)
-    if LABEL not in brf.get_report_registry():     # from pyegeria 6.2.18 the installed entry point registered it
+    if LABEL not in brf.get_report_registry():     # the installed entry point normally registered it already
         brf.register_report_specs(report_specs(), source="test")
     yield lambda url, fmt="DICT", **p: fse.exec_report_spec(
         LABEL, output_format=fmt, params={"slug": SLUG, "ods_url": url, **p})
@@ -114,12 +114,14 @@ def test_nothing_found_is_its_own_word(tile, make_ods):
     assert data["Published"] == 0 and data["Not yet published"] == 2
 
 
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")    # deprecated in pyegeria 6.2.18, removed in 6.2.19
-def test_the_spec_loads_through_pyegeria_report_spec_modules(monkeypatch):
+def test_the_deprecated_variable_still_loads_the_spec_and_warns(monkeypatch):
+    """pyegeria 6.2.18 deprecates PYEGERIA_REPORT_SPEC_MODULES and 6.2.19 removes it; trellis sets it nowhere. Until
+    then, a stray setting naming the same loader as the entry point still loads the spec, without a collision."""
     from pyegeria.view import base_report_formats as brf
     monkeypatch.setenv("PYEGERIA_REPORT_SPEC_MODULES", "trellis_analytics.portal:report_specs")
     try:
-        skipped = brf.refresh_report_specs()
+        with pytest.warns(DeprecationWarning, match="PYEGERIA_REPORT_SPEC_MODULES"):
+            skipped = brf.refresh_report_specs()
         assert [s for s in skipped if "trellis_analytics" in s[0]] == []
         assert LABEL in brf.get_report_registry()
     finally:
@@ -131,8 +133,6 @@ def test_installing_the_package_registers_the_spec(monkeypatch):
     """Q2(b): with no environment variable set, the installed package's `pyegeria.report_specs` entry point is what
     puts the tile in the Portal's report registry, and its spec names the function by registered name."""
     from pyegeria.view import base_report_formats as brf
-    if not hasattr(brf, "REPORT_SPEC_ENTRY_POINT_GROUP"):
-        pytest.skip("this pyegeria reads no report-spec entry points (from 6.2.18, ISSUE-173)")
     monkeypatch.delenv("PYEGERIA_REPORT_SPEC_MODULES", raising=False)
     try:
         skipped = brf.refresh_report_specs()
@@ -141,6 +141,23 @@ def test_installing_the_package_registers_the_spec(monkeypatch):
     finally:
         brf.refresh_report_specs()
 
+
+
+def test_a_fresh_process_finds_the_tile_with_no_variable_set():
+    """pyegeria >= 6.2.18: a new Python process with trellis-analytics installed and no PYEGERIA_REPORT_* variable set
+    has the tile in its report registry, and refresh_report_specs() skips no source at all. Run apart from this test
+    process so nothing registered here (the `tile` fixture) can stand in for the entry point."""
+    import os
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYEGERIA_REPORT_")}
+    probe = (
+        "import json; from pyegeria.view import base_report_formats as brf\n"
+        f"spec = brf.get_report_registry().get({LABEL!r})\n"
+        "print(json.dumps({'function': spec and spec.action.analytic_function,"
+        " 'skipped': [list(s) for s in brf.refresh_report_specs()],"
+        f" 'after_refresh': {LABEL!r} in brf.get_report_registry()}}))\n")
+    out = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True).stdout
+    result = json.loads(out.strip().splitlines()[-1])
+    assert result == {"function": "curation_coverage_tile", "skipped": [], "after_refresh": True}
 
 def test_three_hosts_same_numbers(tile, tmp_path, measured_url):
     script = subprocess.run([sys.executable, str(EX / "curation_coverage.py"), measured_url, SLUG],

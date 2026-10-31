@@ -14,8 +14,9 @@ dependencies = [
     # trellis_analytics prefix, #518's kind "absent" carries not_established / not_applicable, and #519 reads the
     # trellis.analytics entry-point group as an alias of pyegeria.analytics (discovery.register() now redundant).
     # Q2(b) (project owner, 2026-10-31): this package declares pyegeria.analytics only; trellis.analytics is read as an
-    # alias (here and in pyegeria) during the split, so nothing in trellis declares it.
-    "pyegeria>=6.2.17",
+    # alias (here and in pyegeria) during the split, so nothing in trellis declares it. 6.2.18 (2026-10-31, ISSUE-173)
+    # reads the pyegeria.report_specs group below, so installing this package registers the Portal tile's spec.
+    "pyegeria>=6.2.18",
 ]
 
 [project.optional-dependencies]
@@ -32,9 +33,9 @@ curation_coverage = "trellis_analytics.manifests:CURATION_COVERAGE"
 context_pack = "trellis_analytics.manifests:CONTEXT_PACK"
 curation_coverage_tile = "trellis_analytics.manifests:CURATION_COVERAGE_TILE"
 
-# The library's report specs (the Portal tile). Decision (project owner, 2026-10-31): "a". pyegeria 6.2.18 reads this
-# group (ISSUE-173) and deprecates PYEGERIA_REPORT_SPEC_MODULES, which 6.2.19 removes. 6.2.17 ignores the group, so
-# until 6.2.18 the tile's spec is still loaded through that variable.
+# The library's report specs (the Portal tile). Decision (project owner, 2026-10-31): "a". pyegeria reads this group
+# (ISSUE-173), so installing the package registers the spec; no PYEGERIA_REPORT_SPEC_MODULES setting is needed, and
+# pyegeria warns about that variable and removes it in 6.2.19.
 [project.entry-points."pyegeria.report_specs"]
 trellis = "trellis_analytics.portal:report_specs"
 
