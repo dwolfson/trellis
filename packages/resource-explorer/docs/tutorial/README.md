@@ -8,6 +8,7 @@ publishing. Words are defined in the [glossary](glossary.md).
 | Part | What you do |
 |---|---|
 | [1. What Resource Explorer is for](01-what-resource-explorer-is-for.md) | Why look before you catalog |
+| [4. The stages: a funnel from cheap to costly](04-the-stages.md) | Cheap questions first; inside a stage; reading the marks |
 
 ## The six walks
 
