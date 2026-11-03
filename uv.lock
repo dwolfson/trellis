@@ -2182,7 +2182,7 @@ provides-extras = ["dev", "dashboard", "gpu", "onnx-tools", "phoenix"]
 [[package]]
 name = "egeria-trellis-analytics"
 version = "0.2.0"
-source = { git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=3c31f40e1e3ff0aa76fe32cb83b6f64af66a27e4#3c31f40e1e3ff0aa76fe32cb83b6f64af66a27e4" }
+source = { git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=e71214da4de97176d49aeba21d6081ea5aac80bc#e71214da4de97176d49aeba21d6081ea5aac80bc" }
 dependencies = [
     { name = "pyegeria" },
 ]
@@ -8436,7 +8436,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.43.0,<2" },
     { name = "cryptography", specifier = ">=43.0.0" },
     { name = "docling", specifier = ">=2.0.0" },
-    { name = "egeria-trellis-analytics", git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=3c31f40e1e3ff0aa76fe32cb83b6f64af66a27e4" },
+    { name = "egeria-trellis-analytics", git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=e71214da4de97176d49aeba21d6081ea5aac80bc" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "great-expectations", specifier = ">=0.18.0" },
     { name = "httpx", specifier = ">=0.27.0" },
@@ -9975,7 +9975,7 @@ re = [
 
 [package.metadata]
 requires-dist = [
-    { name = "egeria-trellis-analytics", git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=3c31f40e1e3ff0aa76fe32cb83b6f64af66a27e4" },
+    { name = "egeria-trellis-analytics", git = "https://github.com/dwolfson/egeria-trellis-analytics?rev=e71214da4de97176d49aeba21d6081ea5aac80bc" },
     { name = "ipykernel", marker = "extra == 'dev'" },
     { name = "nbformat", marker = "extra == 'dev'" },
     { name = "papermill", marker = "extra == 'dev'" },
