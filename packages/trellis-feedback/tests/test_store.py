@@ -7,7 +7,6 @@ from __future__ import annotations
 import threading
 
 import pytest
-
 from trellis_feedback import STATUSES, FeedbackError, FeedbackItem, NotFound
 
 
