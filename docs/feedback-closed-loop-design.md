@@ -164,7 +164,7 @@ One consumer per signal (§13's guard), named here so there's no second, silent 
     | `catalog_gap` | `coverage` now includes a section for the question |
     | `missing_evidence` | the section that had no result now has one |
     | `stale` | the section's `as_of` is newer than in the original compile |
-    | `analysis_defect` | the analysis's result changed since the original compile |
+    | `analysis_defect` | the analysis's result changed since the original compile. That is only **evidence changed**: a new wrong value passes too, so a case with this cause is verified only by the judge, and needs a "must contain" list |
     | `wrong_evidence` | the chunks the admin marked irrelevant are no longer in the top results |
     | `over_compressed` | the section is packed above the rung that failed |
     | `reasoning`, `unclear_question` | none; these are judged only |
@@ -189,8 +189,11 @@ One consumer per signal (§13's guard), named here so there's no second, silent 
 Counting every 👍 but only diagnosed 👎s would push precision up for any popular chunk, and with the
 centre at 0.5, nearly every chunk would get boosted. So, once diagnoses exist:
 
-- **👍 counts only for the chunks the compile actually packed**, not for every chunk retrieval
-  returned.
+- **👍 counts only for the chunks the answer used**, not for every chunk retrieval returned. On a
+  compiled answer, "used" means packed. On the ConversationAgent path every retrieved chunk goes
+  into the model's context, so packing says nothing there. "Used" must mean cited: a chunk the
+  answer quotes or names as a source. Until the agent reports its citations, this rule changes
+  nothing on that path, and the doc says so rather than implying otherwise.
 - **👎 counts only when diagnosed `wrong_evidence`**, and only for the chunks the admin marked
   irrelevant (the panel lets them pick; all of the answer's chunks is the default).
 - **Undiagnosed 👎s stay out of the total**, so they neither lower nor dilute a chunk's score.
@@ -248,8 +251,10 @@ direction, not a measurement.
 
 Each step is its own PR, with tests and an architect read-back.
 
-0. **Repair the loop that exists.** Built: #1015 (write side and read side, an end-to-end test on
-   SQLite and Postgres).
+0. **Repair the loop that exists.** Built: #1015. It covers the write side and the read side, with
+   an end-to-end test on SQLite and Postgres, per-turn refs owned by the route, and a short cache.
+   Known and left for step 4: a vote finds its `query_log` row by question hash, so two people
+   asking the same text can cross. Step 4 carries the exchange or row id instead.
 1. **Cause on triage:** trellis-feedback 0.3, then RE's cause menu, the suggestion rules and the
    stored-compile panel. No consumers yet; it starts collecting diagnoses.
 2. **Routing:** the gaps and RFA consumers, then Automate's.
@@ -279,6 +284,8 @@ The architect agrees with the recommendations on Q3 and Q4.
    diagnose the items charged to their analysis? Recommendation: admins for now.
 3. **"Must contain" for a replay case:** required or optional? Recommendation: optional. Without
    it, replay reports "evidence fixed" only, which already catches the commonest regressions.
+   The exception is `analysis_defect`, whose deterministic check shows only that the evidence
+   changed; it needs the list.
 4. **Where replay cases live:** as library items, or in their own table? Recommendation: their own
    table in trellis-feedback, keyed to the item, so EA gets it too.
 5. **A regression: reopen the item, or open a new one** linked to it? Recommendation: reopen
