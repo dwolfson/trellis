@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <4.0"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -7520,7 +7520,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.24"
+version = "6.2.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7554,9 +7554,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/20/38/bb1e4136609a79b4ddc23906f33e68e7dd0ee5a1d98e9338e9e39677ab9f/pyegeria-6.2.24.tar.gz", hash = "sha256:1f8951af8ea3e52f3f032e41038afcdcdcddc3dd74cb9932e54d1bf61d844a76", size = 2198199, upload-time = "2026-11-07T21:56:08.787Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a8/86/a4c631c86666b1fc438871f7de55a9e7d605f5ac7deecdbdb4ced44e7491/pyegeria-6.2.28.tar.gz", hash = "sha256:2e67b6e1902f9eda0e28bb53bdd94de8826652836adf3ff5f1078ef63a7e180e", size = 2329261, upload-time = "2026-11-09T14:08:04.39Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/bc/9fbcc9fe463c634cd16977adf593c21e167e01bfc76b8ee2cecb3577360a/pyegeria-6.2.24-py3-none-any.whl", hash = "sha256:115a7276b80f629f5511660158fd55df0b8aed8b7b515cf02709ca966f4b7326", size = 1967488, upload-time = "2026-11-07T21:56:06.256Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/8f/42195f40a8bd02b926bf0639912e62717bab826865bd345d93324f15e7b5/pyegeria-6.2.28-py3-none-any.whl", hash = "sha256:973d850e78aff27936db438c48d5a7dff70360336202b0ea64bcf7a31fa3c36a", size = 2052015, upload-time = "2026-11-09T14:08:02.384Z" },
 ]
 
 [[package]]
