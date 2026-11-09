@@ -72,6 +72,14 @@ class NotFound(FeedbackError):
     """The item or subject named does not exist in this store."""
 
 
+def db_error_words(exc: BaseException) -> str:
+    """A database error's first line, safe to log: never its DETAIL (which can quote the whole row)
+    and never SQLAlchemy's `[SQL: ...] [parameters: ...]` suffix (which quotes the values)."""
+    orig = getattr(exc, "orig", None) or exc
+    first = (str(orig).strip().splitlines() or [""])[0].strip()
+    return f"{type(orig).__name__}: {first}" if first else type(orig).__name__
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -268,8 +276,10 @@ class FeedbackStore:
                 return False
             if owner is not None:
                 raise FeedbackError(f"id {item.id!r} is already used by another app's item") from None
-            # Not a duplicate id at all (a NOT NULL or CHECK failure, say): say what the database said.
-            raise FeedbackError(f"item {item.id!r} was not stored: {exc.orig}") from exc
+            # Not a duplicate id at all (a NOT NULL or CHECK failure, say): say what the database said,
+            # but only its first line. Postgres adds "DETAIL: Failing row contains (...)", the whole
+            # row with its email and message; that stays on __cause__, out of anything logged.
+            raise FeedbackError(f"item {item.id!r} was not stored: {db_error_words(exc)}") from exc
         return True
 
     def _by_key(self, user_id: str, key: str) -> FeedbackItem | None:

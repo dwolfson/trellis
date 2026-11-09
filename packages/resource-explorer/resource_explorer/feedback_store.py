@@ -38,6 +38,7 @@ from trellis_feedback import (
     NotFound,
 )
 from trellis_feedback import FeedbackStore as _LibraryStore
+from trellis_feedback.store import db_error_words
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +144,11 @@ def migrate_legacy_feedback(store: _LibraryStore) -> dict[str, int]:
                       "which kept no time for the change"))
         except (FeedbackError, SQLAlchemyError) as exc:
             # Per row, so one bad row (a Postgres DataError, say) cannot stop the store opening and
-            # make every later request re-run the copy.
+            # make every later request re-run the copy. Logged by its first line only: a database
+            # error's full text quotes the row's values (email, message).
             counts["refused"] += 1
-            logger.warning("feedback migration: legacy row %r not copied: %s", row.get("id"), exc)
+            words = str(exc) if isinstance(exc, FeedbackError) else db_error_words(exc)
+            logger.warning("feedback migration: legacy row %r not copied: %s", row.get("id"), words)
             continue
         if not imported:
             counts["skipped"] += 1

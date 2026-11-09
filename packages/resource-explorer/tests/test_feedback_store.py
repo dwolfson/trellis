@@ -217,7 +217,7 @@ class TestLegacyMigration:
         assert lib.state("55555555-5555-4555-8555-555555555555").status == "new"
         lib.engine.dispose()
 
-    def test_a_database_error_on_one_row_is_that_row_refused_not_a_broken_store(self, tmp_path, monkeypatch):
+    def test_a_database_error_on_one_row_is_that_row_refused_not_a_broken_store(self, tmp_path, monkeypatch, caplog):
         from sqlalchemy.exc import DataError
 
         from resource_explorer import feedback_store as fs
@@ -228,9 +228,13 @@ class TestLegacyMigration:
 
         def flaky(self_, item, **kw):
             if item.id == bad:
-                raise DataError("INSERT ...", {}, Exception("value out of range"))
+                raise DataError("INSERT ...", {"message": "broken", "email": "a@b.c"},
+                                Exception("value out of range\nDETAIL:  Failing row contains (a@b.c, broken)."))
             return real(self_, item, **kw)
         monkeypatch.setattr(fs._LibraryStore, "import_item", flaky)
-        store = self._open(path)
+        with caplog.at_level("WARNING", logger="resource_explorer.feedback_store"):
+            store = self._open(path)
         assert {r["id"] for r in store.list()} == {self.ROWS[0][0], self.ROWS[2][0]}
+        assert "value out of range" in caplog.text
+        assert "a@b.c" not in caplog.text and "broken" not in caplog.text
         assert f"sqlite:///{path}" in fs._stores      # cached: later requests do not re-run the copy

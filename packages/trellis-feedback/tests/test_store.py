@@ -311,6 +311,10 @@ class TestImport:
             store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
         assert "another app" not in str(exc.value)
         assert "was not stored" in str(exc.value)
+        # Only the database's first line: no row values (Postgres DETAIL) and no SQL parameters.
+        assert "the button is wrong" not in str(exc.value)
+        assert "DETAIL" not in str(exc.value) and "[parameters" not in str(exc.value)
+        assert exc.value.__cause__ is not None
 
     def test_an_import_is_validated_like_a_submit(self, store):
         with pytest.raises(FeedbackError):
