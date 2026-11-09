@@ -29,6 +29,7 @@ Two classes:
     than a rewrite of the callers themselves.
 """
 
+import logging
 import re
 import threading
 
@@ -109,6 +110,24 @@ class PgVectorStore(_SharedPgVectorStore):
 _shared_store: PgVectorStore | None = None
 _shared_store_lock = threading.Lock()
 
+log = logging.getLogger(__name__)
+
+_boosts_warned = {"done": False}
+
+
+def _metrics_collector():
+    from resource_explorer.observability.metrics_collector import shared_collector
+
+    return shared_collector()
+
+
+def _warn_boosts_unavailable(exc: BaseException) -> None:
+    """Once per process at WARNING, then at DEBUG: a metrics outage is worth one line, not one per search."""
+    level = logging.DEBUG if _boosts_warned["done"] else logging.WARNING
+    _boosts_warned["done"] = True
+    log.log(level, "chunk feedback boosts unavailable, retrieving without them: %s: %s",
+            type(exc).__name__, str(exc).splitlines()[0] if str(exc) else "")
+
 
 def _get_shared_store() -> PgVectorStore:
     """A process-wide PgVectorStore singleton — connection pooling is meant
@@ -178,40 +197,18 @@ class MultiCollectionStore:
         return results[:k]
 
     def _load_boosts(self) -> dict[str, float]:
-        """Load per-chunk feedback boosts from SQLite metrics DB."""
+        """Per-chunk score adjustments from chat votes, read from the store MetricsCollector writes them to.
+
+        Until 2026-11-09 this opened `observability.metrics_db` with sqlite3 while the votes went to
+        METRICS_DATABASE_URL (Postgres since 2026-08-23): the connect created an empty `data/metrics.db`, the
+        query failed, and a bare except returned {}, so no vote adjusted any retrieval and nothing said so
+        (docs/feedback-closed-loop-design.md §1, step 0). It still fails soft, since a metrics outage must not
+        stop retrieval, but it says so in the log.
+        """
         try:
-            import sqlite3
-            db_path = self._cfg.observability.metrics_db
-            conn = sqlite3.connect(db_path)
-            # neutral_count: migration-added column (metrics_collector.py's
-            # _init_schema), so a pre-migration sqlite file may not have it
-            # yet — fall back to 0 rather than erroring.
-            try:
-                rows = conn.execute(
-                    "SELECT chunk_ref, positive_count, neutral_count, total_count "
-                    "FROM chunk_feedback"
-                ).fetchall()
-            except sqlite3.OperationalError:
-                rows = [
-                    (ref, pos, 0, total)
-                    for ref, pos, total in conn.execute(
-                        "SELECT chunk_ref, positive_count, total_count FROM chunk_feedback"
-                    ).fetchall()
-                ]
-            conn.close()
-            boosts = {}
-            for ref, pos, neutral, total in rows:
-                if total > 0:
-                    # Neutral ("partially correct") gets half credit, same
-                    # weighting EA's satisfaction formula uses
-                    # (advisor/web/admin.html:570) — not zero credit, which
-                    # would score a partially-relevant chunk the same as a
-                    # fully negative one.
-                    precision = (pos + 0.5 * neutral) / total
-                    confidence = min(total / 5.0, 1.0)  # grows with 5+ votes
-                    boosts[ref] = (precision - 0.5) * confidence * 0.3
-            return boosts
-        except Exception:
+            return _metrics_collector().chunk_boosts()
+        except Exception as exc:  # noqa: BLE001 -- retrieval must not fail because metrics are unreachable
+            _warn_boosts_unavailable(exc)
             return {}
 
     def insert(self, collection: str, texts: list[str], metadatas: list[dict]) -> int:

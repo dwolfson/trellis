@@ -93,6 +93,30 @@ def _persist_turn(
         return None
 
 
+def _log_chat_query(agent, query: str, intent: str, resource_slug: str | None, response: str,
+                    started: float) -> None:
+    """The query_log row for one chat turn: the row a vote on this answer scores (MetricsCollector.record_feedback
+    finds it by the hash of `query`, the same hash the reply carries), with the chunks retrieval returned.
+
+    Chat has answered through ConversationAgent since abd936f9 (2026-10-19), which, unlike RAGSystem, never wrote
+    this row, so from then on a chat vote matched no row and moved no chunk score
+    (docs/feedback-closed-loop-design.md §1, step 0). Skipped when the agent fell back to RAGSystem, which writes
+    its own. Never fails the turn."""
+    if getattr(agent, "_logged_by_rag", False):
+        return
+    try:
+        from resource_explorer.observability.metrics_collector import shared_collector
+
+        shared_collector().record_query(
+            query, intent, resource_slug, response or "",
+            latency_ms=int((time.monotonic() - started) * 1000),
+            chunk_refs=list(getattr(agent, "_last_chunk_refs", None) or []),
+        )
+    except Exception as exc:  # noqa: BLE001 -- a metrics outage must not lose the answer
+        log.warning("chat turn not logged to query_log: %s: %s", type(exc).__name__,
+                    str(exc).splitlines()[0] if str(exc) else "")
+
+
 def _compile_id_of(agent) -> str | None:
     compiled = getattr(agent, "_last_compiled", None)
     return getattr(compiled, "compile_id", None) or None
@@ -254,10 +278,13 @@ async def ask(request: QueryRequest) -> QueryResponse:
     else:
         agent = _ephemeral_session(request.resource_slug, request.entity_type)
     agent.investigation = request.investigation
+    started = time.monotonic()
     response = await asyncio.to_thread(
         agent.handle, request.query, resource_slug=request.resource_slug,
         resource_type=request.entity_type, perspectives=request.perspectives,
     )
+    await asyncio.to_thread(_log_chat_query, agent, request.query, intent.value, request.resource_slug,
+                            response, started)
     exchange_id = None
     if request.session_id:
         exchange_id = _persist_turn(request.session_id, request.query, response, request.resource_slug,
@@ -337,9 +364,11 @@ async def stream(request: QueryRequest) -> StreamingResponse:
                 else:
                     agent = _ephemeral_session(request.resource_slug, request.entity_type)
                 agent.investigation = request.investigation
+                started = time.monotonic()
                 text = agent.handle(request.query, resource_slug=request.resource_slug,
                                     resource_type=request.entity_type,
                                     perspectives=request.perspectives)
+                _log_chat_query(agent, request.query, intent, request.resource_slug, text, started)
                 compiled = _compiled_payload(agent)
                 exchange_id = None
                 if request.session_id:

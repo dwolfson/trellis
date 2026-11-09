@@ -258,6 +258,10 @@ class ConversationAgent(BaseExplorerAgent):
         self._journal_proposal = None
         self._journal_written = []
         self._answered_from = None
+        # For the chat route's query_log row (what a vote on this answer scores): the chunks retrieval returned
+        # this turn, and whether the RAG fallback already logged the turn itself.
+        self._last_chunk_refs: list[str] = []
+        self._logged_by_rag = False
         if self.allow_writes and journal_tool.is_journal_request(query):
             # A verb the pane has a control for goes to the tool, not to the model: a small model answered "I don't
             # know" to "save this to the journal". Confirm stays with the person.
@@ -337,8 +341,11 @@ class ConversationAgent(BaseExplorerAgent):
                 from resource_explorer.rag_system import RAGSystem
 
                 self._rag = RAGSystem()
+            self._logged_by_rag = True      # RAGSystem.query writes its own query_log row, with its chunk refs
             return self._rag.query(query, resource_slug=slug)
-        from resource_explorer.agents.tools import turn_fact_lead
+        from resource_explorer.agents.tools import turn_chunk_refs, turn_fact_lead
+
+        self._last_chunk_refs = turn_chunk_refs()
 
         lead = turn_fact_lead()
         return f"{lead}\n\n{answer}" if lead else answer
