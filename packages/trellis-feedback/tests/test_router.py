@@ -46,12 +46,31 @@ def test_anyone_signed_in_may_submit_and_the_user_comes_from_the_session(setup):
     assert r.json()["item"]["user_id"] == "erinoverview"
 
 
-def test_a_retried_submit_with_its_key_is_not_duplicated(setup):
+def test_a_retried_submit_with_its_key_is_not_duplicated_and_returns_only_the_id(setup):
     client, _ = setup
     first = submit(client, idempotency_key="abc").json()
     again = submit(client, idempotency_key="abc").json()
     assert first["created"] and not again["created"]
-    assert again["item"]["id"] == first["item"]["id"]
+    assert again["item"] == {"id": first["item"]["id"]}
+
+
+def test_replaying_another_users_key_returns_nothing_of_theirs(setup):
+    # 0.1 read-back P2.
+    client, _ = setup
+    mine = submit(client, headers=USER, idempotency_key="k", query_text="private question",
+                  response_text="private answer", email="erin@example.com").json()
+    theirs = submit(client, headers={"X-Test-User": "mallory"}, idempotency_key="k",
+                    query_text="mallory's own").json()
+    assert theirs["created"] and theirs["item"]["id"] != mine["item"]["id"]
+    assert "private" not in str(theirs) and "erin@example.com" not in str(theirs)
+
+
+def test_an_anonymous_replay_returns_only_the_id(setup):
+    # Every anonymous caller is the user "", so a replay must not echo the stored item.
+    client, _ = setup
+    first = submit(client, headers={}, idempotency_key="anon", query_text="anonymous secret").json()
+    again = submit(client, headers={}, idempotency_key="anon", query_text="someone else").json()
+    assert not again["created"] and again == {"item": {"id": first["item"]["id"]}, "created": False}
 
 
 def test_a_bad_submission_is_a_400_not_a_500(setup):
@@ -82,8 +101,10 @@ def test_an_admin_lists_triages_and_reads_the_history(setup):
     r = client.post("/api/fb/triage", json={"ref_id": item_id, "status": "triaged", "note": "seen"}, headers=ADMIN)
     assert r.status_code == 200, r.text
     assert r.json()["event"]["actor"] == "peterprofile"
-    rows = client.get("/api/fb/items", params={"status": "triaged"}, headers=ADMIN).json()["items"]
-    assert [x["id"] for x in rows] == [item_id]
+    submit(client)                         # a second, untriaged item
+    listing = client.get("/api/fb/items", params={"status": "triaged"}, headers=ADMIN).json()
+    assert [x["id"] for x in listing["items"]] == [item_id]
+    assert (listing["total"], listing["matched"], listing["filtered"]) == (2, 1, True)
     detail = client.get(f"/api/fb/items/{item_id}", headers=ADMIN).json()
     assert detail["triage"]["status"] == "triaged"
     assert [e["note"] for e in detail["history"]] == ["seen"]

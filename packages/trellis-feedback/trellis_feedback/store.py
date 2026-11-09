@@ -33,6 +33,7 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    literal,
     select,
     text,
 )
@@ -109,8 +110,10 @@ def _build_tables(schema: str | None) -> tuple[MetaData, Table, Table]:
         Column("extra", Text, nullable=False, default="{}"),
         Column("created_at", String(40), nullable=False),
         # A retried submit carries the same key and finds the first one, rather than duplicating it.
-        # NULL keys never collide, so a client that sends none is not deduplicated (stated, not hidden).
-        UniqueConstraint("app", "idempotency_key", name="uq_trellis_feedback_idempotency"),
+        # Scoped to the submitting user: a key is only ever matched against that user's own items, so
+        # sending someone else's key cannot return their item (0.1 read-back P2). NULL keys never
+        # collide, so a client that sends none is not deduplicated (stated, not hidden).
+        UniqueConstraint("app", "user_id", "idempotency_key", name="uq_trellis_feedback_idempotency"),
     )
     Index("ix_trellis_feedback_items_created", items.c.app, items.c.created_at)
     events = Table(
@@ -184,15 +187,19 @@ class FeedbackStore:
     def submit(self, item: FeedbackItem, *, idempotency_key: str | None = None) -> tuple[FeedbackItem, bool]:
         """Store `item`. Returns `(stored item, created)`.
 
-        With an `idempotency_key` already used by this app, nothing is written and the first item
-        is returned with `created=False`: a retried submission is the same submission.
+        With an `idempotency_key` this same user has already used, nothing is written and that
+        first item is returned with `created=False`: a retried submission is the same submission.
+        The match is per user (`item.user_id`), never across users. Anonymous submissions all share
+        the user "", so a caller exposing submit to anonymous users should not echo a replayed
+        item's content back -- the router returns only its id.
         """
         item.app = self.app
+        item.user_id = item.user_id or ""
         item.validate()
         if idempotency_key is not None:
             idempotency_key = idempotency_key.strip()[:128] or None
             if idempotency_key:
-                existing = self._by_key(idempotency_key)
+                existing = self._by_key(item.user_id, idempotency_key)
                 if existing is not None:
                     return existing, False
         item.id = uuid.uuid4().hex
@@ -209,16 +216,17 @@ class FeedbackStore:
         except IntegrityError:
             # Two submissions with one key raced past the lookup above; the other one won.
             if idempotency_key:
-                existing = self._by_key(idempotency_key)
+                existing = self._by_key(item.user_id, idempotency_key)
                 if existing is not None:
                     return existing, False
             raise
         return item, True
 
-    def _by_key(self, key: str) -> FeedbackItem | None:
+    def _by_key(self, user_id: str, key: str) -> FeedbackItem | None:
+        i = self.items
         with self.engine.connect() as conn:
             row = conn.execute(
-                select(self.items).where(and_(self.items.c.app == self.app, self.items.c.idempotency_key == key))
+                select(i).where(and_(i.c.app == self.app, i.c.user_id == user_id, i.c.idempotency_key == key))
             ).mappings().first()
         return self._item_from_row(row) if row else None
 
@@ -257,6 +265,32 @@ class FeedbackStore:
         Every row carries the item's own `id`, and that id is the only handle triage takes -- there
         is no position for a client to get wrong (§6 step 2, EA's live bug).
         """
+        q = self._filtered(kind=kind, status=status, category=category, since=since, until=until)
+        i = self.items
+        q = q.order_by(i.c.created_at.desc(), i.c.id).limit(max(1, min(int(limit), 1000))).offset(max(0, int(offset)))
+        out = []
+        with self.engine.connect() as conn:
+            for row in conn.execute(q).mappings():
+                data = dict(row)
+                state = TriageState(
+                    status=data.pop("t_status") or "new", note=data.pop("t_note") or "",
+                    actor=data.pop("t_actor") or "", updated_at=data.pop("t_at") or "",
+                    events=int(data.pop("t_events") or 0),
+                )
+                item = self._item_from_row(data).to_dict()
+                item["triage"] = state.to_dict()
+                out.append(item)
+        return out
+
+    def count_matching(self, *, kind: str | None = None, status: str | None = None,
+                       category: str | None = None, since: str | None = None, until: str | None = None) -> int:
+        """How many items `list` would return with these filters and no limit."""
+        q = self._filtered(kind=kind, status=status, category=category, since=since, until=until)
+        with self.engine.connect() as conn:
+            return int(conn.execute(select(func.count()).select_from(q.subquery())).scalar_one())
+
+    def _filtered(self, *, kind, status, category, since, until):
+        """This app's items joined to their latest event, with the filters applied; no order/limit."""
         if kind is not None and kind not in KINDS:
             raise FeedbackError(f"kind must be one of {list(KINDS)}, got {kind!r}")
         if status is not None and status not in STATUSES:
@@ -282,20 +316,7 @@ class FeedbackStore:
             q = q.where(i.c.created_at < until)
         if status:
             q = q.where(func.coalesce(latest.c.status, "new") == status)
-        q = q.order_by(i.c.created_at.desc(), i.c.id).limit(max(1, min(int(limit), 1000))).offset(max(0, int(offset)))
-        out = []
-        with self.engine.connect() as conn:
-            for row in conn.execute(q).mappings():
-                data = dict(row)
-                state = TriageState(
-                    status=data.pop("t_status") or "new", note=data.pop("t_note") or "",
-                    actor=data.pop("t_actor") or "", updated_at=data.pop("t_at") or "",
-                    events=int(data.pop("t_events") or 0),
-                )
-                item = self._item_from_row(data).to_dict()
-                item["triage"] = state.to_dict()
-                out.append(item)
-        return out
+        return q
 
     def count(self, *, kind: str | None = None) -> int:
         q = select(func.count()).select_from(self.items).where(self.items.c.app == self.app)
@@ -340,12 +361,31 @@ class FeedbackStore:
         ref_id = str(ref_id or "").strip()
         if not ref_id:
             raise FeedbackError("ref_id is required")
-        if source == ITEM_SOURCE and self.get(ref_id) is None:
-            raise NotFound(f"no feedback item {ref_id!r}")
         row = {"app": self.app, "source": source, "ref_id": ref_id, "status": status, "note": note or "",
-                   "actor": actor or "", "created_at": _now()}
+               "actor": actor or "", "created_at": _now()}
+        e = self.events
         with self.engine.begin() as conn:
-            seq = conn.execute(insert(self.events).values(**row)).inserted_primary_key[0]
+            if source != ITEM_SOURCE:
+                seq = conn.execute(insert(e).values(**row)).inserted_primary_key[0]
+            else:
+                # The check that the item exists and the insert are ONE statement (INSERT ... SELECT
+                # FROM the item row), so a delete_item cannot land between them and leave an orphan
+                # event (0.1 read-back P3). On Postgres the item row is also held FOR KEY SHARE until
+                # this commits, so a concurrent delete_item waits and then removes this event with
+                # the item; without the lock, its event delete could run before this insert commits.
+                # SQLite serialises writers, so the single statement is enough there.
+                i = self.items
+                cols = ["app", "source", "ref_id", "status", "note", "actor", "created_at"]
+                src = (
+                    select(*[literal(row[c], type_=Text()).label(c) for c in cols])
+                    .select_from(i)
+                    .where(and_(i.c.app == self.app, i.c.id == ref_id))
+                )
+                if not self.is_sqlite:
+                    src = src.with_for_update(read=True, key_share=True)
+                seq = conn.execute(insert(e).from_select(cols, src).returning(e.c.seq)).scalar()
+                if seq is None:
+                    raise NotFound(f"no feedback item {ref_id!r}")
         return TriageEvent(seq=int(seq), **row)
 
     def history(self, ref_id: str, *, source: str = ITEM_SOURCE) -> list[TriageEvent]:

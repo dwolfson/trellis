@@ -81,6 +81,18 @@ class TestIdempotency:
         store.submit(answer())
         assert store.count() == 2
 
+    def test_another_users_key_never_finds_their_item(self, store):
+        """0.1 read-back P2: a key is matched per user. User B sending user A's key gets a new item
+        of B's own, never A's question, answer or contact details."""
+        a, _ = store.submit(answer(user_id="alice", query_text="alice's question", response_text="secret",
+                                   ), idempotency_key="shared")
+        b, created = store.submit(answer(user_id="bob", query_text="bob's question"), idempotency_key="shared")
+        assert created and b.id != a.id
+        assert (b.user_id, b.query_text, b.response_text) == ("bob", "bob's question", "it did")
+        # and A's own retry still finds A's item
+        again, created_again = store.submit(answer(user_id="alice"), idempotency_key="shared")
+        assert not created_again and again.id == a.id
+
     def test_the_same_key_in_two_apps_is_two_items(self, make_store):
         a, _ = make_store("resource-explorer").submit(answer(), idempotency_key="k")
         b, _ = make_store("egeria-advisor").submit(answer(), idempotency_key="k")
@@ -173,6 +185,51 @@ class TestTriage:
         for row in store.list():
             assert (row["triage"]["status"], row["triage"]["note"]) == wanted[row["id"]]
             assert row == {**store.get(row["id"]).to_dict(), "triage": row["triage"]}
+
+    def test_a_triage_racing_a_delete_never_leaves_an_orphan_event(self, store):
+        """0.1 read-back P3: the existence check and the insert are one statement, so an event either
+        lands before the delete (and goes with the item) or is refused. Whatever the interleaving,
+        no event may outlive its item."""
+        ids = [store.submit(answer(query_text=f"q{n}"))[0].id for n in range(40)]
+        errors = []
+
+        def triager():
+            for _ in range(3):
+                for item_id in ids:
+                    try:
+                        store.triage(item_id, "triaged")
+                    except NotFound:
+                        pass
+                    except Exception as exc:  # noqa: BLE001 -- collected and asserted on below
+                        errors.append(exc)
+
+        def deleter():
+            for item_id in ids:
+                try:
+                    store.delete_item(item_id)
+                except Exception as exc:  # noqa: BLE001 -- collected and asserted on below
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=triager), threading.Thread(target=deleter)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors
+        assert store.count() == 0
+        assert store.referenced("item") == []
+
+    def test_count_matching_applies_the_same_filters_as_list(self, store):
+        a, _ = store.submit(answer())
+        store.submit(product(category="bug"))
+        store.submit(product(category="praise", message="nice"))
+        store.triage(a.id, "actioned")
+        assert store.count() == 3
+        assert store.count_matching(kind="product") == 2
+        assert store.count_matching(category="praise") == 1
+        assert store.count_matching(status="actioned") == 1
+        assert store.count_matching(status="new") == 2
+        assert store.count_matching(status="new") == len(store.list(status="new"))
 
     def test_concurrent_triage_and_submits_lose_nothing(self, store):
         a, _ = store.submit(answer(query_text="a"))

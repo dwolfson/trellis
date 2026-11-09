@@ -76,12 +76,17 @@ app.include_router(
 | Route | Who |
 |---|---|
 | `GET /meta` | anyone the app lets through |
-| `POST /items` | anyone the app lets through; the user comes from `current_user`, never from the body |
+| `POST /items` | anyone the app's own login middleware lets through (the router does not require a login; an anonymous item has user `""`). The user comes from `current_user`, never from the body. A replay of an idempotency key returns only `{"item": {"id": …}, "created": false}` |
 | `GET /items`, `GET /items/{id}` | admin |
 | `POST /triage` | admin |
 | `DELETE /items/{id}` | admin |
 | `GET /external/{source}?ids=…` (states, plus gone rows) | admin |
 | `DELETE /external/{source}/{id}` (only once the row is gone) | admin |
+
+Idempotency keys are matched per user, so one user's key never finds another user's item.
+
+Known limitation (0.1): `GET /external/{source}` passes every referenced id of that source to the
+app's lookup on each call. Fine at current volumes; batch it if a source grows large.
 
 The library reads no environment and decides nothing about identity: the app passes in its URL,
 schema, admin check and current user.

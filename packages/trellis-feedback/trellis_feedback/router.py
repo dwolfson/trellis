@@ -73,7 +73,9 @@ def make_router(
     """Routes for `store`, to be mounted by the app under a prefix of its choosing.
 
     `current_user(request)` returns the signed-in user's id, or "" when anonymous. It is the only
-    source of identity: a client-sent user field is never read.
+    source of identity: a client-sent user field is never read. Whether an anonymous caller may
+    submit at all is the app's login middleware's decision, not this router's; one that gets
+    through is stored with user "".
 
     `external_lookup` maps each of the store's declared external sources to an `ExistsLookup`.
     Without one, a source's rows cannot be triaged through these routes, and their "item gone"
@@ -115,7 +117,12 @@ def make_router(
             stored, created = store.submit(item, idempotency_key=key)
         except FeedbackError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"item": stored.to_dict(), "created": created}
+        if not created:
+            # A replay returns only the id. The store already matches keys per user, but every
+            # anonymous caller is the user "", so echoing the stored item would hand one anonymous
+            # caller another's question, answer and contact details (0.1 read-back P2).
+            return {"item": {"id": stored.id}, "created": False}
+        return {"item": stored.to_dict(), "created": True}
 
     @router.get("/items")
     def list_items(
@@ -130,7 +137,10 @@ def make_router(
                               since=since or None, until=until or None, limit=limit, offset=offset)
         except FeedbackError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"items": rows, "total": store.count(kind=kind or None),
+        return {"items": rows, "total": store.count(),
+                "matched": store.count_matching(kind=kind or None, status=status or None,
+                                                category=category or None, since=since or None,
+                                                until=until or None),
                 "filtered": any([kind, status, category, since, until])}
 
     @router.get("/items/{item_id}")
