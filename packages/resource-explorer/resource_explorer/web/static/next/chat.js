@@ -500,11 +500,27 @@ function feedbackHtml(turn, i) {
   </div>`;
 }
 
+/** A per-turn nonce. crypto.randomUUID needs a secure context, which a plain-http deployment is not. */
+function voteNonce() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 async function vote(i, value) {
   const turn = state.chat[i];
   if (!turn || !turn.queryHash) return;
+  // One key per turn and vote: a retried POST is the same vote, not a second item.
+  turn.voteKey = turn.voteKey || `vote:${voteNonce()}`;
   try {
-    await sendFeedback(turn.queryHash, value, turn.compileId || null);
+    const res = await sendFeedback(turn.queryHash, value, turn.compileId || null, {
+      session_id: sessionId(), exchange_id: turn.exchangeId ?? null,
+      question: turn.question || '', answer: turn.answer || '', intent: turn.intent || '',
+      resource_slug: turn.slug || '', entity_type: turn.entityType || '',
+      idempotency_key: `${turn.voteKey}:${value}`,
+    });
+    // "Marked helpful" only when the vote was kept where Admin reads it, not merely hashed into query_log.
+    if (!res || !res.stored) throw new Error((res && res.reason) || 'the server did not keep it');
+    turn.feedbackId = res.feedback_id;
     turn.voted = value;
   } catch (err) {
     // Say it failed. A vote that silently did not record is worse than no
@@ -533,7 +549,7 @@ async function vote(i, value) {
       const res = await submitAnswerFeedback({
         slug: turn.slug, question: turn.question, verdict: VOTE_VERDICT[String(value)],
         sessionId: sessionId(), page: location.pathname + location.search,
-        entityType: turn.entityType,
+        entityType: turn.entityType, feedbackId: turn.feedbackId || '',
       });
       turn.gapReason = res.gap
         ? `in this project's gaps, marked ${res.gap.destination}`

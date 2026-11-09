@@ -164,6 +164,8 @@ AGREE = "agree"
 PARTLY = "partly"
 DISAGREE = "disagree"
 VALID_VERDICTS = {AGREE, PARTLY, DISAGREE}
+#: The verdict as a vote, the convention both apps' answer ratings use (+1 / 0 / -1).
+VERDICT_VOTE = {AGREE: 1, PARTLY: 0, DISAGREE: -1}
 
 
 class AnswerFeedback(BaseModel):
@@ -193,6 +195,10 @@ class AnswerFeedback(BaseModel):
     # 404'd the whole route outright, regardless of what the catalog actually
     # names for that question.
     entity_type: str = "repo"
+    #: The `answer` item this verdict was already stored as, when the caller recorded it first: the chat pane's
+    #: vote goes to /api/query/feedback (which keeps the question and answer) and then here only to join the
+    #: gaps loop. Given, and naming an item, nothing is stored twice.
+    feedback_id: str = ""
 
 
 def _analyses_for_question(question: str, entity_type: str = "repo") -> list[str]:
@@ -274,14 +280,24 @@ async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
     # the gap below is the consequence of one kind of saying. Storing only
     # disagreements would make "nobody has questioned this answer" and "one
     # person confirmed it" look identical.
+    #
+    # An `answer` item (since 2026-11-09; before, a product row with "[verdict]" in its message), so Admin lists it
+    # with the question and who said it, beside chat votes.
     store = FeedbackStore()
-    store.add(FeedbackEntry(
-        session_id=payload.session_id,
-        page=payload.page,
-        # The stable id when the catalog has one, so a reworded question does not orphan the row.
-        element_guid=f"answer:{payload.slug}:{question_id or question}",
-        message=f"[{verdict}] {(payload.comment or '').strip()}".strip(),
-    ))
+    linked = (payload.feedback_id or "").strip()
+    already = store.get(linked) if linked else None
+    if already is None or already.get("kind") != "answer":
+        from resource_explorer.registry import current_user_id
+
+        store.add_answer(
+            vote=VERDICT_VOTE[verdict], question=question, user_id=current_user_id(),
+            session_id=payload.session_id, entity_type=entity_type, slug=payload.slug,
+            message=payload.comment or "", page=payload.page,
+            # The stable id when the catalog has one, so a reworded question does not orphan the row.
+            element_guid=f"answer:{payload.slug}:{question_id or question}",
+            extra={"verdict": verdict, "question_id": question_id, "analysis_id": analysis_id,
+                   "origin": "questions checklist"},
+        )
 
     if verdict != DISAGREE:
         return {

@@ -179,6 +179,19 @@ class FeedbackRequest(BaseModel):
     # scores these as three explicit states, not a sign test -- see
     # metrics_collector.py's record_feedback docstring.
     vote: int
+    # The answer being rated, so it can be kept as an `answer` feedback item an admin can read and triage
+    # (docs/trellis-feedback-extraction.md §6 step 3, Q4/Q5). With `session_id` + `exchange_id` the question and
+    # answer are read from the stored exchange, the caller's own; `question`/`answer` are used only for a turn
+    # that was not stored. None of these is required: an older client's vote still reaches query_log.
+    session_id: str = ""
+    exchange_id: int | None = None
+    question: str = ""
+    answer: str = ""
+    intent: str = ""
+    resource_slug: str = ""
+    entity_type: str = ""
+    #: One per turn, minted by the client: a retried POST is the same vote, not a second one.
+    idempotency_key: str = ""
 
 
 def _pick_chart(query: str, intent: str, resource_slug: str) -> dict | None:
@@ -420,13 +433,61 @@ async def stream(request: QueryRequest) -> StreamingResponse:
 
 @router.post("/feedback")
 async def feedback(request: FeedbackRequest) -> dict:
+    """Record a chat vote twice, for two readers: query_log's hash row (chunk scoring; it keeps no text, Q5) and
+    an `answer` feedback item with the question, the answer and the signed-in user, which Admin → Feedback lists.
+
+    `stored` says whether the second happened, and `feedback_id` names the item. The pane says "not recorded"
+    unless it did: a vote that reached only the hash row is invisible to whoever reads the feedback, which is
+    the gap this closes (a vote that said "Marked helpful" and never reached Admin).
+    """
     from resource_explorer.observability.metrics_collector import MetricsCollector
     if request.compile_id:
         MetricsCollector().record_feedback(request.query_hash, request.vote,
                                            compile_id=request.compile_id)
-        return {"recorded": True, "compile_id": request.compile_id}
-    MetricsCollector().record_feedback(request.query_hash, request.vote)
-    return {"recorded": True}
+    else:
+        MetricsCollector().record_feedback(request.query_hash, request.vote)
+    out: dict = {"recorded": True}
+    if request.compile_id:
+        out["compile_id"] = request.compile_id
+    out.update(await asyncio.to_thread(_store_answer_vote, request))
+    return out
+
+
+def _store_answer_vote(request: FeedbackRequest) -> dict:
+    """Keep one chat vote as an `answer` item. Returns {"stored", "feedback_id"} or {"stored": False, "reason"}."""
+    from trellis_feedback import FeedbackError
+
+    from resource_explorer.feedback_store import FeedbackStore
+    from resource_explorer.registry import ProjectRegistry, current_user_id
+
+    user_id = current_user_id()
+    question, answer = request.question, request.answer
+    compile_id, slug = request.compile_id or "", request.resource_slug
+    text_from = "client"
+    if request.session_id and request.exchange_id is not None:
+        # The caller's own stored exchange (load_exchanges is owner-scoped), so the text kept is what was
+        # actually asked and answered, not whatever a client sends.
+        stored = next((e for e in ProjectRegistry().load_exchanges(request.session_id, limit=200, user_id=user_id)
+                       if e["exchange_id"] == request.exchange_id), None)
+        if stored is not None:
+            question, answer = stored["question"], stored["answer"]
+            compile_id = compile_id or stored.get("compile_id") or ""
+            slug = slug or stored.get("resource_slug") or ""
+            text_from = "stored exchange"
+    if not (question or "").strip():
+        return {"stored": False, "reason": "the vote carried no question and no stored exchange to read one from"}
+    try:
+        feedback_id, created = FeedbackStore().add_answer(
+            vote=request.vote, question=question, answer=answer, user_id=user_id,
+            session_id=request.session_id, compile_id=compile_id, intent=request.intent,
+            entity_type=request.entity_type, slug=slug,
+            extra={"query_hash": request.query_hash, "exchange_id": request.exchange_id,
+                   "text_from": text_from, "origin": "chat"},
+            idempotency_key=request.idempotency_key or None,
+        )
+    except FeedbackError as exc:
+        return {"stored": False, "reason": str(exc)}
+    return {"stored": True, "feedback_id": feedback_id, "created": created}
 
 
 def _code_inventory_table(query: str, resource_slug: str) -> dict | None:

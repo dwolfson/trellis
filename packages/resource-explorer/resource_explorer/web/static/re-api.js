@@ -1034,10 +1034,14 @@ export const ask = (query, { resourceSlug, entityType, perspectives = [], sessio
  * computes it — so that a vote on the same question text lands under one key
  * whether the answer came from retrieval or from measurements.
  */
-export const sendFeedback = (queryHash, vote, compileId = null) =>
-  post('/api/query/feedback',
-       compileId ? { query_hash: queryHash, vote, compile_id: compileId }
-                 : { query_hash: queryHash, vote });
+/** Rate one chat answer. `turn` carries what makes the vote readable in Admin → Feedback: `session_id` +
+ *  `exchange_id` (the server reads the question and answer from the stored exchange), else `question`/`answer`,
+ *  plus `intent`, `resource_slug`, `entity_type` and a per-turn `idempotency_key`. The reply's `stored` says
+ *  whether it was kept as a feedback item (`feedback_id`); a caller must not report a vote as recorded without it. */
+export const sendFeedback = (queryHash, vote, compileId = null, turn = {}) =>
+  post('/api/query/feedback', {
+    query_hash: queryHash, vote, ...(compileId ? { compile_id: compileId } : {}), ...turn,
+  });
 
 /**
  * Join a chat vote to the gaps loop (item 8 — ITEM-8-FEEDBACK-IMPLEMENTED.md).
@@ -1057,8 +1061,8 @@ export const sendFeedback = (queryHash, vote, compileId = null) =>
  * the per-resource gaps collection. Callers should skip this call rather
  * than let it throw when `slug` is empty.
  */
-export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType }) =>
-  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: requireKind('submitAnswerFeedback', entityType) });
+export const submitAnswerFeedback = ({ slug, question, verdict, comment = '', sessionId = '', page = '', entityType, feedbackId = '' }) =>
+  post('/api/feedback/answer', { slug, question, verdict, comment, session_id: sessionId, page, entity_type: requireKind('submitAnswerFeedback', entityType), feedback_id: feedbackId });
 
 /** What would answer this question, WITHOUT asking it: the sections that have a stored result and the
  *  analyses that would answer it and have none (`manifest.gaps`). The same compile the Ask path runs

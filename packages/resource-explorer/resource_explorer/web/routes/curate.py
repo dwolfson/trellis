@@ -383,7 +383,7 @@ def list_all_feedback(
     have genuinely different shapes (session/page/consent fields on one side,
     entity_type/slug on the other), and a real merge is a separate, deliberate
     task (see docs/Backlog.md) — not something to fold in as a side effect of
-    fixing visibility. Each row carries `source: "page" | "resource"` so the
+    fixing visibility. Each row carries `source: "page" | "resource" | "answer"` (answer: a rated chat or checklist answer, since 2026-11-09) so the
     two stay distinguishable until that task exists, and `source` is itself a
     filter for the same reason `entity_type`/`category` are.
 
@@ -409,6 +409,12 @@ def list_all_feedback(
     # page row, not silently ignore the filter and show them regardless.
     page_rows = [] if entity_type else page_store.list(category=category or None, limit=limit)
     page_stats = page_store.stats()
+    # Ratings of answers (chat votes and Questions-checklist verdicts, kind `answer` in trellis-feedback). They
+    # have a resource type when one was in scope, so that filter applies; they have no category, so a category
+    # filter excludes them, as entity_type excludes page rows.
+    answer_rows = page_store.list(category=category or None, limit=limit, kind="answer")
+    if entity_type:
+        answer_rows = [r for r in answer_rows if r.get("entity_type") == entity_type]
 
     combined = [dict(r, source="resource") for r in resource_rows]
     # Full rows now. `_without_contact_fields` was the INTERIM fix while this
@@ -417,6 +423,7 @@ def list_all_feedback(
     # which is the drift this change exists to end. The helper is kept and
     # tested, since an ungated caller may exist again.
     combined += [dict(r, source="page") for r in page_rows]
+    combined += [dict(r, source="answer") for r in answer_rows]
     if source:
         combined = [r for r in combined if r["source"] == source]
     combined.sort(key=lambda r: r.get("created_at") or "", reverse=True)
@@ -426,6 +433,7 @@ def list_all_feedback(
         "counts": {
             "resource": resource_counts,
             "page": {"total": page_stats["total"]},
+            "answer": {"total": page_store.count(kind="answer")},
         },
         "filtered": bool(entity_type or category or source),
     }

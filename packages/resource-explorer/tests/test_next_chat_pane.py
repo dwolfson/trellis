@@ -206,7 +206,20 @@ class TestJoinTheVoteToTheGapsLoop:
         replacement."""
         chat = _chat()
         vote_fn = chat[chat.index("async function vote(i, value)"):chat.index("/** One chat turn, as markdown")]
-        assert "await sendFeedback(turn.queryHash, value, turn.compileId || null);" in vote_fn
+        assert "await sendFeedback(turn.queryHash, value, turn.compileId || null, {" in vote_fn
+
+    def test_a_vote_is_reported_recorded_only_when_it_was_stored(self):
+        """The vote carries the turn (session + exchange, question, answer) so it is kept as an `answer` item
+        Admin can read, and the pane says "Marked ..." only when the reply says it was stored."""
+        chat = _chat()
+        vote_fn = chat[chat.index("async function vote(i, value)"):chat.index("/** One chat turn, as markdown")]
+        for field in ("session_id: sessionId()", "exchange_id: turn.exchangeId", "question: turn.question",
+                      "answer: turn.answer", "idempotency_key:"):
+            assert field in vote_fn, field
+        assert "if (!res || !res.stored) throw" in vote_fn
+        assert vote_fn.index("if (!res || !res.stored) throw") < vote_fn.index("turn.voted = value;")
+        # The gaps-loop call names the item, so the verdict is not stored a second time.
+        assert "feedbackId: turn.feedbackId" in vote_fn
 
     def test_a_negative_vote_maps_to_the_disagree_verdict_gaps_dot_py_expects(self):
         chat = _chat()

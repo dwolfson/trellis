@@ -38,9 +38,27 @@ function ratingHtml(r) {
 }
 
 function sourceBadge(source) {
+  if (source === 'answer') {
+    return '<span class="rounded-sm border border-state-warn px-[6px] py-[1px] text-provenance text-ink" title="A rating of one answer: a chat vote, or a Questions-checklist verdict. Kept with the question, the answer and who rated it">answer</span>';
+  }
   return source === 'page'
     ? '<span class="rounded-sm border border-rule-strong px-[6px] py-[1px] text-provenance text-ink" title="feedback table — the page-level widget, reachable from anywhere in the app">page</span>'
     : '<span class="rounded-sm border border-accent-deep px-[6px] py-[1px] text-provenance text-accent-ink" title="resource_feedback table — recorded from a resource\'s Curate tab">resource</span>';
+}
+
+/** +1 / 0 / -1, as the thumbs the person pressed said it. */
+const VOTE_WORDS = { 1: 'helpful', 0: 'partly right', '-1': 'not helpful' };
+
+/** An answer row's message cell: the vote, the question, any comment, and the answer folded away (it can be long). */
+function answerMessageHtml(r) {
+  const who = r.user_id ? ` · ${esc(r.user_id)}` : ' · anonymous';
+  const answer = r.response_text
+    ? `<details class="mt-[2px]"><summary class="cursor-pointer text-provenance text-ink-muted">answer</summary>
+        <div class="mt-[2px] max-h-[12rem] overflow-auto whitespace-pre-wrap text-provenance text-ink-muted">${esc(r.response_text)}</div></details>`
+    : '';
+  return `<div><span class="text-ink">${esc(VOTE_WORDS[String(r.vote)] || String(r.vote))}</span>${who}</div>
+    <div class="text-ink">Q: ${esc(r.query_text || '')}</div>
+    ${r.message ? `<div class="text-ink-muted">${esc(r.message)}</div>` : ''}${answer}`;
 }
 
 function tokenGateHtml() {
@@ -129,17 +147,17 @@ async function reload() {
 
   const rows = data.feedback || [];
   const counts = data.counts || { resource: { total: 0, resources: 0 }, page: { total: 0 } };
-  const total = (counts.resource?.total || 0) + (counts.page?.total || 0);
-  const types = [...new Set(rows.filter((r) => r.source === 'resource').map((r) => r.entity_type))].sort();
+  const total = (counts.resource?.total || 0) + (counts.page?.total || 0) + (counts.answer?.total || 0);
+  const types = [...new Set(rows.filter((r) => r.source !== 'page').map((r) => r.entity_type).filter(Boolean))].sort();
   const cats = [...new Set(rows.map((r) => r.category).filter(Boolean))].sort();
 
   let empty;
   if (data.filtered) {
     empty = `<p class="py-s4 text-center text-caveat text-ink-muted">No feedback matches this filter.
-      Clear it to see all ${total} (${counts.page?.total || 0} page, ${counts.resource?.total || 0} resource).</p>`;
+      Clear it to see all ${total} (${counts.page?.total || 0} page, ${counts.resource?.total || 0} resource, ${counts.answer?.total || 0} answer).</p>`;
   } else if (total === 0) {
     empty = `<p class="py-s4 text-center text-caveat text-ink-muted">No feedback has been left anywhere yet.<br>
-      <span class="text-ink-muted">Neither the page-level widget nor any resource's Curate tab has a row.</span></p>`;
+      <span class="text-ink-muted">No page-level widget report, no resource's Curate tab row, and no rated answer.</span></p>`;
   } else {
     empty = '<p class="py-s4 text-center text-caveat text-ink-muted">Nothing rendered for this page, though feedback exists — try Refresh.</p>';
   }
@@ -156,10 +174,18 @@ async function reload() {
     </tr></thead>
     <tbody>${rows.map((r) => {
       const isPage = r.source === 'page';
-      const context = isPage
-        ? (r.page ? `<span class="font-mono text-ink">${esc(r.page)}</span>` : '<span class="text-ink-muted" title="No page recorded with this submission">—</span>')
-        : `<span class="text-ink-muted">${esc(r.entity_type || '')}</span> <span class="font-mono text-ink">${esc(r.entity_slug || '')}</span>`;
-      const status = isPage
+      const isAnswer = r.source === 'answer';
+      let context;
+      if (isAnswer) {
+        context = r.slug
+          ? `<span class="text-ink-muted">${esc(r.entity_type || '')}</span> <span class="font-mono text-ink">${esc(r.slug)}</span>`
+          : '<span class="text-ink-muted" title="No resource was in scope when this answer was rated">no resource</span>';
+      } else {
+        context = isPage
+          ? (r.page ? `<span class="font-mono text-ink">${esc(r.page)}</span>` : '<span class="text-ink-muted" title="No page recorded with this submission">—</span>')
+          : `<span class="text-ink-muted">${esc(r.entity_type || '')}</span> <span class="font-mono text-ink">${esc(r.entity_slug || '')}</span>`;
+      }
+      const status = (isPage || isAnswer)
         ? esc(r.triage_status || 'new')
         : '<span class="italic text-ink-muted" title="resource_feedback has no triage workflow">n/a</span>';
       return `<tr class="border-b border-rule hover:bg-paper-surface">
@@ -168,7 +194,7 @@ async function reload() {
         <td class="whitespace-nowrap py-s2 pr-s3">${context}</td>
         <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc(r.category || '—')}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${ratingHtml(r.rating)}</td>
-        <td class="max-w-[32ch] py-s2 pr-s3 text-caveat text-ink">${esc(r.message || '')}</td>
+        <td class="max-w-[32ch] py-s2 pr-s3 text-caveat text-ink">${isAnswer ? answerMessageHtml(r) : esc(r.message || '')}</td>
         <td class="whitespace-nowrap py-s2 text-caveat">${status}</td>
       </tr>`;
     }).join('')}</tbody></table>` : empty;
@@ -179,13 +205,15 @@ async function reload() {
       ${counts.page?.total || 0} page item${(counts.page?.total || 0) === 1 ? '' : 's'} (the widget on
       any page) + ${counts.resource?.total || 0} resource item${(counts.resource?.total || 0) === 1 ? '' : 's'}
       across ${counts.resource?.resources || 0} resource${(counts.resource?.resources || 0) === 1 ? '' : 's'}
-      (a resource's Curate tab) = ${total} total. Shown together, badged by origin — not merged.
+      (a resource's Curate tab) + ${counts.answer?.total || 0} rated answer${(counts.answer?.total || 0) === 1 ? '' : 's'}
+      (chat votes and checklist verdicts) = ${total} total. Shown together, badged by origin — not merged.
     </p>
     ${await lookCountsHtml()}
     <div class="my-s3 flex flex-wrap items-center gap-[6px]">
       ${chip('All sources', 'source', '')}
       ${chip('Page', 'source', 'page')}
       ${chip('Resource', 'source', 'resource')}
+      ${chip('Answer', 'source', 'answer')}
       <span class="px-[2px] text-ink-muted">|</span>
       ${chip('All resource types', 'entity_type', '')}
       ${types.map((t) => chip(t, 'entity_type', t)).join('')}
