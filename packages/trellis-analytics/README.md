@@ -26,7 +26,7 @@ Resource Explorer registers the readers in the library's `trellis_analytics.read
 - **Run as a report spec** through pyegeria's executor (the Portal's path, pyegeria 6.2.26 and later): the executor
   asks the Portal's role supply for each input the routine declares. Library 0.4.0 declares
   `inputs=["reader:ods", "reader:catalogue_scope", "subject"]` for both `curation_coverage` and
-  `curation_coverage_tile` (`manifests.py`), and the Portal supplies no readers. The run is **refused before it
+  `curation_coverage_tile` (`manifests.py`), and the Portal supplies no readers (the library is not installed in the Portal today). The run is **refused before it
   starts**, with the supply's words ("The Portal has no reader named 'ods'"). It is not a result with a state.
 
 pyegeria 6.2.26 removed `analytic_binders`, so no binder makes the Portal read RE's database. See

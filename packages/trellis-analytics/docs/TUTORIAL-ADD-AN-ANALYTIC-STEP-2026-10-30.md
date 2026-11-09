@@ -305,6 +305,7 @@ Explain to anyone what a 0 meant.
 - Putting your result on a Portal dashboard: the Portal's *Local Dashboards* tutorial. Your step is already listed in
   the Portal's Analytic Functions Browser, because the same registry serves both. A report spec names it by its
   registered name, `my_row_changes`, never by its Python path.
+  The Explorer's Analytic Functions panel shows each function's inputs, parameter categories and output fields.
   The panel lists it; a spec cannot run it, because `ods` is not one of pyegeria's role words
   ([Inputs by role](../../resource-explorer/docs/extending-with-analyses.md#inputs-by-role-pyegeria-6226)).
 - How steps are versioned, retired and governed: the lifecycle design note.

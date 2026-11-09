@@ -85,6 +85,24 @@ registered name (the manifest's `name`), never by its Python path. Steps built b
 `trellis.analytics`; pyegeria no longer reads that group (the alias was removed in pyegeria 6.2.19), so rename the group
 to `pyegeria.analytics`.
 
+Its value names the manifest object:
+
+```toml
+[project]
+name = "my-step"
+dynamic = ["version"]
+dependencies = ["trellis-analytics>=0.1.0"]
+
+# Installation is registration: Resource Explorer finds the step through this entry point.
+[project.entry-points."pyegeria.analytics"]
+my_step = "my_step.manifest:MANIFEST"
+```
+
+The entry point's value may be a manifest, or a callable that returns one manifest or a list of
+them. **A broken entry point is an error, never skipped:** discovery raises, naming the entry point.
+RE logs `user steps not loaded for database: …` and starts with no user steps, so one bad package
+cannot leave the others half-loaded.
+
 **A report spec does not run a step.** A step registers with a python binding, so the resolver does find it, but it
 then reads the step's `inputs`. A step's `ods`, `source_report`, `resource` and `connection` are not role words, so pyegeria
 refuses the run with, for a step declaring `inputs=["ods"]`: "Routine 'demo_step' cannot run: routine demo_step's input
@@ -159,7 +177,7 @@ none and is refused. The executor asks the `RoleSupply` for each before the firs
 These are pyegeria behaviours, described by the release that introduced them. Trellis locks pyegeria 6.2.24 today, so
 they are not what Resource Explorer runs. Resource Explorer's own step host, `inputs` vocabulary and absence words did not
 change, and RE does not use pyegeria's `overview_metrics` counts, so none of the count changes alters an RE screen.
-They matter to an analysis author because the Portal runs a step's registered name through a report spec.
+They matter to an analysis author because the Portal's report specs list a step by its registered name.
 
 - **A count that was not measured is `None` (6.2.27, 6.2.28).** A capped or timed-out count is `None` with an
   `unmeasured` note, never the 500-element cap (6.2.27). A failed viewer count is `None`, not `0`, strict or not (6.2.28).
@@ -176,7 +194,7 @@ They matter to an analysis author because the Portal runs a step's registered na
   `TypeError`. The type filters are spelt `metadata_element_type` and `metadata_element_subtypes`; the old spellings
   still work, with a `DeprecationWarning`. A report spec's `spec_params` are checked the same way.
 - **Technology report specs take `deployed_implementation_type` (6.2.28).** The default is the spec's own technology,
-  matched exactly (ignoring case); `*` means any technology.
+  matched exactly (ignoring case; this wording may change in 6.2.29); `*` means any technology.
 
 ## 2. The manifest and its declaration
 

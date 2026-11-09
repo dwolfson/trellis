@@ -561,7 +561,7 @@ The **Analytic Library** is a set of small, installable analyses that sit beside
 Where you meet it:
 
 - **Curate → By analysis** (for a database) shows **curation coverage**: how many of the database's schemas are published, not yet published, or blocked, with a **which** link that lists the names. The state word sits beside the counts. If the count could not be made, you see the state and the reason, not a table of zeros.
-- **The Egeria Portal** can show the same numbers as a tile named **Trellis - Curation Coverage** (family *Curation*): a bar of published against not yet published, with the result's state as the subtitle and a line saying which version produced it and when. An administrator adds it to the Portal (see the library's README).
+- **The Egeria Portal** has a tile named **Resource Explorer - Curation Coverage** (`re_analytics.re_curation_coverage_tile`). It is not a Trellis library tile and trellis is not installed in the Portal. The tile asks Resource Explorer's API on port 8813 for the coverage as the viewer, turns any failure into `not_established` with a reason, and its run form asks for a required `slug`. A live render of the tile is a follow-up.
 - **Other steps** an administrator installs show up as extra analyses on the resource, tagged with the stage they belong to.
 - **From Egeria**, once the owner has declared a step to Resource Explorer's engine (for example `ResourceExplorerSurvey::re-database-staleness`), starting it on a database in Egeria runs the step in Resource Explorer. The results appear as a survey report in Egeria and in the database's Understanding list, beside *Resource Explorer: derived checks*.
 
