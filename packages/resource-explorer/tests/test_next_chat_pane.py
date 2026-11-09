@@ -230,6 +230,8 @@ class TestJoinTheVoteToTheGapsLoop:
         assert "idempotency_key: turn.voteKey," in vote_fn
         assert "turn.voted = res.vote ?? value;" in vote_fn
         assert vote_fn.count("turn.voting = false;") == 2      # released on success and on failure
+        # A stored turn's key survives a reload: derived from session + exchange, not a nonce.
+        assert "`vote:${sessionId()}:${turn.exchangeId}`" in vote_fn
 
     def test_a_negative_vote_maps_to_the_disagree_verdict_gaps_dot_py_expects(self):
         chat = _chat()

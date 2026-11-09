@@ -103,6 +103,18 @@ class TestAChatVoteIsKept:
         assert (first["vote"], second["vote"]) == (1, 1)
         assert [r["vote"] for r in _answers(feedback_store)] == [1]
 
+    def test_a_vote_after_a_reload_on_a_stored_turn_is_the_same_item(self, client, feedback_store):
+        """The pane derives a stored turn's key from session + exchange, so the restored turn's vote after a page
+        reload (its page state gone) reaches the first item, not a second one."""
+        from resource_explorer.web.routes.query import _persist_turn
+        exchange_id = _persist_turn("sess-r", "q?", "a.", None)
+        key = f"vote:sess-r:{exchange_id}"
+        body = {"query_hash": "h8", "session_id": "sess-r", "exchange_id": exchange_id, "idempotency_key": key}
+        first = client.post("/api/query/feedback", json={**body, "vote": -1}).json()
+        again = client.post("/api/query/feedback", json={**body, "vote": 1}).json()
+        assert first["feedback_id"] == again["feedback_id"] and again["vote"] == -1
+        assert len(_answers(feedback_store)) == 1
+
     def test_the_hash_row_is_still_written(self, feedback_store, monkeypatch):
         monkeypatch.setattr(
             "resource_explorer.feedback_store.FeedbackStore.__init__",

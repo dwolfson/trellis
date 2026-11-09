@@ -514,7 +514,10 @@ async function vote(i, value) {
   // second request that got through is the same item on the server, which answers with the vote it kept.
   if (turn.voting || turn.voted !== undefined) return;
   turn.voting = true;
-  turn.voteKey = turn.voteKey || `vote:${voteNonce()}`;
+  // A stored turn's key is derived from its exchange, so a turn restored after a reload (no page state, thumbs
+  // back) is still the same vote on the server. Only a turn that was never stored falls back to a nonce.
+  turn.voteKey = turn.voteKey || (turn.exchangeId != null
+    ? `vote:${sessionId()}:${turn.exchangeId}` : `vote:${voteNonce()}`);
   try {
     const res = await sendFeedback(turn.queryHash, value, turn.compileId || null, {
       session_id: sessionId(), exchange_id: turn.exchangeId ?? null,
