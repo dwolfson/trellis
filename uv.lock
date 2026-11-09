@@ -24,6 +24,7 @@ members = [
     "trellis-artifact-tree",
     "trellis-auth",
     "trellis-context",
+    "trellis-feedback",
     "trellis-microflow",
     "trellis-querycache",
     "trellis-step-change-rates",
@@ -10295,6 +10296,34 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "trellis-feedback"
+version = "0.1.0"
+source = { editable = "packages/trellis-feedback" }
+dependencies = [
+    { name = "sqlalchemy" },
+]
+
+[package.optional-dependencies]
+api = [
+    { name = "fastapi" },
+]
+dev = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115.0" },
+    { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115.0" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.0" },
+]
+provides-extras = ["api", "dev"]
+
+[[package]]
 name = "trellis-microflow"
 version = "0.1.0"
 source = { editable = "packages/trellis-microflow" }
@@ -10473,6 +10502,7 @@ dev = [
     { name = "trellis-artifact-tree" },
     { name = "trellis-auth" },
     { name = "trellis-context" },
+    { name = "trellis-feedback", extra = ["dev"] },
     { name = "trellis-microflow" },
     { name = "trellis-querycache" },
     { name = "trellis-step-change-rates" },
@@ -10498,6 +10528,7 @@ dev = [
     { name = "trellis-artifact-tree", editable = "packages/trellis-artifact-tree" },
     { name = "trellis-auth", editable = "packages/trellis-auth" },
     { name = "trellis-context", editable = "packages/trellis-context" },
+    { name = "trellis-feedback", extras = ["dev"], editable = "packages/trellis-feedback" },
     { name = "trellis-microflow", editable = "packages/trellis-microflow" },
     { name = "trellis-querycache", editable = "packages/trellis-querycache" },
     { name = "trellis-step-change-rates", editable = "packages/trellis-analytics/examples/steps/change_rates" },
