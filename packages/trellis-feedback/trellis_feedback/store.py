@@ -72,6 +72,14 @@ class NotFound(FeedbackError):
     """The item or subject named does not exist in this store."""
 
 
+def db_error_words(exc: BaseException) -> str:
+    """A database error's first line, safe to log: never its DETAIL (which can quote the whole row)
+    and never SQLAlchemy's `[SQL: ...] [parameters: ...]` suffix (which quotes the values)."""
+    orig = getattr(exc, "orig", None) or exc
+    first = (str(orig).strip().splitlines() or [""])[0].strip()
+    return f"{type(orig).__name__}: {first}" if first else type(orig).__name__
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -204,12 +212,7 @@ class FeedbackStore:
                     return existing, False
         item.id = uuid.uuid4().hex
         item.created_at = _now()
-        row = {f: getattr(item, f) for f in _ITEM_FIELDS}
-        row.update(id=item.id, created_at=item.created_at, idempotency_key=idempotency_key,
-                   extra=json.dumps(item.extra or {}, sort_keys=True))
-        for k, v in row.items():          # NOT NULL text columns: a None from a caller is ""
-            if v is None and k not in ("vote", "rating", "idempotency_key"):
-                row[k] = ""
+        row = self._row(item, idempotency_key)
         try:
             with self.engine.begin() as conn:
                 conn.execute(insert(self.items).values(**row))
@@ -221,6 +224,63 @@ class FeedbackStore:
                     return existing, False
             raise
         return item, True
+
+    @staticmethod
+    def _row(item: FeedbackItem, idempotency_key: str | None) -> dict[str, Any]:
+        row = {f: getattr(item, f) for f in _ITEM_FIELDS}
+        row.update(id=item.id, created_at=item.created_at, idempotency_key=idempotency_key,
+                   extra=json.dumps(item.extra or {}, sort_keys=True))
+        for k, v in row.items():          # NOT NULL text columns: a None from a caller is ""
+            if v is None and k not in ("vote", "rating", "idempotency_key"):
+                row[k] = ""
+        return row
+
+    def import_item(self, item: FeedbackItem, *, status: str | None = None, note: str = "",
+                    actor: str = "") -> bool:
+        """Store an item that already exists elsewhere, keeping its `id` and `created_at`.
+
+        For moving an app's existing feedback into the library (RE's legacy `feedback` table, EA's
+        JSONL files). Returns True if this call wrote it, False if this app already holds an item
+        with that id, so running an import twice writes nothing the second time. An id held by
+        another app's item is refused rather than reported as already imported.
+
+        `status`, when given and not `new`, is written as the item's first triage event in the
+        SAME transaction as the item: a crash between the two cannot leave an imported item that
+        reads as `new` and is then skipped by every later run. Two imports of one id racing each
+        other both try the insert; the primary key lets exactly one win, and only the winner gets
+        True and writes the event.
+        """
+        item.app = self.app
+        item.user_id = item.user_id or ""
+        item.validate()
+        item.id = (item.id or "").strip()
+        if not item.id or len(item.id) > 36:
+            raise FeedbackError(f"an imported item needs an id of 1-36 characters, got {item.id!r}")
+        item.created_at = (item.created_at or "").strip()
+        if not item.created_at or len(item.created_at) > 40:
+            raise FeedbackError(f"an imported item needs created_at, got {item.created_at!r}")
+        if status is not None and status not in STATUSES:
+            raise FeedbackError(f"status must be one of {list(STATUSES)}, got {status!r}")
+        i = self.items
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(insert(i).values(**self._row(item, None)))
+                if status and status != "new":
+                    self._append_event(conn, {
+                        "app": self.app, "source": ITEM_SOURCE, "ref_id": item.id, "status": status,
+                        "note": note or "", "actor": actor or "", "created_at": _now()})
+        except IntegrityError as exc:
+            with self.engine.connect() as conn:
+                owner = conn.execute(select(i.c.app).where(i.c.id == item.id)).scalar_one_or_none()
+            if owner == self.app:
+                return False
+            if owner is not None:
+                raise FeedbackError(f"id {item.id!r} is already used by another app's item") from None
+            # Not a duplicate id at all (a NOT NULL or CHECK failure, say): say what the database said,
+            # but only its first line. Postgres adds "DETAIL: Failing row contains (...)", the whole
+            # row with its email and message; that stays on __cause__, out of anything logged.
+            raise FeedbackError(f"item {item.id!r} was not stored: {db_error_words(exc)}") from exc
+        return True
 
     def _by_key(self, user_id: str, key: str) -> FeedbackItem | None:
         i = self.items

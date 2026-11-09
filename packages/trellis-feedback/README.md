@@ -5,7 +5,8 @@ It holds ratings of chat answers and page-level product reports. Admins set thei
 an append-only log of triage events.
 
 Design and the project owner's decisions: [`docs/trellis-feedback-extraction.md`](../../docs/trellis-feedback-extraction.md).
-This is 0.1, the library only. Neither app uses it yet: RE adopts it next, then EA (§6 of that doc).
+RE keeps its page feedback here since 0.2 (`resource_explorer/feedback_store.py`); its chat votes,
+Admin triage controls and EA follow (§6 of that doc).
 
 ## Why this package exists
 
@@ -55,6 +56,12 @@ store.triage(item.id, "triaged", note="looking at it", actor="erinoverview")
 store.list(status="triaged")              # each row carries its current "triage" state
 store.triage("42", "known_issue", source="resource_feedback")
 store.delete_item(item.id)                # removes its events too
+
+# Moving existing feedback in: keeps the id and created_at; False if this app already has it,
+# so a re-run writes nothing. Append any old status with triage() only after a True.
+if store.import_item(FeedbackItem(app="resource-explorer", kind="product", message="old",
+                                  id=legacy_id, created_at="2026-08-01T10:00:00+00:00")):
+    store.triage(legacy_id, "triaged", actor="migration")
 ```
 
 ### Routes (`api` extra)

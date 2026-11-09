@@ -20,4 +20,4 @@ __all__ = [
     "ITEM_SOURCE", "KINDS", "PRODUCT_CATEGORIES", "STATUSES", "VOTES",
     "FeedbackError", "FeedbackItem", "FeedbackStore", "NotFound", "TriageEvent", "TriageState",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

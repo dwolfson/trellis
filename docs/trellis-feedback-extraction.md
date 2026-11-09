@@ -207,6 +207,10 @@ Each step is its own PR, with tests.
    Q5 and Q6 (§7), which fix the schema, are decided: store the question, answer and user,
    keep items until deleted, and delete an item together with its triage history.
 3. **RE adoption:**
+
+   Done so far: page feedback is stored in the library, and the legacy `feedback` table is copied
+   in once (trellis-feedback 0.2 `import_item`; the old table is kept). Admin's PATCH takes all six
+   statuses, a note, and records who made the change.
    - migrate `feedback`;
    - record chat votes as `answer` items;
    - add a status control, notes and a filter to Admin → Feedback;
