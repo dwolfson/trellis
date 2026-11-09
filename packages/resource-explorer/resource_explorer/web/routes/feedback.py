@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from trellis_feedback import FeedbackError
 
 from resource_explorer.config import get_config
 from resource_explorer.feedback_store import (
-    FeedbackEntry,
-    FeedbackStore,
     VALID_CATEGORIES,
     VALID_TRIAGE_STATUSES,
+    FeedbackEntry,
+    FeedbackStore,
 )
 from resource_explorer.web.admin_auth import is_admin_request
 
@@ -39,6 +40,8 @@ class FeedbackSubmission(BaseModel):
 
 class TriageUpdate(BaseModel):
     triage_status: str
+    #: Kept on the triage event, never overwritten: each change carries its own note.
+    note: str = ""
 
 
 def _require_admin(request: Request) -> None:
@@ -70,7 +73,11 @@ async def submit_feedback(payload: FeedbackSubmission) -> dict:
         viewport=payload.viewport,
         locale=payload.locale,
     )
-    store.add(entry)
+    try:
+        store.add(entry)
+    except FeedbackError as exc:
+        # e.g. nothing said at all: no message, rating or category.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok"}
 
 
@@ -112,10 +119,28 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
             status_code=400, detail=f"Invalid triage_status: {payload.triage_status!r}"
         )
     store = FeedbackStore()
-    updated = store.update_triage_status(feedback_id, payload.triage_status)
+    updated = store.update_triage_status(
+        feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request))
     if updated is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")
     return updated
+
+
+@router.get("/{feedback_id}")
+async def get_feedback(feedback_id: str, request: Request) -> dict:
+    """One item with its current state and every triage event, oldest first."""
+    _require_admin(request)
+    found = FeedbackStore().get(feedback_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Feedback record not found")
+    return found
+
+
+def _actor(request: Request) -> str:
+    """Who made a triage change: the signed-in admin, or "admin-token" for the shared token."""
+    from resource_explorer.web.admin_auth import _signed_in_sub
+
+    return _signed_in_sub(request) or "admin-token"
 
 
 # ── Per-answer feedback ──────────────────────────────────────────────────
@@ -203,7 +228,10 @@ async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
             status_code=400,
             detail=f"verdict must be one of {sorted(VALID_VERDICTS)}, got {payload.verdict!r}",
         )
-    from resource_explorer.surveyors.question_catalog_reader import find_question, find_question_by_id
+    from resource_explorer.surveyors.question_catalog_reader import (
+        find_question,
+        find_question_by_id,
+    )
 
     entity_type = (payload.entity_type or "repo").strip()
     question = (payload.question or "").strip()

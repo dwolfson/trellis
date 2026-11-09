@@ -108,6 +108,16 @@ async def _lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).warning("could not build the Egeria mount map", exc_info=True)
 
+    # Page feedback lives in trellis-feedback since 2026-11-09: open the store once here, which copies any
+    # legacy `feedback` rows it does not hold yet (feedback_store.py). Off the loop, and never fails the start:
+    # a store that cannot open now is retried by the first request that needs it.
+    try:
+        from resource_explorer.feedback_store import FeedbackStore
+
+        await _asyncio.to_thread(FeedbackStore)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("could not open the feedback store at startup", exc_info=True)
+
     worker_stop = None
     if _embed_worker_enabled():
         from resource_explorer.worker import start_embedded_worker

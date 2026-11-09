@@ -1,9 +1,18 @@
-"""Tests for FeedbackStore — insert, list, filter, stats, triage update."""
+"""Tests for FeedbackStore — insert, list, filter, stats, triage update, and the move of the legacy
+`feedback` table into trellis-feedback (docs/trellis-feedback-extraction.md §6 step 3)."""
 from __future__ import annotations
 
-import pytest
+import sqlite3
 
-from resource_explorer.feedback_store import FeedbackEntry, FeedbackStore
+import pytest
+from trellis_feedback import FeedbackError
+
+from resource_explorer.feedback_store import (
+    MIGRATION_ACTOR,
+    VALID_TRIAGE_STATUSES,
+    FeedbackEntry,
+    FeedbackStore,
+)
 
 
 @pytest.fixture
@@ -57,7 +66,7 @@ class TestStats:
     def test_stats_counts_and_average(self, store):
         store.add(FeedbackEntry(rating=4))
         store.add(FeedbackEntry(rating=2))
-        store.add(FeedbackEntry(rating=None, wants_response=True))
+        store.add(FeedbackEntry(rating=None, message="call me", wants_response=True))
         stats = store.stats()
         assert stats["total"] == 3
         assert stats["new"] == 3
@@ -79,3 +88,119 @@ class TestTriageUpdate:
         entry = store.add(FeedbackEntry(message="x"))
         with pytest.raises(ValueError):
             store.update_triage_status(entry.id, "bogus")
+
+
+class TestTheLibrarysWorkflow:
+    def test_all_six_statuses_are_accepted(self, store):
+        assert VALID_TRIAGE_STATUSES == {"new", "triaged", "known_issue", "actioned", "deferred", "not_an_issue"}
+        entry = store.add(FeedbackEntry(message="x"))
+        for status in sorted(VALID_TRIAGE_STATUSES):
+            assert store.update_triage_status(entry.id, status)["triage_status"] == status
+
+    def test_each_change_keeps_its_note_and_actor(self, store):
+        entry = store.add(FeedbackEntry(message="x"))
+        store.update_triage_status(entry.id, "triaged", note="looking", actor="erinoverview")
+        store.update_triage_status(entry.id, "known_issue", note="dup of #12", actor="peterprofile")
+        got = store.get(entry.id)
+        assert got["triage_status"] == "known_issue"
+        assert [(e["status"], e["note"], e["actor"]) for e in got["history"]] == [
+            ("triaged", "looking", "erinoverview"), ("known_issue", "dup of #12", "peterprofile")]
+
+    def test_a_submission_with_nothing_said_is_refused(self, store):
+        with pytest.raises(FeedbackError):
+            store.add(FeedbackEntry(wants_response=True))
+        assert store.list() == []
+
+    def test_an_unknown_category_filter_matches_nothing(self, store):
+        store.add(FeedbackEntry(category="bug", message="x"))
+        assert store.list(category="nonexistent-category") == []
+
+
+LEGACY_SCHEMA = """
+    CREATE TABLE feedback (
+        id TEXT PRIMARY KEY, session_id TEXT DEFAULT '', page TEXT DEFAULT '',
+        element_guid TEXT DEFAULT '', rating INTEGER, category TEXT DEFAULT '',
+        message TEXT DEFAULT '', email TEXT DEFAULT '', wants_response INTEGER DEFAULT 0,
+        consent_to_contact INTEGER DEFAULT 0, build_version TEXT DEFAULT '',
+        user_agent TEXT DEFAULT '', viewport TEXT DEFAULT '', locale TEXT DEFAULT '',
+        triage_status TEXT DEFAULT 'new', created_at TEXT NOT NULL
+    )
+"""
+
+
+def _legacy_db(path, rows):
+    """A database as RE left it before the move: only the legacy `feedback` table, as the old
+    store created it."""
+    conn = sqlite3.connect(path)
+    conn.execute(LEGACY_SCHEMA)
+    conn.executemany(
+        "INSERT INTO feedback (id, page, rating, category, message, wants_response, triage_status, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+
+class TestLegacyMigration:
+    ROWS = (
+        ("11111111-1111-4111-8111-111111111111", "/scouting", 5, "praise", "lovely", 0, "new",
+         "2026-08-01T10:00:00.000001"),
+        ("22222222-2222-4222-8222-222222222222", "/curate", None, "bug", "broken", 1, "triaged",
+         "2026-09-01T10:00:00.000001"),
+        ("33333333-3333-4333-8333-333333333333", "/admin", 2, "confusing", "huh", 0, "actioned",
+         "2026-10-01T10:00:00.000001"),
+    )
+
+    def _open(self, path):
+        from resource_explorer import feedback_store as fs
+        fs._stores.pop(f"sqlite:///{path}", None)   # a new process, as far as the copy can tell
+        return FeedbackStore(db_path=str(path))
+
+    def test_legacy_rows_arrive_with_their_ids_times_and_statuses(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, self.ROWS)
+        rows = {r["id"]: r for r in self._open(path).list()}
+        assert set(rows) == {r[0] for r in self.ROWS}
+        old = rows["22222222-2222-4222-8222-222222222222"]
+        assert (old["page"], old["category"], old["message"], old["wants_response"]) == ("/curate", "bug", "broken", True)
+        assert old["created_at"] == "2026-09-01T10:00:00.000001+00:00"
+        assert {i: r["triage_status"] for i, r in rows.items()} == {r[0]: r[6] for r in self.ROWS}
+        assert old["triage"]["actor"] == MIGRATION_ACTOR
+
+    def test_a_second_run_writes_nothing(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, self.ROWS)
+        first = self._open(path)
+        before = [(r["id"], r["triage"]["events"]) for r in first.list()]
+        second = self._open(path)
+        assert [(r["id"], r["triage"]["events"]) for r in second.list()] == before
+        assert second.stats()["total"] == 3
+        # A triage change made after the copy survives a restart unchanged.
+        second.update_triage_status(self.ROWS[0][0], "deferred", actor="erinoverview")
+        third = self._open(path)
+        assert third.get(self.ROWS[0][0])["triage_status"] == "deferred"
+        assert len(third.get(self.ROWS[1][0])["history"]) == 1
+
+    def test_legacy_and_new_feedback_list_newest_first_together(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, self.ROWS)
+        store = self._open(path)
+        store.add(FeedbackEntry(message="today"))
+        assert [r["message"] for r in store.list()] == ["today", "huh", "broken", "lovely"]
+
+    def test_the_legacy_table_is_left_in_place(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, self.ROWS)
+        self._open(path)
+        conn = sqlite3.connect(path)
+        assert conn.execute("SELECT COUNT(*) FROM feedback").fetchone()[0] == 3
+        conn.close()
+
+    def test_a_row_the_library_refuses_is_left_behind_not_fatal(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, [*self.ROWS,
+                         ("44444444-4444-4444-8444-444444444444", "/x", None, "", "", 0, "new", "2026-10-02T00:00:00")])
+        store = self._open(path)
+        assert len(store.list()) == 3
+
+    def test_a_database_with_no_legacy_table_is_fine(self, tmp_path):
+        assert self._open(tmp_path / "fresh.db").list() == []

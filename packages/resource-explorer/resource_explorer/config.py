@@ -553,9 +553,10 @@ class WebUIConfig(BaseSettings):
 class FeedbackConfig(BaseSettings):
     """Product/UI feedback storage + minimal admin gating.
 
-    Kept as its own database file (separate from the project/resource
-    registry) since feedback is an operationally distinct support/triage
-    workflow — see resource_explorer/feedback_store.py.
+    Kept apart from the project/resource registry, since feedback is an
+    operationally distinct support/triage workflow. Since 2026-11-09 the rows
+    live in the shared trellis-feedback tables, on this URL's search_path —
+    see resource_explorer/feedback_store.py.
 
     admin_token / admin_users are NOT a general auth system — see
     resource_explorer/web/admin_auth.py. Leaving both unset means every
