@@ -54,6 +54,9 @@ def chunk_boost(positive: int, neutral: int, total: int) -> float:
 
 
 _shared: dict[str, MetricsCollector] = {}
+#: Bumped by every vote recorded in this process, through any collector instance: a cached chunk_boosts read
+#: older than the latest vote is not reused (the vote route builds its own collector).
+_vote_generation = {"n": 0}
 _shared_lock = threading.Lock()
 
 
@@ -239,6 +242,13 @@ class MetricsCollector:
         than inferred from a sign check. See test_metrics_collector_neutral_feedback.py
         for the regression this guards.
         """
+        try:
+            self._record_feedback(query_hash, feedback, compile_id)
+        finally:
+            # After the write commits, so no search in between caches a read without this vote.
+            _vote_generation["n"] += 1
+
+    def _record_feedback(self, query_hash: str, feedback: int, compile_id: str | None) -> None:
         with self._conn() as conn:
             # Update query_log feedback column
             conn.execute(
@@ -303,8 +313,23 @@ class MetricsCollector:
             """).fetchone()
         return _numeric(dict(row)) if row else {}
 
+    #: Seconds a read of chunk_feedback is reused (read-back P3: every search read the whole table). A vote
+    #: recorded through this collector clears it at once, so this process never serves a score older than its
+    #: own last vote; another process's vote shows within this long.
+    BOOST_TTL_SECONDS = 30.0
+
     def chunk_boosts(self) -> dict[str, float]:
         """`chunk_ref` -> retrieval score adjustment, for every chunk with a vote (chunk_boost)."""
+        cached = getattr(self, "_boost_cache", None)
+        generation = _vote_generation["n"]
+        if (cached is not None and cached[1] == generation
+                and time.monotonic() - cached[0] < self.BOOST_TTL_SECONDS):
+            return cached[2]
+        boosts = self._read_chunk_boosts()
+        self._boost_cache = (time.monotonic(), generation, boosts)
+        return boosts
+
+    def _read_chunk_boosts(self) -> dict[str, float]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT chunk_ref, positive_count, neutral_count, total_count "

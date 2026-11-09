@@ -124,3 +124,56 @@ def test_a_metrics_outage_keeps_retrieval_working_and_says_so(client, caplog, mo
         assert _scores() == pytest.approx(RAW)
     assert "chunk feedback boosts unavailable" in caplog.text
     assert "DETAIL" not in caplog.text
+
+
+def test_two_concurrent_turns_on_one_session_agent_keep_their_own_chunks(client):
+    """Read-back P3: the refs are the route's own record of its turn, not an attribute of the session agent, so two
+    overlapping turns on one agent cannot swap them."""
+    import threading
+
+    from resource_explorer.agents.conversation_agent import ConversationAgent
+
+    barrier = threading.Barrier(2)
+
+    class _PerCollection(_FakeStore):
+        def search(self, collection, query_text=None, top_k=5, **kw):
+            return [SearchResult(id=f"{collection}-chunk", score=0.9, text="t")]
+
+    def _overlapping(self, prompt):
+        from resource_explorer.agents.tools import vector_search_raw
+        coll = "coll_a" if "alpha" in prompt else "coll_b"
+        barrier.wait(timeout=10)          # both turns are inside the agent at once
+        vector_search_raw("q", coll)
+        barrier.wait(timeout=10)
+        return "ok"
+
+    agent = ConversationAgent()
+    logs = {"alpha": {}, "beta": {}}
+    with patch("resource_explorer.vector_store_pg._get_shared_store", return_value=_PerCollection()), \
+         patch.object(ConversationAgent, "_run_persistent", _overlapping):
+        threads = [threading.Thread(target=agent.handle, args=(f"question {k}",), kwargs={"turn_log": logs[k]})
+                   for k in logs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+    assert logs["alpha"]["refs"] == ["coll_a:coll_a-chunk"]
+    assert logs["beta"]["refs"] == ["coll_b:coll_b-chunk"]
+
+
+def test_boosts_are_read_once_until_a_vote_lands(client, monkeypatch):
+    """Read-back P3: chunk_boosts no longer reads the whole table on every search; a vote recorded through ANY
+    collector in the process makes the next read fresh."""
+    from resource_explorer.observability.metrics_collector import MetricsCollector, shared_collector
+
+    collector = shared_collector()
+    reads = []
+    real = MetricsCollector._read_chunk_boosts
+    monkeypatch.setattr(MetricsCollector, "_read_chunk_boosts", lambda self: reads.append(1) or real(self))
+    collector._boost_cache = None
+    collector.chunk_boosts()
+    collector.chunk_boosts()
+    assert len(reads) == 1
+    MetricsCollector(database_url=collector.database_url).record_feedback("no-such-hash", 1)
+    collector.chunk_boosts()
+    assert len(reads) == 2

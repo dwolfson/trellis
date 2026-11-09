@@ -248,9 +248,14 @@ class ConversationAgent(BaseExplorerAgent):
         resource_type: str | None = None,
         **kwargs,
     ) -> str:
-        from resource_explorer.agents.tools import set_current_question
+        from resource_explorer.agents.tools import set_current_question, use_turn_log
 
         set_current_question(query)
+        # The caller's own record of this turn (the chat route's), so what is logged is THIS turn's, never another
+        # concurrent turn's on the same session agent (read-back P3).
+        turn_log = kwargs.get("turn_log")
+        if turn_log is not None:
+            use_turn_log(turn_log)
         # The journal tool resolves the session and the open investigation from here, never from model arguments.
         from resource_explorer.agents import journal_tool
 
@@ -258,10 +263,6 @@ class ConversationAgent(BaseExplorerAgent):
         self._journal_proposal = None
         self._journal_written = []
         self._answered_from = None
-        # For the chat route's query_log row (what a vote on this answer scores): the chunks retrieval returned
-        # this turn, and whether the RAG fallback already logged the turn itself.
-        self._last_chunk_refs: list[str] = []
-        self._logged_by_rag = False
         if self.allow_writes and journal_tool.is_journal_request(query):
             # A verb the pane has a control for goes to the tool, not to the model: a small model answered "I don't
             # know" to "save this to the journal". Confirm stays with the person.
@@ -341,11 +342,10 @@ class ConversationAgent(BaseExplorerAgent):
                 from resource_explorer.rag_system import RAGSystem
 
                 self._rag = RAGSystem()
-            self._logged_by_rag = True      # RAGSystem.query writes its own query_log row, with its chunk refs
+            if turn_log is not None:
+                turn_log["logged_by_rag"] = True    # RAGSystem.query writes its own query_log row
             return self._rag.query(query, resource_slug=slug)
-        from resource_explorer.agents.tools import turn_chunk_refs, turn_fact_lead
-
-        self._last_chunk_refs = turn_chunk_refs()
+        from resource_explorer.agents.tools import turn_fact_lead
 
         lead = turn_fact_lead()
         return f"{lead}\n\n{answer}" if lead else answer

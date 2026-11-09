@@ -1501,6 +1501,12 @@ def set_current_question(question: str) -> None:
     _turn_chunk_refs.set([])
 
 
+def use_turn_log(turn_log: dict) -> None:
+    """Collect this turn's retrieved chunks into `turn_log["refs"]`, a list the caller owns: the chat route reads
+    its own record rather than an attribute of a session agent another turn may be using."""
+    _turn_chunk_refs.set(turn_log.setdefault("refs", []))
+
+
 def note_retrieved(results) -> None:
     """Record search results as this turn's retrieved chunks (no-op outside a chat turn)."""
     refs = _turn_chunk_refs.get()
