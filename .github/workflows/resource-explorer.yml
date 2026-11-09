@@ -242,3 +242,11 @@ jobs:
         # `[dev]` adds papermill + a kernel for the notebook host; the spec-document test loads the Advisor's
         # parser by path (it needs only pyegeria + md_processing, not the Advisor's install).
         run: uv run --with-editable '../trellis-analytics[dev]' pytest ../trellis-analytics/tests -q --no-header -rs
+
+      - name: Shared feedback library tests (trellis-feedback)
+        # Every store test runs twice: on temp SQLite, and on this job's Postgres in a schema with a random name
+        # (tf_test_*) that the fixture drops afterwards, so it never meets the resource_explorer schema's tables.
+        # A workspace member, so it is already installed; [dev] adds fastapi + httpx for the router tests.
+        env:
+          TRELLIS_FEEDBACK_TEST_PG_URL: postgresql://egeria_advisor:advisor@localhost:5442/egeria_advisor
+        run: uv run --with-editable '../trellis-feedback[dev]' pytest ../trellis-feedback/tests -q --no-header -rs

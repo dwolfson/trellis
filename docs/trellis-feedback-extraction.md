@@ -1,6 +1,6 @@
 # Trellis-level feedback — one store and one triage workflow for both apps
 
-**Status: proposal, 2026-11-09. Not built. All six open questions in §7 were decided by the project owner on 2026-11-09.** It was written because the project owner asked
+**Status: proposal, 2026-11-09. Not built. All seven open questions in §7 were decided by the project owner on 2026-11-09.** It was written because the project owner asked
 for egeria-advisor-style feedback status in Resource Explorer's Admin → Feedback, and then
 asked that it be done at the Trellis level, since Egeria Advisor has the same needs. Each
 decision is recorded under its question in §7. Read it alongside
@@ -270,3 +270,12 @@ Each question keeps the recommendation it was asked with, followed by the decisi
    **Decision (project owner, 2026-11-09):** keep items until they are deleted; no automatic
    expiry for now, to be revisited before any public deployment. Deleting an item removes the
    item, its text and all of its triage events. 0.1 provides an admin-only delete.
+7. **A referenced row deleted outside the library.** Q6 makes deleting a library item remove its
+   triage events. But RE can delete a `resource_feedback` row itself, without going through the
+   library, and the library would still hold that row's events. Raised by the architect after
+   the six decisions.
+
+   **Decision (project owner, 2026-11-09):** keep them, shown as "item gone (`source`, `id`)",
+   until an admin deletes them through the library's delete route. RE's own delete does not
+   call the library. 0.1 tests both paths: deleting a library item, and deleting the external
+   row.
