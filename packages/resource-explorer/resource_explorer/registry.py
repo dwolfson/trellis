@@ -6402,6 +6402,26 @@ class ProjectRegistry:
             ).fetchall()
         return [self._with_author(dict(r)) for r in rows]
 
+    def get_resource_feedback(self, feedback_id: str) -> dict | None:
+        """One resource_feedback row by id, or None."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM resource_feedback WHERE id = ?", (str(feedback_id),)).fetchone()
+        return self._with_author(dict(row)) if row else None
+
+    def resource_feedback_ids_present(self, ids: list[str]) -> set[str]:
+        """Which of `ids` are still resource_feedback rows. Admin's triage of these rows lives in trellis-feedback
+        by reference (feedback_store.py); an id with triage events but no row is shown as "item gone" (Q7)."""
+        ids = [str(i) for i in ids if str(i)]
+        present: set[str] = set()
+        with self._conn() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                rows = conn.execute(
+                    f"SELECT id FROM resource_feedback WHERE id IN ({', '.join('?' * len(chunk))})", tuple(chunk)
+                ).fetchall()
+                present.update(str(r["id"]) for r in rows)
+        return present
+
     def count_all_resource_feedback(self) -> dict:
         """Totals for the Admin header: how much feedback exists, and on how
         many distinct resources. Both, because "40 items" and "40 items across

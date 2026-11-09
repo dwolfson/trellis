@@ -400,19 +400,27 @@ def list_all_feedback(
     from resource_explorer.feedback_store import VALID_TRIAGE_STATUSES
     from trellis_feedback import STATUSES
 
-    # `status`: a triage status (trellis-feedback's six). Page and answer items have one; Curate's
-    # resource_feedback rows have none yet (§6 step 3 part D), so a status filter leaves them out rather than
-    # pretending they are `new`.
+    # `status`: a triage status (trellis-feedback's six). Page and answer items carry one; Curate's
+    # resource_feedback rows carry one by reference (part D: events under source "resource_feedback").
     status = (status or "").strip()
     if status and status not in VALID_TRIAGE_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {list(STATUSES)}, got {status!r}")
 
     reg = _registry()
-    resource_rows = [] if status else reg.list_all_resource_feedback(
-        limit=limit, entity_type=entity_type, category=category)
+    page_store = FeedbackStore()
+    # A resource row's status is not in its own table, so the status filter is applied after reading. It reads
+    # more rows than `limit` when a status is asked for, so a filtered page is not cut short by rows it then drops.
+    resource_rows = reg.list_all_resource_feedback(
+        limit=max(limit, 2000) if status else limit, entity_type=entity_type, category=category)
+    states = page_store.resource_states([r["id"] for r in resource_rows])
+    for r in resource_rows:
+        r["triage"] = states.get(str(r["id"])) or {"status": "new", "note": "", "actor": "", "updated_at": "",
+                                                   "events": 0}
+        r["triage_status"] = r["triage"]["status"]
+    if status:
+        resource_rows = [r for r in resource_rows if r["triage_status"] == status][:limit]
     resource_counts = reg.count_all_resource_feedback()
 
-    page_store = FeedbackStore()
     # entity_type has no meaning for page-level feedback — it was never
     # recorded against a resource at all. A filter on it must exclude every
     # page row, not silently ignore the filter and show them regardless.
@@ -447,6 +455,9 @@ def list_all_feedback(
             "answer": {"total": page_store.count(kind="answer")},
         },
         "filtered": bool(entity_type or category or source or status),
+        # Q7: Curate rows deleted since they were triaged. Their history is kept until an admin clears it
+        # (DELETE /api/feedback/resource_feedback/{id}); deleting a row never reaches into the feedback store.
+        "gone": page_store.gone_resource_rows(reg.resource_feedback_ids_present),
         #: The triage vocabulary, in order, so the page's status control is not a second copy of it.
         "statuses": list(STATUSES),
     }

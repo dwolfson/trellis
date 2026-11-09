@@ -136,6 +136,55 @@ async def get_feedback(feedback_id: str, request: Request) -> dict:
     return found
 
 
+# ── Curate's resource_feedback, triaged by reference (design doc §6 step 3 part D, Q2/Q7) ─────────────────
+#
+# The rows live in the registry; their status lives in trellis-feedback under source "resource_feedback". The
+# registry is asked whether the row exists before anything is appended, since the library cannot see it.
+
+
+def _resource_row(row_id: str) -> dict | None:
+    from resource_explorer.registry import ProjectRegistry
+
+    return ProjectRegistry().get_resource_feedback(row_id)
+
+
+@router.patch("/resource_feedback/{row_id}")
+async def triage_resource_feedback(row_id: str, payload: TriageUpdate, request: Request) -> dict:
+    """Set the status of one Curate feedback row (appends an event; the row itself is not touched)."""
+    _require_admin(request)
+    if payload.triage_status not in VALID_TRIAGE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid triage_status: {payload.triage_status!r}")
+    row = _resource_row(row_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Resource feedback row not found")
+    out = FeedbackStore().triage_resource(
+        row_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request))
+    return {**row, **out, "triage_status": out["triage"]["status"], "source": "resource"}
+
+
+@router.get("/resource_feedback/{row_id}")
+async def get_resource_feedback_triage(row_id: str, request: Request) -> dict:
+    """One Curate feedback row with its status and history. A row that is gone but still has events is returned
+    with `gone: true` (Q7); one with neither is a 404."""
+    _require_admin(request)
+    row = _resource_row(row_id)
+    out = FeedbackStore().resource_triage(row_id)
+    if row is None and not out["history"]:
+        raise HTTPException(status_code=404, detail="Resource feedback row not found")
+    return {**(row or {"id": row_id}), **out, "triage_status": out["triage"]["status"],
+            "source": "resource", "gone": row is None}
+
+
+@router.delete("/resource_feedback/{row_id}")
+async def clear_gone_resource_feedback(row_id: str, request: Request) -> dict:
+    """Clear the triage history of a Curate feedback row that no longer exists (an "item gone" entry). Refused
+    with 409 while the row exists: its history is the record of how it was handled."""
+    _require_admin(request)
+    if _resource_row(row_id) is not None:
+        raise HTTPException(status_code=409, detail="The row still exists; only a gone row's history is cleared")
+    return {"cleared": FeedbackStore().clear_resource_events(row_id)}
+
+
 def _actor(request: Request) -> str:
     """Who made a triage change: the signed-in admin, or "admin-token" for the shared token."""
     from resource_explorer.web.admin_auth import _signed_in_sub

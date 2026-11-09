@@ -1,7 +1,8 @@
 """Admin → Feedback triage: a status filter, a status control with a note, and each item's history.
 
-docs/trellis-feedback-extraction.md §6 step 3 part C. Page items and rated answers carry a trellis-feedback
-status (six, Q1); Curate's resource_feedback rows do not until part D, so a status filter leaves them out.
+docs/trellis-feedback-extraction.md §6 step 3 parts C and D. Page items and rated answers carry a trellis-feedback
+status (six, Q1); Curate's resource_feedback rows carry one by reference (Q2), and a deleted one that was triaged is
+listed as "item gone" until an admin clears its history (Q7).
 """
 from __future__ import annotations
 
@@ -49,13 +50,13 @@ def _seed(store):
     page = store.add(FeedbackEntry(page="/scouting", category="bug", message="broken"))
     other = store.add(FeedbackEntry(page="/curate", category="praise", message="nice"))
     answer_id, _ = store.add_answer(vote=-1, question="what changed?")
-    ProjectRegistry().add_resource_feedback("repo", "r1", 4, "quality", "solid")
-    return page.id, other.id, answer_id
+    resource = ProjectRegistry().add_resource_feedback("repo", "r1", 4, "quality", "solid")
+    return page.id, other.id, answer_id, resource["id"]
 
 
 class TestTheStatusFilter:
     def test_it_selects_page_and_answer_items_by_their_current_status(self, client, feedback_store, admin_headers):
-        page_id, other_id, answer_id = _seed(feedback_store)
+        page_id, other_id, answer_id, _ = _seed(feedback_store)
         feedback_store.update_triage_status(page_id, "known_issue")
         feedback_store.update_triage_status(answer_id, "known_issue")
         feedback_store.update_triage_status(other_id, "triaged")
@@ -63,13 +64,13 @@ class TestTheStatusFilter:
         assert {r["id"] for r in data["feedback"]} == {page_id, answer_id}
         assert data["filtered"] is True
 
-    def test_resource_feedback_has_no_status_so_a_status_filter_leaves_it_out(self, client, feedback_store,
-                                                                               admin_headers):
+    def test_an_untouched_resource_row_is_new_and_the_filter_applies_to_it(self, client, feedback_store,
+                                                                            admin_headers):
         _seed(feedback_store)
-        unfiltered = client.get("/api/curate/feedback", headers=admin_headers).json()["feedback"]
-        assert "resource" in {r["source"] for r in unfiltered}
         new_only = client.get("/api/curate/feedback?status=new", headers=admin_headers).json()["feedback"]
-        assert {r["source"] for r in new_only} == {"page", "answer"}
+        assert {r["source"] for r in new_only} == {"page", "answer", "resource"}
+        [res] = [r for r in new_only if r["source"] == "resource"]
+        assert res["triage"]["events"] == 0
 
     def test_an_unknown_status_is_a_400(self, client, feedback_store, admin_headers):
         resp = client.get("/api/curate/feedback?status=closed", headers=admin_headers)
@@ -81,7 +82,7 @@ class TestTheStatusFilter:
         assert data["statuses"] == ["new", "triaged", "known_issue", "actioned", "deferred", "not_an_issue"]
 
     def test_a_change_made_through_patch_is_what_the_listing_shows(self, client, feedback_store, admin_headers):
-        page_id, _, _ = _seed(feedback_store)
+        page_id, _, _, _ = _seed(feedback_store)
         resp = client.patch(f"/api/feedback/{page_id}", headers=admin_headers,
                             json={"triage_status": "deferred", "note": "after the release"})
         assert resp.status_code == 200, resp.text
@@ -106,7 +107,9 @@ class TestThePage:
 
     def test_save_patches_the_item_by_id_with_status_and_note(self):
         js = _feedback_js()
-        assert "fetch(`/api/feedback/${encodeURIComponent(id)}`, {\n          method: 'PATCH'" in js
+        assert "fetch(url, {\n          method: 'PATCH'" in js
+        assert "? `/api/feedback/resource_feedback/${encodeURIComponent(id)}`" in js
+        assert ": `/api/feedback/${encodeURIComponent(id)}`;" in js
         assert "JSON.stringify({ triage_status: triageStatus, note })" in js
 
     def test_a_refused_save_is_said_on_the_row(self):
@@ -123,5 +126,75 @@ class TestThePage:
         assert "data-triage-history" in js
         assert "(item.history || [])" in js
 
-    def test_resource_rows_still_say_they_have_no_status(self):
-        assert "resource_feedback has no triage workflow yet" in _feedback_js()
+    def test_every_row_has_the_control_and_gone_rows_can_be_cleared(self):
+        js = _feedback_js()
+        assert "const status = triageHtml(r, statuses);" in js
+        assert "resource_feedback has no triage workflow" not in js
+        assert "goneHtml(data.gone || [])" in js and "method: 'DELETE'" in js
+
+
+class TestCurateFeedbackByReference:
+    """Part D: a resource_feedback row's status lives in trellis-feedback under source "resource_feedback"."""
+
+    def test_a_status_change_is_kept_by_reference_and_listed(self, client, feedback_store, admin_headers):
+        *_, row_id = _seed(feedback_store)
+        resp = client.patch(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers,
+                            json={"triage_status": "known_issue", "note": "seen on two repos"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert (body["triage_status"], body["message"], body["source"]) == ("known_issue", "solid", "resource")
+        [event] = body["history"]
+        assert (event["source"], event["ref_id"], event["actor"]) == ("resource_feedback", row_id, "admin-token")
+        listed = client.get("/api/curate/feedback?status=known_issue", headers=admin_headers).json()["feedback"]
+        assert [(r["source"], r["id"]) for r in listed] == [("resource", row_id)]
+        assert listed[0]["triage"]["note"] == "seen on two repos"
+
+    def test_the_row_itself_is_not_changed(self, client, feedback_store, admin_headers):
+        from resource_explorer.registry import ProjectRegistry
+        *_, row_id = _seed(feedback_store)
+        before = ProjectRegistry().get_resource_feedback(row_id)
+        client.patch(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers,
+                     json={"triage_status": "actioned"})
+        assert ProjectRegistry().get_resource_feedback(row_id) == before
+
+    def test_a_row_that_does_not_exist_cannot_be_triaged(self, client, feedback_store, admin_headers):
+        resp = client.patch("/api/feedback/resource_feedback/no-such-row", headers=admin_headers,
+                            json={"triage_status": "triaged"})
+        assert resp.status_code == 404
+        assert feedback_store.resource_triage("no-such-row")["history"] == []
+
+    def test_triage_is_admin_only(self, client, feedback_store, admin_headers):
+        *_, row_id = _seed(feedback_store)
+        assert client.patch(f"/api/feedback/resource_feedback/{row_id}",
+                            json={"triage_status": "triaged"}).status_code == 403
+        assert client.get(f"/api/feedback/resource_feedback/{row_id}").status_code == 403
+        assert client.delete(f"/api/feedback/resource_feedback/{row_id}").status_code == 403
+
+    def test_a_deleted_row_is_listed_as_gone_with_its_history_until_cleared(self, client, feedback_store,
+                                                                             admin_headers):
+        """Q7: deleting the row (here, directly; RE's Curate tab has no delete yet) does not reach into the
+        feedback store. The history stays, shown as "item gone", until an admin clears it."""
+        from resource_explorer.registry import ProjectRegistry
+        *_, row_id = _seed(feedback_store)
+        client.patch(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers,
+                     json={"triage_status": "deferred", "note": "later"})
+        reg = ProjectRegistry()
+        with reg._conn() as conn:
+            conn.execute("DELETE FROM resource_feedback WHERE id = ?", (row_id,))
+        data = client.get("/api/curate/feedback", headers=admin_headers).json()
+        assert row_id not in {str(r.get("id")) for r in data["feedback"]}
+        [gone] = data["gone"]
+        assert (gone["ref_id"], gone["triage"]["status"], gone["triage"]["note"]) == (row_id, "deferred", "later")
+        one = client.get(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers).json()
+        assert one["gone"] is True and len(one["history"]) == 1
+        cleared = client.delete(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers)
+        assert cleared.json() == {"cleared": 1}
+        assert client.get("/api/curate/feedback", headers=admin_headers).json()["gone"] == []
+        assert client.get(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers).status_code == 404
+
+    def test_an_existing_rows_history_cannot_be_cleared(self, client, feedback_store, admin_headers):
+        *_, row_id = _seed(feedback_store)
+        client.patch(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers,
+                     json={"triage_status": "triaged"})
+        assert client.delete(f"/api/feedback/resource_feedback/{row_id}", headers=admin_headers).status_code == 409
+        assert len(feedback_store.resource_triage(row_id)["history"]) == 1

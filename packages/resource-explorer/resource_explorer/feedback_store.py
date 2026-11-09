@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 
 APP = "resource-explorer"
 #: RE's own tables whose rows Admin may triage by reference (Q2): Curate's per-resource feedback.
-EXTERNAL_SOURCES = ("resource_feedback",)
+RESOURCE_SOURCE = "resource_feedback"
+EXTERNAL_SOURCES = (RESOURCE_SOURCE,)
 LEGACY_TABLE = "feedback"
 MIGRATION_ACTOR = "migration"
 
@@ -287,3 +288,39 @@ class FeedbackStore:
         except NotFound:
             return None
         return self.get(feedback_id)
+
+    # ── Curate's resource_feedback, triaged by reference (Q2, Q7) ────────────────────────────────────────────
+    #
+    # The rows stay in the registry's resource_feedback table, with their own meaning; only their triage events
+    # live here, under source "resource_feedback". The library cannot see the registry, so a caller checks that
+    # a row exists before triaging it. A row deleted from the registry keeps its events and is reported as
+    # "item gone" until an admin clears them; deleting a row never reaches into this store.
+
+    def resource_states(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Current triage state of each resource_feedback id (`new`, no events, for an untouched one)."""
+        return {k: v.to_dict() for k, v in self.store.states([str(i) for i in ids], source=RESOURCE_SOURCE).items()}
+
+    def triage_resource(self, row_id: str, status: str, *, note: str = "", actor: str = "") -> dict[str, Any]:
+        """Append a triage event for a resource_feedback row the caller has checked exists."""
+        if status not in VALID_TRIAGE_STATUSES:
+            raise ValueError(f"Invalid triage_status: {status!r}")
+        self.store.triage(str(row_id), status, source=RESOURCE_SOURCE, note=note, actor=actor)
+        return self.resource_triage(row_id)
+
+    def resource_triage(self, row_id: str) -> dict[str, Any]:
+        """A resource_feedback row's state and every event, oldest first."""
+        return {
+            "triage": self.store.state(str(row_id), source=RESOURCE_SOURCE).to_dict(),
+            "history": [e.to_dict() for e in self.store.history(str(row_id), source=RESOURCE_SOURCE)],
+        }
+
+    def gone_resource_rows(self, present) -> list[dict[str, Any]]:
+        """resource_feedback ids that have triage events but no row any more, each with its last state.
+        `present(ids)` returns the ids the registry still holds."""
+        gone = self.store.gone(RESOURCE_SOURCE, present)
+        states = self.resource_states(gone)
+        return [{"ref_id": g, "source": RESOURCE_SOURCE, "triage": states[g]} for g in gone]
+
+    def clear_resource_events(self, row_id: str) -> int:
+        """Delete the triage events of a resource_feedback row (an admin clearing an "item gone" entry)."""
+        return self.store.delete_events(str(row_id), source=RESOURCE_SOURCE)
