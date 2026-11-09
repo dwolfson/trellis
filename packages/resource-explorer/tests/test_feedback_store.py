@@ -238,3 +238,34 @@ class TestLegacyMigration:
         assert "value out of range" in caplog.text
         assert "a@b.c" not in caplog.text and "broken" not in caplog.text
         assert f"sqlite:///{path}" in fs._stores      # cached: later requests do not re-run the copy
+
+    def test_every_legacy_column_is_carried_into_the_item(self, tmp_path):
+        """Real reports: nothing the old table held may be dropped on the way across."""
+        path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(path)
+        conn.execute(LEGACY_SCHEMA)
+        full = {
+            "id": "66666666-6666-4666-8666-666666666666", "session_id": "sess-1", "page": "/curate/repo/x",
+            "element_guid": "answer:x:Q-0001", "rating": 4, "category": "suggestion", "message": "make it bigger",
+            "email": "someone@example.org", "wants_response": 1, "consent_to_contact": 1,
+            "build_version": "0.9.1", "user_agent": "Mozilla/5.0 (X11; Linux x86_64)", "viewport": "1920x1080",
+            "locale": "en-GB", "triage_status": "triaged", "created_at": "2026-08-11T09:30:00.123456",
+        }
+        conn.execute(f"INSERT INTO feedback ({', '.join(full)}) VALUES ({', '.join('?' * len(full))})",
+                     list(full.values()))
+        conn.commit()
+        conn.close()
+        got = self._open(path).get(full["id"])
+        for col in ("session_id", "page", "element_guid", "rating", "category", "message", "email",
+                    "build_version", "user_agent", "viewport", "locale"):
+            assert got[col] == full[col], col
+        assert got["wants_response"] is True and got["consent_to_contact"] is True
+        assert got["created_at"] == "2026-08-11T09:30:00.123456+00:00"
+        assert got["triage_status"] == "triaged" and got["kind"] == "product"
+
+    def test_empty_category_or_user_agent_is_still_copied(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, [("77777777-7777-4777-8777-777777777777", "/x", None, "", "a message, no category",
+                           0, "new", "2026-10-02T00:00:00")])
+        got = self._open(path).list()
+        assert [(r["message"], r["category"], r["user_agent"]) for r in got] == [("a message, no category", "", "")]
