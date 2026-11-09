@@ -284,16 +284,22 @@ async def submit_answer_feedback(payload: AnswerFeedback) -> dict:
     # An `answer` item (since 2026-11-09; before, a product row with "[verdict]" in its message), so Admin lists it
     # with the question and who said it, beside chat votes.
     store = FeedbackStore()
+    from resource_explorer.registry import current_user_id
+
+    user_id = current_user_id()
     linked = (payload.feedback_id or "").strip()
     already = store.get(linked) if linked else None
-    if already is None or already.get("kind") != "answer":
-        from resource_explorer.registry import current_user_id
-
+    # Only the caller's own answer item, about this same resource, stands in for this verdict: a feedback_id
+    # naming someone else's item, or another resource's, is ignored and the verdict is stored as usual.
+    is_this_vote = (already is not None and already.get("kind") == "answer"
+                    and already.get("user_id", "") == user_id and already.get("slug") in ("", payload.slug))
+    if not is_this_vote:
         store.add_answer(
-            vote=VERDICT_VOTE[verdict], question=question, user_id=current_user_id(),
+            vote=VERDICT_VOTE[verdict], question=question, user_id=user_id,
             session_id=payload.session_id, entity_type=entity_type, slug=payload.slug,
             message=payload.comment or "", page=payload.page,
-            # The stable id when the catalog has one, so a reworded question does not orphan the row.
+            # The stable id when the catalog has one, so a reworded question does not orphan the row. Not a GUID,
+            # despite the field's name: "answer:<slug>:<question id>", as the page rows before it used it.
             element_guid=f"answer:{payload.slug}:{question_id or question}",
             extra={"verdict": verdict, "question_id": question_id, "analysis_id": analysis_id,
                    "origin": "questions checklist"},

@@ -487,7 +487,12 @@ def _store_answer_vote(request: FeedbackRequest) -> dict:
         )
     except FeedbackError as exc:
         return {"stored": False, "reason": str(exc)}
-    return {"stored": True, "feedback_id": feedback_id, "created": created}
+    vote = request.vote
+    if not created:
+        # A second request for a turn already voted on: the first vote stands, and the pane shows it.
+        kept = FeedbackStore().get(feedback_id)
+        vote = kept["vote"] if kept else vote
+    return {"stored": True, "feedback_id": feedback_id, "created": created, "vote": vote}
 
 
 def _code_inventory_table(query: str, resource_slug: str) -> dict | None:

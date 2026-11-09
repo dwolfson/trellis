@@ -52,11 +52,15 @@ const VOTE_WORDS = { 1: 'helpful', 0: 'partly right', '-1': 'not helpful' };
 /** An answer row's message cell: the vote, the question, any comment, and the answer folded away (it can be long). */
 function answerMessageHtml(r) {
   const who = r.user_id ? ` · ${esc(r.user_id)}` : ' · anonymous';
+  // A turn that was not stored (or too far back) keeps the text the browser sent, not the stored exchange.
+  const sent = r.extra?.text_from === 'client'
+    ? ' · <span class="text-state-warn" title="This question and answer are what the browser sent with the vote, not read from the stored chat exchange">text as sent</span>'
+    : '';
   const answer = r.response_text
     ? `<details class="mt-[2px]"><summary class="cursor-pointer text-provenance text-ink-muted">answer</summary>
         <div class="mt-[2px] max-h-[12rem] overflow-auto whitespace-pre-wrap text-provenance text-ink-muted">${esc(r.response_text)}</div></details>`
     : '';
-  return `<div><span class="text-ink">${esc(VOTE_WORDS[String(r.vote)] || String(r.vote))}</span>${who}</div>
+  return `<div><span class="text-ink">${esc(VOTE_WORDS[String(r.vote)] || String(r.vote))}</span>${who}${sent}</div>
     <div class="text-ink">Q: ${esc(r.query_text || '')}</div>
     ${r.message ? `<div class="text-ink-muted">${esc(r.message)}</div>` : ''}${answer}`;
 }
@@ -207,6 +211,7 @@ async function reload() {
       across ${counts.resource?.resources || 0} resource${(counts.resource?.resources || 0) === 1 ? '' : 's'}
       (a resource's Curate tab) + ${counts.answer?.total || 0} rated answer${(counts.answer?.total || 0) === 1 ? '' : 's'}
       (chat votes and checklist verdicts) = ${total} total. Shown together, badged by origin — not merged.
+      Checklist verdicts left before 2026-11-09 are page items whose message starts "[agree]", "[partly]" or "[disagree]".
     </p>
     ${await lookCountsHtml()}
     <div class="my-s3 flex flex-wrap items-center gap-[6px]">

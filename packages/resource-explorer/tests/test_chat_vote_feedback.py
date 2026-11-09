@@ -93,6 +93,16 @@ class TestAChatVoteIsKept:
         assert (first["created"], second["created"]) == (True, False)
         assert len(_answers(feedback_store)) == 1
 
+    def test_a_flipped_vote_on_one_turn_is_still_one_item_and_the_first_stands(self, client, feedback_store):
+        """Read-back P2: thumbs up then thumbs down on one turn (a second click that beat the first reply).
+        The key is per turn, so the server keeps one item and says which vote it kept."""
+        base = {"query_hash": "h7", "question": "q", "answer": "a", "idempotency_key": "vote:turn-7"}
+        first = client.post("/api/query/feedback", json={**base, "vote": 1}).json()
+        second = client.post("/api/query/feedback", json={**base, "vote": -1}).json()
+        assert first["feedback_id"] == second["feedback_id"]
+        assert (first["vote"], second["vote"]) == (1, 1)
+        assert [r["vote"] for r in _answers(feedback_store)] == [1]
+
     def test_the_hash_row_is_still_written(self, feedback_store, monkeypatch):
         monkeypatch.setattr(
             "resource_explorer.feedback_store.FeedbackStore.__init__",
@@ -125,10 +135,23 @@ class TestAChecklistVerdict:
         assert feedback_store.list() == []        # no longer a page (product) row
 
     def test_a_chat_vote_already_stored_is_not_stored_twice(self, client, feedback_store):
-        feedback_id, _ = feedback_store.add_answer(vote=-1, question="from chat")
+        feedback_id, _ = feedback_store.add_answer(vote=-1, question="from chat", slug="repo-v")
         resp, _ = self._post(client, verdict="disagree", feedback_id=feedback_id)
         assert resp.status_code == 200, resp.text
         assert [r["id"] for r in _answers(feedback_store)] == [feedback_id]
+
+    def test_another_users_item_does_not_stand_in_for_this_verdict(self, client, feedback_store):
+        feedback_id, _ = feedback_store.add_answer(vote=-1, question="theirs", user_id="someone-else",
+                                                   slug="repo-v")
+        resp, _ = self._post(client, feedback_id=feedback_id)
+        assert resp.status_code == 200
+        assert len(_answers(feedback_store)) == 2
+
+    def test_an_item_about_another_resource_does_not_stand_in(self, client, feedback_store):
+        feedback_id, _ = feedback_store.add_answer(vote=-1, question="q", slug="other-repo")
+        resp, _ = self._post(client, feedback_id=feedback_id)
+        assert resp.status_code == 200
+        assert len(_answers(feedback_store)) == 2
 
     def test_an_unknown_feedback_id_still_records_the_verdict(self, client, feedback_store):
         resp, _ = self._post(client, feedback_id="not-an-item")
