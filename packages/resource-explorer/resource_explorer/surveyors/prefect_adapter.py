@@ -88,14 +88,29 @@ def re_prefect_client() -> PrefectClient:
 
 async def _check_prefect_reachable_async() -> tuple[bool, str]:
     """(reachable, detail) — never raises. `detail` is the resolved API URL
-    on success, or the exception text on failure."""
+    on success, or the exception text on failure.
+
+    `PrefectClient.api_healthcheck()` does not raise when the server is down: it
+    RETURNS the exception (None on success). Until 2026-11-09 this awaited it and
+    ignored the result, so with no server at all it reported reachable, logged
+    "Prefect API reachable" at every startup, and let the dispatch gates
+    (`run_prefect_step`'s in-process path, the whole-definition gate in
+    `survey_definition_executor`) attempt Prefect against nothing."""
     config = get_config()
     try:
         async with re_prefect_client() as client:
-            await client.api_healthcheck()
-        return True, config.prefect.api_url
+            failure = await client.api_healthcheck()
     except Exception as exc:
         return False, str(exc)
+    if failure is not None:
+        return False, healthcheck_failure_words(failure)
+    return True, config.prefect.api_url
+
+
+def healthcheck_failure_words(failure: BaseException) -> str:
+    """The text for an `api_healthcheck()` failure. httpx's ConnectError text can
+    be empty, so fall back to the exception's class name rather than say nothing."""
+    return str(failure) or type(failure).__name__
 
 
 async def alog_prefect_reachability_at_startup() -> None:

@@ -20,19 +20,23 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
-from resource_explorer.surveyors.prefect_adapter import re_prefect_client
+from resource_explorer.surveyors.prefect_adapter import healthcheck_failure_words, re_prefect_client
 
 router = APIRouter()
 log = logging.getLogger(__name__)
 
 
 async def _reachable() -> tuple[bool, str]:
+    # api_healthcheck() RETURNS the connection failure rather than raising it (None
+    # on success); see prefect_adapter._check_prefect_reachable_async.
     try:
         async with re_prefect_client() as client:
-            await client.api_healthcheck()
-        return True, ""
+            failure = await client.api_healthcheck()
     except Exception as exc:  # pragma: no cover — exact exception shape depends on failure mode
         return False, str(exc)
+    if failure is not None:
+        return False, healthcheck_failure_words(failure)
+    return True, ""
 
 
 @router.get("/status")
