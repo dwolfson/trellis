@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 
 import pytest
+
 from trellis_feedback import STATUSES, FeedbackError, FeedbackItem, NotFound
 
 
@@ -316,3 +317,41 @@ class TestExternalReferences:
             make_store(external_sources=("item",))
         with pytest.raises(FeedbackError):
             make_store(external_sources=("Resource Feedback",))
+
+
+class TestPostgresLocking:
+    """The FOR KEY SHARE that `_append_event` takes on Postgres, pinned without timing (the
+    architect's 0.1 read-back). Removing it is otherwise invisible to a test: the window it closes
+    is a few statements wide. lock_timeout turns "would block" into an error instead.
+
+    Postgres only. SQLite serialises writers, which covers the same case there."""
+
+    def test_a_delete_waits_for_an_uncommitted_triage_and_then_takes_its_event(self, store):
+        if store.is_sqlite:
+            pytest.skip("Postgres row locking; SQLite serialises writers")
+        from sqlalchemy import text
+        from sqlalchemy.exc import OperationalError
+
+        item, _ = store.submit(answer())
+        row = {"app": store.app, "source": "item", "ref_id": item.id, "status": "triaged",
+               "note": "held open", "actor": "a", "created_at": "2026-11-09T00:00:00+00:00"}
+        conn_a = store.engine.connect()
+        tx_a = conn_a.begin()
+        try:
+            store._append_event(conn_a, row)               # A: triage, not yet committed
+            # B: a delete of the item row must block on A's FOR KEY SHARE. lock_timeout makes the
+            # block an error (SQLSTATE 55P03) rather than a wait; without the lock it would succeed.
+            with store.engine.connect() as conn_b:
+                with conn_b.begin():
+                    conn_b.execute(text("SET LOCAL lock_timeout = '200ms'"))
+                    with pytest.raises(OperationalError) as caught:
+                        conn_b.execute(store.items.delete().where(store.items.c.id == item.id))
+                assert getattr(caught.value.orig, "pgcode", None) == "55P03", caught.value
+            tx_a.commit()
+        finally:
+            conn_a.close()
+        # After A commits, delete_item succeeds and takes A's event with it.
+        assert [e.note for e in store.history(item.id)] == ["held open"]
+        assert store.delete_item(item.id)
+        assert store.history(item.id) == [] and store.referenced("item") == []
+

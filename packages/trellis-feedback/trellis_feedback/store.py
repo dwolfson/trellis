@@ -363,30 +363,37 @@ class FeedbackStore:
             raise FeedbackError("ref_id is required")
         row = {"app": self.app, "source": source, "ref_id": ref_id, "status": status, "note": note or "",
                "actor": actor or "", "created_at": _now()}
-        e = self.events
         with self.engine.begin() as conn:
-            if source != ITEM_SOURCE:
-                seq = conn.execute(insert(e).values(**row)).inserted_primary_key[0]
-            else:
-                # The check that the item exists and the insert are ONE statement (INSERT ... SELECT
-                # FROM the item row), so a delete_item cannot land between them and leave an orphan
-                # event (0.1 read-back P3). On Postgres the item row is also held FOR KEY SHARE until
-                # this commits, so a concurrent delete_item waits and then removes this event with
-                # the item; without the lock, its event delete could run before this insert commits.
-                # SQLite serialises writers, so the single statement is enough there.
-                i = self.items
-                cols = ["app", "source", "ref_id", "status", "note", "actor", "created_at"]
-                src = (
-                    select(*[literal(row[c], type_=Text()).label(c) for c in cols])
-                    .select_from(i)
-                    .where(and_(i.c.app == self.app, i.c.id == ref_id))
-                )
-                if not self.is_sqlite:
-                    src = src.with_for_update(read=True, key_share=True)
-                seq = conn.execute(insert(e).from_select(cols, src).returning(e.c.seq)).scalar()
-                if seq is None:
-                    raise NotFound(f"no feedback item {ref_id!r}")
+            seq = self._append_event(conn, row)
         return TriageEvent(seq=int(seq), **row)
+
+    def _append_event(self, conn: Any, row: dict[str, Any]) -> int:
+        """Insert one triage event on `conn`, inside the caller's transaction; returns its seq.
+
+        For a library item, the check that the item exists and the insert are ONE statement
+        (INSERT ... SELECT FROM the item row), so a delete_item cannot land between them and leave an
+        orphan event (0.1 read-back P3). On Postgres the item row is also held FOR KEY SHARE until
+        the caller commits, so a concurrent delete_item waits and then removes this event with the
+        item; without the lock, its event delete could run before this insert commits.
+        `test_store.py::TestPostgresLocking` pins that lock. SQLite serialises writers, so the single
+        statement is enough there. Split out from `triage` so that test can hold the transaction open.
+        """
+        e = self.events
+        if row["source"] != ITEM_SOURCE:
+            return int(conn.execute(insert(e).values(**row)).inserted_primary_key[0])
+        i = self.items
+        cols = ["app", "source", "ref_id", "status", "note", "actor", "created_at"]
+        src = (
+            select(*[literal(row[c], type_=Text()).label(c) for c in cols])
+            .select_from(i)
+            .where(and_(i.c.app == self.app, i.c.id == row["ref_id"]))
+        )
+        if not self.is_sqlite:
+            src = src.with_for_update(read=True, key_share=True)
+        seq = conn.execute(insert(e).from_select(cols, src).returning(e.c.seq)).scalar()
+        if seq is None:
+            raise NotFound(f"no feedback item {row['ref_id']!r}")
+        return int(seq)
 
     def history(self, ref_id: str, *, source: str = ITEM_SOURCE) -> list[TriageEvent]:
         self._check_source(source)
