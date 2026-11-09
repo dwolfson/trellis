@@ -83,6 +83,7 @@ The **Activity** link in the header opens the persistent activity log: "Every sc
 
 - **Column widths are resizable.** Drag the thin divider between the sidebar and main content, or between the main content and the chat rail or RFA drawer. Your chosen widths are remembered across reloads.
 - **The feedback button** (bottom-right, 💬 Feedback) is draggable if it is ever in your way; its new position is remembered.
+- **What the feedback button does with your report.** A report (a category of bug, confusing, suggestion or praise; a message; an optional rating) is stored with the page you were on, in the same shared feedback store other Trellis apps use. It is private to the team: only an admin can read it, in **Admin → Feedback**. An admin sets each report's status (new, triaged, known issue, actioned, deferred or not an issue) and may add a note; each change is kept with who made it. Sending an empty report is refused with a message. This is separate from the ratings and notes you give a resource in Curate, which go to Egeria (section 6).
 - **Keyboard:** `Enter` submits a chat message; `Esc` clears the chat input.
 
 **Not built yet in this section:** nothing; see section 10 for the whole list.

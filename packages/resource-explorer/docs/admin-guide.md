@@ -271,6 +271,12 @@ when the platform restarts (the quickstart leaves `rsa.key-id` empty, so the sig
 per restart). Browsers re-log-in; the CLI caches a session (`resource-explorer login`) and says
 `session expired at HH:MM` when it lapses.
 
+### Where page feedback is kept
+
+The 💬 Feedback button's reports are stored in the shared `trellis-feedback` library: items in `trellis_feedback_items` and one row per status change in `trellis_feedback_events`, both in the same schema as the rest of RE's tables (`resource_explorer` by default). Admin → Feedback lists them with the per-resource feedback from Curate, newest first. Setting a status takes one of six values (`new`, `triaged`, `known_issue`, `actioned`, `deferred`, `not_an_issue`), an optional note, and records the signed-in admin's user id (or `admin-token` when the shared token was used). Admins can open one report with its history at `GET /api/feedback/{id}`.
+
+Reports made before the move sat in the old `feedback` table. When the web server starts, any rows the library does not yet hold are copied across once with their original ids, times and statuses, and logged as counts only (`legacy`, `imported`, `skipped`, `events`, `refused`). The old table is left in place and nothing writes to it any more. The `trellis-feedback` package has to be installed in the server's environment, or the server does not start.
+
 ### Admin gating (who may do admin actions)
 
 There is no admin role in the Egeria sign-in. RE has one small, separate admin check, configured in `.env`
