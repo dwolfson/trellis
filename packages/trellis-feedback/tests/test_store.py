@@ -262,6 +262,101 @@ class TestTriage:
         assert store.count(kind="product") == 15
 
 
+class TestImport:
+    """import_item: moving an app's existing feedback in, keeping its id and created_at."""
+
+    LEGACY_ID = "0b6f3c1e-1111-4a2b-9c3d-123456789abc"   # a dashed uuid, 36 characters
+
+    def test_an_imported_item_keeps_its_id_and_time(self, store):
+        assert store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+        got = store.get(self.LEGACY_ID)
+        assert got.created_at == "2026-08-01T10:00:00+00:00"
+        assert got.app == "resource-explorer"
+
+    def test_a_second_import_of_the_same_id_writes_nothing(self, store):
+        assert store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+        assert store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00",
+                                         message="changed")) is False
+        assert store.count() == 1
+        assert store.get(self.LEGACY_ID).message == "the button is wrong"
+
+    def test_imported_items_sort_among_submitted_ones_by_their_own_time(self, store):
+        store.submit(product(message="today"))
+        store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00", message="old"))
+        assert [r["message"] for r in store.list()] == ["today", "old"]
+
+    def test_an_id_held_by_another_app_is_refused(self, make_store):
+        re_store, ea_store = make_store("resource-explorer"), make_store("egeria-advisor")
+        re_store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+        with pytest.raises(FeedbackError, match="another app"):
+            ea_store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+
+    @pytest.mark.parametrize("kw", [{"id": ""}, {"id": "x" * 37}, {"created_at": ""}])
+    def test_an_import_needs_an_id_and_a_time(self, store, kw):
+        base = {"id": self.LEGACY_ID, "created_at": "2026-08-01T10:00:00+00:00"}
+        base.update(kw)
+        with pytest.raises(FeedbackError):
+            store.import_item(product(**base))
+        assert store.count() == 0
+
+    def test_an_import_is_validated_like_a_submit(self, store):
+        with pytest.raises(FeedbackError):
+            store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00",
+                                      category="nonsense"))
+
+    def test_a_status_is_written_with_the_item(self, store):
+        assert store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"),
+                                 status="triaged", note="carried over", actor="migration")
+        [event] = store.history(self.LEGACY_ID)
+        assert (event.status, event.note, event.actor) == ("triaged", "carried over", "migration")
+
+    def test_new_or_no_status_writes_no_event(self, store):
+        store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"), status="new")
+        assert store.history(self.LEGACY_ID) == []
+
+    def test_a_bad_status_writes_nothing_at_all(self, store):
+        with pytest.raises(FeedbackError):
+            store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"), status="closed")
+        assert store.get(self.LEGACY_ID) is None
+
+    def test_a_failed_event_rolls_the_item_back(self, store, monkeypatch):
+        def boom(conn, row):
+            raise RuntimeError("crash between the item and its event")
+        monkeypatch.setattr(store, "_append_event", boom)
+        with pytest.raises(RuntimeError):
+            store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"), status="triaged")
+        monkeypatch.undo()
+        assert store.get(self.LEGACY_ID) is None
+        # So the next run imports it, status included.
+        assert store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"), status="triaged")
+        assert store.state(self.LEGACY_ID).status == "triaged"
+
+    def test_racing_imports_of_one_row_write_it_once_with_one_event(self, store):
+        results: list[bool] = []
+        barrier = threading.Barrier(6)
+
+        def run():
+            barrier.wait()
+            results.append(store.import_item(
+                product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"), status="actioned"))
+
+        threads = [threading.Thread(target=run) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert sorted(results) == [False] * 5 + [True]
+        assert store.count() == 1
+        assert len(store.history(self.LEGACY_ID)) == 1
+
+    def test_an_imported_item_can_be_triaged_and_deleted(self, store):
+        store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+        store.triage(self.LEGACY_ID, "triaged", actor="migration")
+        assert store.state(self.LEGACY_ID).status == "triaged"
+        assert store.delete_item(self.LEGACY_ID)
+        assert store.history(self.LEGACY_ID) == []
+
+
 class TestDeletion:
     def test_deleting_an_item_removes_its_events_too(self, store):
         # Q6: deleting removes the item, its text and its triage history.
