@@ -1099,3 +1099,51 @@ def test_http_transport_does_not_retry_once_the_answer_has_started(monkeypatch):
     with pytest.raises(TransportError, match=r"healthdata.gov stopped answering part-way .*try again later"):
         HttpTransport().get_bytes("https://healthdata.gov/x.csv", 10)
     assert len(tries) == 1
+
+
+def test_a_connect_error_and_an_unnamed_failure_say_what_to_do(monkeypatch):
+    import httpx
+
+    from resource_explorer.open_data.transport import failure_words
+
+    tries = _streaming(monkeypatch, [httpx.ConnectError("[Errno 8] nodename nor servname provided")])
+    with pytest.raises(TransportError) as got:
+        HttpTransport().get_json("https://no-such-portal.example/data.json")
+    assert len(tries) == 3
+    assert str(got.value) == ("https://no-such-portal.example/data.json: could not connect to no-such-portal.example "
+                              "(3 tries); check the portal's address, or try again later "
+                              "[[Errno 8] nodename nor servname provided]")
+    words = failure_words("https://x.example/a", httpx.TooManyRedirects("Exceeded maximum allowed redirects."))
+    assert words == ("https://x.example/a: Exceeded maximum allowed redirects.; check the portal's address, "
+                     "or try again later")
+
+
+@pytest.mark.parametrize("status, said", [
+    (404, "HTTP 404, not found at healthdata.gov; the dataset or feed may have moved"),
+    (410, "HTTP 410, not found at healthdata.gov; the dataset or feed may have moved"),
+    (403, "HTTP 403, healthdata.gov refused access; the portal may need an API key"),
+    (429, "HTTP 429, healthdata.gov is limiting how often it is asked; wait a while and try again"),
+    (503, "HTTP 503, healthdata.gov is busy or down for maintenance; try again later"),
+    (502, "HTTP 502, healthdata.gov had a server error; try again later"),
+    (400, "HTTP 400, healthdata.gov refused the request"),
+])
+def test_an_error_status_is_said_in_words_with_its_code_kept(monkeypatch, status, said):
+    import httpx
+
+    class _Stream:
+        def __enter__(self):
+            return httpx.Response(status, headers={"content-type": "application/json"}, content=b"{}")
+
+        def __exit__(self, *exc):
+            return False
+
+    calls = []
+    monkeypatch.setattr(httpx, "stream", lambda method, url, **kw: calls.append(url) or _Stream())
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: calls.append(url) or httpx.Response(status, text="x"))
+    url = "https://healthdata.gov/data.json"
+    for read in (lambda: HttpTransport().get_json(url), lambda: HttpTransport().get_bytes(url, 10),
+                 lambda: HttpTransport().get_text(url)):
+        with pytest.raises(TransportError) as got:
+            read()
+        assert str(got.value) == f"{url}: {said}"
+    assert len(calls) == 3                                   # an answered status is never retried

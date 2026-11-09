@@ -46,8 +46,25 @@ def failure_words(url: str, exc: Exception, tries: int = 1) -> str:
     if isinstance(exc, httpx.PoolTimeout):
         return f"{url}: no free connection to {host}{after}; try again later{tail}"
     if isinstance(exc, httpx.ConnectError):
-        return f"{url}: could not connect to {host}{after}{tail}"
-    return f"{url}: {detail or type(exc).__name__}"
+        return f"{url}: could not connect to {host}{after}; check the portal's address, or try again later{tail}"
+    return f"{url}: {detail or type(exc).__name__}; check the portal's address, or try again later"
+
+
+def status_words(url: str, status: int) -> str:
+    """An error status in words a person can act on. `HTTP <code>` stays in the text: it is what a log search or a
+    reader who knows HTTP looks for."""
+    host = urlparse(url).hostname or url
+    if status in (404, 410):
+        return f"{url}: HTTP {status}, not found at {host}; the dataset or feed may have moved"
+    if status in (401, 403):
+        return f"{url}: HTTP {status}, {host} refused access; the portal may need an API key"
+    if status == 429:
+        return f"{url}: HTTP 429, {host} is limiting how often it is asked; wait a while and try again"
+    if status == 503:
+        return f"{url}: HTTP 503, {host} is busy or down for maintenance; try again later"
+    if status >= 500:
+        return f"{url}: HTTP {status}, {host} had a server error; try again later"
+    return f"{url}: HTTP {status}, {host} refused the request"
 
 
 def _timeout():
@@ -95,7 +112,7 @@ class HttpTransport:
             with httpx.stream("GET", url, params=params, headers=sent, timeout=_timeout(),
                               follow_redirects=True) as resp:
                 if resp.status_code >= 400:
-                    raise TransportError(f"{url}: HTTP {resp.status_code}")
+                    raise TransportError(status_words(url, resp.status_code))
                 stated = resp.headers.get("content-length")
                 if stated and stated.isdigit() and int(stated) > MAX_JSON_BYTES:
                     raise TransportError(f"{url}: the answer is {int(stated):,} bytes, over the {MAX_JSON_BYTES:,} byte read limit; not read")
@@ -120,7 +137,7 @@ class HttpTransport:
         resp = _reaching(url, lambda: httpx.get(url, params=params, headers=sent, timeout=_timeout(),
                                                 follow_redirects=True))
         if resp.status_code >= 400:
-            raise TransportError(f"{url}: HTTP {resp.status_code}")
+            raise TransportError(status_words(url, resp.status_code))
         return resp.text
 
     def get_bytes(self, url: str, max_bytes: int, headers: dict | None = None) -> tuple[bytes, int | None, bool]:
@@ -134,7 +151,7 @@ class HttpTransport:
         def attempt() -> tuple[bytes, int | None, bool]:
             with httpx.stream("GET", url, headers=sent, timeout=_timeout(), follow_redirects=True) as resp:
                 if resp.status_code >= 400:
-                    raise TransportError(f"{url}: HTTP {resp.status_code}")
+                    raise TransportError(status_words(url, resp.status_code))
                 stated = resp.headers.get("content-length")
                 size = int(stated) if stated and stated.isdigit() else None
                 buf = bytearray()
