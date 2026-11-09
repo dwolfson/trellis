@@ -261,12 +261,15 @@ class FeedbackStore:
                     self._append_event(conn, {
                         "app": self.app, "source": ITEM_SOURCE, "ref_id": item.id, "status": status,
                         "note": note or "", "actor": actor or "", "created_at": _now()})
-        except IntegrityError:
+        except IntegrityError as exc:
             with self.engine.connect() as conn:
                 owner = conn.execute(select(i.c.app).where(i.c.id == item.id)).scalar_one_or_none()
             if owner == self.app:
                 return False
-            raise FeedbackError(f"id {item.id!r} is already used by another app's item") from None
+            if owner is not None:
+                raise FeedbackError(f"id {item.id!r} is already used by another app's item") from None
+            # Not a duplicate id at all (a NOT NULL or CHECK failure, say): say what the database said.
+            raise FeedbackError(f"item {item.id!r} was not stored: {exc.orig}") from exc
         return True
 
     def _by_key(self, user_id: str, key: str) -> FeedbackItem | None:

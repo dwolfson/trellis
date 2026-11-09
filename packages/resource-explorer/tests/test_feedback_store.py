@@ -204,3 +204,33 @@ class TestLegacyMigration:
 
     def test_a_database_with_no_legacy_table_is_fine(self, tmp_path):
         assert self._open(tmp_path / "fresh.db").list() == []
+
+    def test_an_unknown_legacy_status_is_copied_as_new_and_counted(self, tmp_path):
+        from resource_explorer import feedback_store as fs
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, [("55555555-5555-4555-8555-555555555555", "/x", None, "bug", "odd", 0, "closed",
+                           "2026-10-02T00:00:00")])
+        fs._stores.pop(f"sqlite:///{path}", None)
+        lib = fs._LibraryStore(f"sqlite:///{path}", fs.APP, external_sources=fs.EXTERNAL_SOURCES)
+        counts = fs.migrate_legacy_feedback(lib)
+        assert (counts["imported"], counts["unknown_status"], counts["events"]) == (1, 1, 0)
+        assert lib.state("55555555-5555-4555-8555-555555555555").status == "new"
+        lib.engine.dispose()
+
+    def test_a_database_error_on_one_row_is_that_row_refused_not_a_broken_store(self, tmp_path, monkeypatch):
+        from sqlalchemy.exc import DataError
+
+        from resource_explorer import feedback_store as fs
+        path = tmp_path / "legacy.db"
+        _legacy_db(path, self.ROWS)
+        bad = self.ROWS[1][0]
+        real = fs._LibraryStore.import_item
+
+        def flaky(self_, item, **kw):
+            if item.id == bad:
+                raise DataError("INSERT ...", {}, Exception("value out of range"))
+            return real(self_, item, **kw)
+        monkeypatch.setattr(fs._LibraryStore, "import_item", flaky)
+        store = self._open(path)
+        assert {r["id"] for r in store.list()} == {self.ROWS[0][0], self.ROWS[2][0]}
+        assert f"sqlite:///{path}" in fs._stores      # cached: later requests do not re-run the copy

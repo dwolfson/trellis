@@ -299,6 +299,19 @@ class TestImport:
             store.import_item(product(**base))
         assert store.count() == 0
 
+    def test_a_database_refusal_that_is_not_a_duplicate_says_what_it_was(self, store, monkeypatch):
+        real_row = store._row
+
+        def broken_row(item, key):
+            row = real_row(item, key)
+            row["kind"] = None          # NOT NULL: an IntegrityError that no other app's id explains
+            return row
+        monkeypatch.setattr(store, "_row", broken_row)
+        with pytest.raises(FeedbackError) as exc:
+            store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00"))
+        assert "another app" not in str(exc.value)
+        assert "was not stored" in str(exc.value)
+
     def test_an_import_is_validated_like_a_submit(self, store):
         with pytest.raises(FeedbackError):
             store.import_item(product(id=self.LEGACY_ID, created_at="2026-08-01T10:00:00+00:00",

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, inspect, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from trellis_feedback import (
     PRODUCT_CATEGORIES,
     STATUSES,
@@ -79,6 +80,8 @@ class FeedbackEntry:
 
 # One library store per URL per process: building one creates an engine and checks the schema,
 # which a request should not pay for, and the legacy copy must run once, not per request.
+# web/app.py opens it at startup, off the event loop. If that failed, the first request to need
+# it builds it, and the copy, inline in an async route: rare, slow once, and logged at startup.
 _stores: dict[str, _LibraryStore] = {}
 _stores_lock = threading.Lock()
 
@@ -111,7 +114,7 @@ def migrate_legacy_feedback(store: _LibraryStore) -> dict[str, int]:
     Returns counts: `legacy` rows seen, `imported` now, `skipped` (already there), `events`
     written, `refused` (a row the library would not take, logged and left behind).
     """
-    counts = {"legacy": 0, "imported": 0, "skipped": 0, "events": 0, "refused": 0}
+    counts = {"legacy": 0, "imported": 0, "skipped": 0, "events": 0, "refused": 0, "unknown_status": 0}
     if not inspect(store.engine).has_table(LEGACY_TABLE):
         return counts
     with store.engine.connect() as conn:
@@ -126,6 +129,11 @@ def migrate_legacy_feedback(store: _LibraryStore) -> dict[str, int]:
         item.wants_response = bool(item.wants_response)
         item.consent_to_contact = bool(item.consent_to_contact)
         status = (row.get("triage_status") or "new").strip()
+        if status not in STATUSES:
+            # Copied as `new` rather than left behind: the feedback itself is still worth having.
+            counts["unknown_status"] += 1
+            logger.warning("feedback migration: legacy row %r has unknown status %r; copied as new",
+                           row.get("id"), status)
         try:
             # The status goes in with the item, in one transaction: a crash between the two cannot
             # leave a copied row reading `new` that every later run then skips.
@@ -133,7 +141,9 @@ def migrate_legacy_feedback(store: _LibraryStore) -> dict[str, int]:
                 item, status=status if status in STATUSES else None, actor=MIGRATION_ACTOR,
                 note=(f"status carried over from RE's legacy {LEGACY_TABLE} table, "
                       "which kept no time for the change"))
-        except FeedbackError as exc:
+        except (FeedbackError, SQLAlchemyError) as exc:
+            # Per row, so one bad row (a Postgres DataError, say) cannot stop the store opening and
+            # make every later request re-run the copy.
             counts["refused"] += 1
             logger.warning("feedback migration: legacy row %r not copied: %s", row.get("id"), exc)
             continue
@@ -143,7 +153,7 @@ def migrate_legacy_feedback(store: _LibraryStore) -> dict[str, int]:
         counts["imported"] += 1
         if status in STATUSES and status != "new":
             counts["events"] += 1
-    if counts["imported"] or counts["refused"]:
+    if counts["imported"] or counts["refused"] or counts["unknown_status"]:
         logger.info("feedback migration from legacy %s table: %s", LEGACY_TABLE, counts)
     return counts
 
