@@ -619,3 +619,24 @@ def test_the_discard_route_is_admin_only(tmp_path, monkeypatch):
     import resource_explorer.config as cfg
     cfg._config = None
     assert TestClient(app).post(f"/api/reindex/{SLUG}/discard-previous").status_code in (401, 403)
+
+
+def test_a_discard_killed_part_way_refuses_undo_and_the_next_pass_finishes_it(registry, store, monkeypatch):
+    """The architect's read-back of 5d2b9865: the discarding mark comes before the first drop."""
+    _, d = rebuilt(registry, store)
+    real = store.drop_collection
+
+    def die_after_first(name):
+        real(name)
+        raise SystemExit("killed after the first drop")
+    monkeypatch.setattr(store, "drop_collection", die_after_first)
+    with pytest.raises(SystemExit):
+        reindex.discard_previous(registry, SLUG, by="erin", deps=d)
+    monkeypatch.setattr(store, "drop_collection", real)
+    list_before = sorted(registry.get(SLUG).collections)
+    with pytest.raises(reindex.ReindexRefused, match="being discarded"):
+        reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+    assert sorted(registry.get(SLUG).collections) == list_before            # the list was not churned
+    assert reindex.drop_expired_previous(registry, deps=d) == [SLUG]        # inside the window, still finished
+    assert not any(n.endswith("__previous") for n in store.tables)
+    assert "stopped part-way" in reindex.progress(registry, SLUG)["outcomes"][-1]["words"]

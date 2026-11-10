@@ -577,6 +577,9 @@ def undo(registry, slug: str, *, requested_by: str, deps: Deps | None = None) ->
         raise ReindexRefused(f"{slug} has no rebuild whose previous index is still kept.", 404)
     deps = deps or Deps(registry=registry)
     r = _Run(row["id"], deps)
+    if r.t.get("discarding"):
+        raise ReindexRefused(f"{slug}'s previous index is being discarded (partly dropped); undo is no longer "
+                             "possible.")
     if r.t.get("previous_until", "") < _now().isoformat():
         raise ReindexRefused(f"The undo window for {slug} closed on {r.t.get('previous_until', '')[:10]}.")
     if is_rebuilding(registry, slug):
@@ -693,6 +696,10 @@ def discard_previous(registry, slug: str, *, by: str, reason: str = "", deps: De
         raise ReindexRefused(f"{slug}'s previous index is being discarded or undone right now.")
     try:
         r = _Run(row["id"], deps)
+        # The intent, before the first drop (the architect's read-back of 5d2b9865): an undo after a discard that died
+        # part-way must refuse up front, not change chat's list and then fail on a missing table.
+        if not r.t.get("discarding"):
+            r.t = registry.merge_run_target(row["id"], {"discarding": by, "discarding_at": _now().isoformat()})
         dropped: list[str] = []
         for n in (r.t.get("kept") or []) + (r.t.get("dropped") or []):
             if deps.store.collection_exists(previous(n)):
@@ -720,15 +727,18 @@ def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps |
     done: list[str] = []
     for row in registry.list_runs(kind=RUN_KIND, limit=500):
         t = _target(row)
-        if (t.get("phase") != "done" or t.get("undone") or t.get("discarded")
-                or not t.get("previous_until") or t["previous_until"] >= now_iso):
+        if t.get("phase") != "done" or t.get("undone") or t.get("discarded"):
+            continue
+        # A discard that died part-way is finished whatever its window says; otherwise only an expired one is dropped.
+        if not t.get("discarding") and (not t.get("previous_until") or t["previous_until"] >= now_iso):
             continue
         slug = t.get("slug", "")
         if latest_done(registry, slug) is None or latest_done(registry, slug)["id"] != row["id"]:
             continue
         try:
-            discard_previous(registry, slug, by="the scheduled 7-day job",
-                             reason=f"the {KEEP_PREVIOUS_DAYS}-day undo window closed", deps=deps)
+            reason = (f"finishing a discard by {t['discarding']} that stopped part-way" if t.get("discarding")
+                      else f"the {KEEP_PREVIOUS_DAYS}-day undo window closed")
+            discard_previous(registry, slug, by="the scheduled 7-day job", reason=reason, deps=deps)
             done.append(slug)
         except ReindexRefused as exc:
             log.info("previous index of %s kept for now: %s", slug, exc)
