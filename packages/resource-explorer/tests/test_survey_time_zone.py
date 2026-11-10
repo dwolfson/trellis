@@ -96,3 +96,39 @@ def test_website_freshness_skips_a_stale_zoned_row(registry):
     registry.upsert_metric("r", "website_ingestion", {"chunks": 5.0}, detail=json.loads('{"collection": "site"}'),
                            surveyed_at=old)
     assert _already_ingested(registry, "site", "other") == (None, None)
+
+
+class TestEgeriaNamesStayNaive:
+    """Architect read-back of #1025 (P2): database and filesystem names are built from the stored string, which is
+    zoned for new runs. Names stay naive UTC for every engine: one form, and no `+` in a name that is also a query
+    parameter (an unencoded `+` arrives as a space and the lookup silently finds nothing)."""
+
+    def test_a_zoned_time_becomes_the_naive_utc_form(self):
+        from resource_explorer.survey_time import egeria_name_time
+
+        assert egeria_name_time("2026-11-10T12:00:00.123456+00:00") == "2026-11-10T12:00:00.123456"
+        assert egeria_name_time("2026-11-10T13:00:00+01:00") == "2026-11-10T12:00:00"
+
+    def test_a_naive_time_or_a_non_time_is_unchanged(self):
+        from resource_explorer.survey_time import egeria_name_time
+
+        assert egeria_name_time("2026-11-10T12:00:00.123456") == "2026-11-10T12:00:00.123456"
+        assert egeria_name_time("file_profiles::run-7") == "file_profiles::run-7"
+
+    def test_a_live_and_a_stored_run_name_the_same_element(self):
+        from resource_explorer.survey_time import egeria_name_time
+
+        live = datetime(2026, 11, 10, 12, 0, 0, 5)  # noqa: DTZ001 - the naive form names have always had
+        assert egeria_name_time(as_utc_iso(live)) == live.isoformat()
+
+    def test_no_egeria_name_is_built_from_a_bare_survey_time(self):
+        """A guard on the source: every SurveyReport/Annotation name built from `surveyed_at` goes through
+        egeria_name_time, so a new name site cannot quietly reintroduce the zone."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1] / "resource_explorer"
+        bare = re.compile(r'f"(?:SurveyReport|Annotation)::[^"]*\{surveyed_at\}')
+        hits = [f"{p.relative_to(root)}:{i}" for p in root.rglob("*.py")
+                for i, line in enumerate(p.read_text().splitlines(), 1) if bare.search(line)]
+        assert hits == []
