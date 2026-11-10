@@ -74,7 +74,7 @@ class TestDocEvidenceInThePrompt:
         store = _FakeStore([_hit(1), _hit(2, text="Getting started with Egeria.", col=DOCS[1], score=0.5)])
         prompt, turn_log = _ask("What is the purpose of Egeria?", DOCS + ["egeria_git_java_code"], store)
 
-        assert "Documentation for egeria_git (2 passages; answer the question from these first" in prompt
+        assert "Documentation for egeria_git (2 passages): use these for what it is, what it is for" in prompt
         assert "[egeria_git_markdown_docs | score=0.62]" in prompt
         assert "Getting started with Egeria." in prompt
         assert turn_log["refs"] == [f"{DOCS[0]}:c1", f"{DOCS[1]}:c2"]
@@ -99,6 +99,15 @@ class TestDocEvidenceInThePrompt:
         _ask("What is new in the latest release of Egeria?", cols, store)
         assert "egeria_git_release_notes" not in store.calls[0][1]
         assert "egeria_git_release_notes" in store.calls[1][1]
+
+    def test_a_health_score_question_is_not_told_to_prefer_the_passages(self):
+        """"what is the health score of X" classifies as conceptual ("what is" wins over health), so it gets doc
+        passages; the header must send a measurement question to the evidence, not to README prose (read-back P2)."""
+        assert QueryProcessor().classify("what is the health score of egeria_git") == QueryIntent.CONCEPTUAL
+        prompt, _ = _ask("what is the health score of egeria_git", DOCS, _FakeStore([_hit(1)]))
+        header = next(line for line in prompt.splitlines() if line.startswith("Documentation for"))
+        assert "for measurements, use the evidence above" in header
+        assert "first" not in header and "answer the question from these" not in header
 
     def test_results_under_the_threshold_are_dropped(self):
         from resource_explorer.config import get_config

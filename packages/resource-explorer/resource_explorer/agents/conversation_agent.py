@@ -453,8 +453,10 @@ class ConversationAgent(BaseExplorerAgent):
 
         note_retrieved(shown)
         return [
-            f"Documentation for {slug} ({len(shown)} passages; answer the question from these first, "
-            "cite the collection):",
+            # Not "answer from these first": "what is the health score of X" classifies as conceptual, and a header
+            # that ranks README prose above the measurements would steer a numbers question away from them.
+            f"Documentation for {slug} ({len(shown)} passages): use these for what it is, what it is for and how to "
+            "use it; for measurements, use the evidence above. Cite the collection.",
             "\n\n".join(parts),
         ]
 
