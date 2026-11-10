@@ -119,8 +119,13 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
             status_code=400, detail=f"Invalid triage_status: {payload.triage_status!r}"
         )
     store = FeedbackStore()
-    updated = store.update_triage_status(
-        feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request))
+    try:
+        updated = store.update_triage_status(
+            feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request))
+    except FeedbackError as exc:
+        # The library refusing the change: from trellis-feedback 0.3, a status that contradicts the item's current
+        # cause ("re-diagnose it"). Said on the row as a 400, not a 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")
     return updated

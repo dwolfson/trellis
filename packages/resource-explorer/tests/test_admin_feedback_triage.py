@@ -80,6 +80,21 @@ class TestTheStatusFilter:
         data = client.get("/api/curate/feedback", headers=admin_headers).json()
         assert data["statuses"] == ["new", "triaged", "known_issue", "actioned", "deferred", "not_an_issue"]
 
+    def test_a_change_the_library_refuses_is_a_400_with_its_words(self, client, feedback_store, admin_headers,
+                                                                  monkeypatch):
+        # From trellis-feedback 0.3 a status can contradict the item's current cause; the library says so with
+        # FeedbackError, and the row must show that sentence, not "HTTP 500" (read-back of #1018).
+        from trellis_feedback import FeedbackError
+        page_id, _, _ = _seed(feedback_store)
+
+        def refuse(*a, **kw):
+            raise FeedbackError("status 'not_an_issue' contradicts the item's current cause 'analysis_defect': "
+                                "re-diagnose it with this change")
+        monkeypatch.setattr(feedback_store.store, "triage", refuse)
+        resp = client.patch(f"/api/feedback/{page_id}", headers=admin_headers, json={"triage_status": "not_an_issue"})
+        assert resp.status_code == 400
+        assert "re-diagnose" in resp.json()["detail"]
+
     def test_a_change_made_through_patch_is_what_the_listing_shows(self, client, feedback_store, admin_headers):
         page_id, _, _ = _seed(feedback_store)
         resp = client.patch(f"/api/feedback/{page_id}", headers=admin_headers,
