@@ -345,6 +345,10 @@ class FeedbackCreate(BaseModel):
 #: stay: they are the feedback itself, which is the point of the pane.
 _CONTACT_FIELDS = ("email", "session_id", "user_agent", "viewport", "locale")
 
+#: A Curate row's triage status is held by reference, not in its own table, so a status filter reads this many of the
+#: newest rows and filters after. When the read comes back full the listing says `resource_limited`.
+RESOURCE_STATUS_READ_CAP = 2000
+
 
 def _without_contact_fields(row: dict) -> dict:
     """A page-feedback row with contact/identifying fields removed.
@@ -418,8 +422,12 @@ def list_all_feedback(
     # A resource row's status is not in its own table, so the status filter is applied after reading. It reads
     # more rows than `limit` when a status is asked for, so a filtered page is not cut short by rows it then drops.
     # A cause filter shows answers alone (only they carry a diagnosis), so it reads no resource rows at all.
+    read_cap = max(limit, RESOURCE_STATUS_READ_CAP) if status else limit
     resource_rows = [] if cause else reg.list_all_resource_feedback(
-        limit=max(limit, 2000) if status else limit, entity_type=entity_type, category=category)
+        limit=read_cap, entity_type=entity_type, category=category)
+    # The over-read is still a cap: when it came back full there are older rows it never read, and some of them
+    # may have the asked status. Say so rather than present a short list as complete (#1020 P3).
+    resource_limited = bool(status) and len(resource_rows) >= read_cap
     states = page_store.resource_states([r["id"] for r in resource_rows])
     for r in resource_rows:
         r["triage"] = states.get(str(r["id"])) or {"status": "new", "note": "", "actor": "", "updated_at": "",
@@ -463,6 +471,10 @@ def list_all_feedback(
             "answer": {"total": page_store.count(kind="answer")},
         },
         "filtered": bool(entity_type or category or source or status or cause),
+        #: True when a status filter read the newest `resource_read` Curate rows and there may be older ones it
+        #: did not read; the page says so. False whenever the read was not cut short (or no status was asked).
+        "resource_limited": resource_limited,
+        "resource_read": read_cap if resource_limited else len(resource_rows),
         # Q7: Curate rows deleted since they were triaged. Their history is kept until an admin clears it
         # (DELETE /api/feedback/resource_feedback/{id}); deleting a row never reaches into the feedback store.
         "gone": page_store.gone_resource_rows(reg.resource_feedback_ids_present),
