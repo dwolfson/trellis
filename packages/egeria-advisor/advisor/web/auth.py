@@ -97,14 +97,19 @@ async def auth_portal(req: PortalTokenRequest) -> Dict[str, Any]:
 
 @router.get("/api/auth/me")
 async def auth_me(request: Request) -> Dict[str, Any]:
-    """Return info about the currently authenticated user."""
-    from advisor.auth import get_current_user
+    """Return info about the currently authenticated user.
+
+    `is_admin` (Phase 0 S1, 2026-11-10) is the one shared admin gate's answer for this request
+    (`advisor.auth.is_admin` -> `trellis_auth.require_admin`), so the UI can hide the Admin link. Cosmetic: the
+    server's gate on the admin paths is `trellis_auth.AdminPathMiddleware`."""
+    from advisor.auth import get_current_user, is_admin
     user = get_current_user(request)
     if user is None:
-        return {"authenticated": False}
+        return {"authenticated": False, "is_admin": False}
     user_id = user.get("user_id") or user.get("sub", "")
     return {
         "authenticated": True,
+        "is_admin": is_admin(request),
         "user_id": user_id,
         # `egeria_user` kept as a response key for the existing UI; since
         # 2026-09-04 the JWT identifies the user by `sub`/`user_id` and carries
