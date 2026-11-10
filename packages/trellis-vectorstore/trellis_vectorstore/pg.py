@@ -631,9 +631,12 @@ class PgVectorStore(BaseVectorStore):
         none: with `rename_collection`, which commits each rename alone, a reader between two renames would get
         "relation does not exist" (the architect's C3).
 
-        Each table's index is renamed with it (`ALTER INDEX ... RENAME`): `ALTER TABLE ... RENAME` leaves the index
-        under its old name, and the next `create_index` on a table that takes that old name would find it taken and
-        silently create nothing (C4). A table with no index of its own is renamed alone.
+        Each table's indexes are renamed with it (`ALTER INDEX ... RENAME`): every index the table owns whose name
+        starts with the table's name (`{table}_embedding_idx`, `{table}_pkey`, ...) takes the new table's name with
+        the same suffix. `ALTER TABLE ... RENAME` leaves them under the old names: the next `create_index` on a table
+        that takes the old name would find `_embedding_idx` taken and silently create nothing (C4), and the primary
+        key's name would drift with every rebuild (the architect's R1a-1). Indexes not named after the table are
+        left as they are. A renamed name that would pass 63 bytes fails the swap, which rolls back.
 
         Checked before anything runs, raising ValueError: every name fits in 63 bytes, and the sequence is possible
         (each `from` exists at its turn and each `to` does not). Waits at most `lock_timeout` for the locks a rename
@@ -666,15 +669,15 @@ class PgVectorStore(BaseVectorStore):
                     cur.execute("SET LOCAL lock_timeout = %s", (lock_timeout,))
                     for old, new in renames:
                         old_t, new_t = self._table(old), self._table(new)
-                        cur.execute(
-                            "SELECT 1 FROM pg_indexes WHERE schemaname = %s AND tablename = %s AND indexname = %s",
-                            (self._catalog_schema, old_t, f"{old_t}_embedding_idx"),
-                        )
-                        owns_index = cur.fetchone() is not None
+                        cur.execute("SELECT indexname FROM pg_indexes WHERE schemaname = %s AND tablename = %s",
+                                    (self._catalog_schema, old_t))
+                        named_after = [r[0] for r in cur.fetchall() if r[0].startswith(old_t + "_")]
                         cur.execute(f'ALTER TABLE {self._qualified(old_t)} RENAME TO "{new_t}"')
-                        if owns_index:
-                            cur.execute(f'ALTER INDEX {self._qualified(old_t + "_embedding_idx")} '
-                                        f'RENAME TO "{new_t}_embedding_idx"')
+                        for index in named_after:
+                            renamed = new_t + index[len(old_t):]
+                            if len(renamed.encode("utf-8")) > self.MAX_IDENTIFIER_BYTES:
+                                raise ValueError(f"{renamed!r} would pass {self.MAX_IDENTIFIER_BYTES} bytes")
+                            cur.execute(f'ALTER INDEX {self._qualified(index)} RENAME TO "{renamed}"')
                 conn.commit()
                 self._logger.info("Swapped collections: " + ", ".join(f"{a} -> {b}" for a, b in renames))
                 return

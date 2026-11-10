@@ -33,6 +33,17 @@ def _make(store, name, *, rows=("a chunk",), index=True):
         assert not store.has_vector_index(name)
 
 
+def _indexes(store, name):
+    conn = store._get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT indexname FROM pg_indexes WHERE schemaname = %s AND tablename = %s",
+                        (store._catalog_schema, store._table(name)))
+            return [r[0] for r in cur.fetchall()]
+    finally:
+        store._put_conn(conn)
+
+
 def _clean(store, *names):
     for n in names:
         store.delete_collection(n)
@@ -51,7 +62,11 @@ class TestSwap:
         assert not pg_store.collection_exists(self.REB)
         # Each table owns the index under its own name, so the next rebuild's create_index makes a real one.
         assert pg_store.has_vector_index(self.LIVE) and pg_store.has_vector_index(self.PREV)
+        # R1a-1: every index named after its table moves with it, the primary key included, so names never drift.
+        assert set(_indexes(pg_store, self.LIVE)) == {f"{self.LIVE}_embedding_idx", f"{self.LIVE}_pkey"}
+        assert set(_indexes(pg_store, self.PREV)) == {f"{self.PREV}_embedding_idx", f"{self.PREV}_pkey"}
         _make(pg_store, self.REB, rows=("again",))
+        assert set(_indexes(pg_store, self.REB)) == {f"{self.REB}_embedding_idx", f"{self.REB}_pkey"}
         assert pg_store.has_vector_index(self.REB)
         _clean(pg_store, self.LIVE, self.PREV, self.REB)
 
