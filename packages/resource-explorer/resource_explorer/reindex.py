@@ -46,7 +46,7 @@ ACTIVE_STATES = ("queued", "claimed", "running")
 #: The steps, in order. A run's target carries `phase` and `outcomes` (each step's words). An -ing phase is an INTENT,
 #: recorded before its effect; the past-tense one after it (the architect's B1). Undo's phases mirror the swap's.
 PHASES = ("queued", "building", "built", "awaiting_accept", "surveyed", "pruning", "list_pruned", "swapping",
-          "swapped", "extending", "list_extended", "done", "rolled_back", "failed",
+          "swapped", "extending", "list_extended", "done", "rolled_back", "failed", "cancelled",
           "undo_pruning", "undo_swapping", "undo_swapped", "undo_extending")
 #: Phases at which nothing live has changed: a dead run is rolled back by dropping its aside tables.
 BEFORE_LIVE = ("queued", "building", "built", "awaiting_accept", "surveyed")
@@ -384,7 +384,46 @@ def accept(registry, run_id: str, *, requested_by: str) -> dict:
 
 
 def _continue_accepted(r: _Run) -> tuple[str, str]:
+    # A cancel that raced the accept wins: its aside tables are gone, so there is nothing to swap in.
+    original = r.d.registry.get_run(r.t["continue_of"]) or {}
+    if _target(original).get("phase") == "cancelled":
+        msg = "the held rebuild was cancelled before this accept ran; nothing was swapped"
+        r.step("failed", msg)
+        return "failed", msg
     return _finish(r)
+
+
+def cancel_held(registry, run_id: str, *, by: str, deps: Deps | None = None) -> dict:
+    """Cancel a rebuild held for accept: its aside tables are dropped and the repository is no longer rebuilding, so
+    its refreshes, first index and a new rebuild are allowed again. The live index was never changed, so there is
+    nothing to undo. The next rebuild is still the held first one: only a rebuild that reaches `done` ends that."""
+    if not (by or "").strip():
+        raise ReindexRefused("Cancelling needs a signed-in admin.", 401)
+    row = registry.get_run(run_id)
+    if row is None or row.get("kind") != RUN_KIND:
+        raise ReindexRefused(f"No rebuild {run_id!r}.", 404)
+    t = _target(row)
+    if t.get("phase") != "awaiting_accept" or t.get("accepted"):
+        raise ReindexRefused("That rebuild is not waiting to be accepted, so there is nothing to cancel.")
+    deps = deps or Deps(registry=registry)
+    r = _Run(run_id, deps)
+    # The phase first: from here accept refuses, and a continuation an accept already queued fails on its first step.
+    r.step("cancelled", f"cancelled by {by} before it swapped: the live index was never changed",
+           cancelled=by, cancelled_at=_now().isoformat())
+    _drop_aside(r)
+    names = set((r.t.get("counts") or {}).keys())
+    left = sorted(aside(n) for n in names if deps.store.collection_exists(aside(n)))
+    words = ("the built index was dropped" if not left
+             else f"could not drop {', '.join(left)}; the next rebuild of this repository drops them first")
+    r.t = registry.merge_run_target(run_id, {"left_aside": left})
+    from resource_explorer.activity_logger import log_reindex
+
+    slug = t.get("slug", "")
+    p = registry.get(slug)
+    log_reindex(registry, slug, (p.display_name if p else "") or slug, "ok" if not left else "error",
+                f"Rebuild of {slug}'s chat index: cancelled by {by} before it swapped; {words}. The live index was "
+                "never changed.")
+    return {"run_id": run_id, "left_aside": left}
 
 
 def _finish(r: _Run) -> tuple[str, str]:
@@ -566,7 +605,7 @@ def recover_target(r: _Run) -> str:
     swap failed" (a dropped type gone from chat while its old index serves) or "swapped but not extended" (an added
     type never queried), and a forward recovery ends `done` with undo available."""
     phase = r.t.get("phase")
-    if phase in ("done", "rolled_back", "failed", "awaiting_accept"):
+    if phase in ("done", "rolled_back", "failed", "awaiting_accept", "cancelled"):
         return f"nothing to recover at {phase}"
     if _swap_committed(r) and (phase in SWAP_MAY_HAVE_COMMITTED or r.t.get("renames")):
         if phase not in ("extending", "list_extended") or not r.t.get("votes_done"):
@@ -813,6 +852,6 @@ def progress(registry, slug: str) -> dict:
                                        and t.get("previous_until", "") >= _now().isoformat()),
                     "previous_tables": [previous(n) for n in (t.get("kept") or []) + (t.get("dropped") or [])]
                     if t.get("phase") == "done" and not t.get("undone") and not t.get("discarded") else [],
-                    "drop_error": t.get("drop_error", ""),
+                    "drop_error": t.get("drop_error", ""), "left_aside": t.get("left_aside") or [],
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

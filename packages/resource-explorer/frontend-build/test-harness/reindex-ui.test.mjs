@@ -104,6 +104,20 @@ test('a held first rebuild offers Accept and swap', async () => {
   assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/api/reindex/run-9/accept'));
 });
 
+test('a held first rebuild can be cancelled, after asking first', async () => {
+  const { mod, calls } = await setUp({ progress: { run_id: 'run-9', phase: 'awaiting_accept',
+    outcomes: [{ phase: 'built', words: 'built: rr_markdown_docs: 2 → 3' }] } });
+  const el = await mod.openReindexDialog('rr');
+  await tick();
+  const body = el.querySelector('#wl-detail-body');
+  body.querySelector('[data-reindex-cancel]').click();
+  assert.match(text(body.querySelector('[data-reindex-ask-first]')), /Chat keeps the index it has now, which was never changed/);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0, 'nothing until it is confirmed');
+  body.querySelector('[data-reindex-confirm-yes]').click();
+  await tick();
+  assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/api/reindex/run-9/cancel'));
+});
+
 test('undo and discard ask first, and discard names the tables it drops', async () => {
   const { mod, calls } = await setUp({ progress: { run_id: 'run-9', phase: 'done', undo_available: true,
     previous_until: '2026-11-17T10:00:00+00:00', previous_tables: ['rr_markdown_docs__previous', 'rr_java_code__previous'],

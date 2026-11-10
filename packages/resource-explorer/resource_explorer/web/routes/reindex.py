@@ -1,4 +1,4 @@
-"""Rebuild a repository's chat index from scratch: queue, progress, accept (the held first rebuild), undo.
+"""Rebuild a repository's chat index from scratch: queue, progress, accept or cancel (the held first rebuild), undo.
 
 BRIEF-REINDEX-FROM-SCRATCH.md §7. Admins only (Q3). The work runs through the run queue as kind `reindex`
 (`reindex.py`); this router starts nothing itself and writes nothing but the queue row, the accept and the undo.
@@ -73,6 +73,16 @@ def accept(run_id: str, request: Request) -> dict:
     require_admin(request)
     try:
         return reindex.accept(_registry(), run_id, requested_by=_who(request))
+    except reindex.ReindexRefused as exc:
+        raise _refused(exc) from exc
+
+
+@router.post("/{run_id}/cancel")
+def cancel(run_id: str, request: Request) -> dict:
+    """Cancel a rebuild held for accept: drop what it built. The live index was never changed."""
+    require_admin(request)
+    try:
+        return reindex.cancel_held(_registry(), run_id, by=_who(request))
     except reindex.ReindexRefused as exc:
         raise _refused(exc) from exc
 
