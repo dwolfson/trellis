@@ -295,8 +295,7 @@ function _renderEditor() {
   if (_ped.outcome) {
     outcomeEl.classList.remove('hidden');
     const outcomeBody = outcomeEl.querySelector('.ped-outcome-body');
-    outcomeBody.innerHTML =
-      typeof marked !== 'undefined' ? marked.parse(_ped.outcome) : _ped.outcome.replace(/\n/g, '<br>');
+    outcomeBody.innerHTML = renderMarkdown(_ped.outcome);  // render.js: parsed, then sanitised
     // Activate Mermaid diagrams in the outcome (e.g. from View Report)
     outcomeBody.querySelectorAll('code.language-mermaid').forEach(el => {
       const c = document.createElement('div');
@@ -888,8 +887,7 @@ async function _validatePlanDoc() {
 
     let html = `<div class="flex items-center justify-between mb-2">` +
       `<span class="font-semibold ${headerCls}">${headerTxt}</span>` +
-      `<button onclick="document.getElementById('ped-validate-result').classList.add('hidden')" ` +
-      `class="text-slate-500 hover:text-slate-200 text-xs">✕ close</button></div>`;
+      `<button class="ped-validate-close text-slate-500 hover:text-slate-200 text-xs">✕ close</button></div>`;
 
     // Structured errors table
     if (allErrors.length) {
@@ -930,6 +928,7 @@ async function _validatePlanDoc() {
     }
 
     panel.innerHTML = html;
+    panel.querySelector('.ped-validate-close')?.addEventListener('click', () => panel.classList.add('hidden'));
     panel.scrollTop = 0;
   } catch (renderErr) {
     console.error('[validate] render error:', renderErr);
@@ -1031,11 +1030,15 @@ async function pedShowVersionHistory() {
     `<span class="flex gap-1 shrink-0">` +
     `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
     `title="Save the specification only — no history, no reference data" ` +
-    `onclick="openSaveAsModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Save As</button>` +
+    `data-action="save-as">Save As</button>` +
     `<button class="px-2 py-0.5 rounded bg-violet-700 hover:bg-violet-600 text-white transition-colors" ` +
-    `onclick="openForkModal('${_esc(_ped.doc_id)}', null, '${_esc(_pedTitle())}')">Fork Current</button>` +
+    `data-action="fork-current">Fork Current</button>` +
     `</span></div>` +
     `<div id="ped-version-list-items">Loading…</div>`;
+  // Handlers are bound here, never written into onclick strings: doc ids, titles and version file
+  // names come from the server, and an inline handler would run them as code.
+  list.querySelector('[data-action="save-as"]').addEventListener('click', () => openSaveAsModal(_ped.doc_id, null, _pedTitle()));
+  list.querySelector('[data-action="fork-current"]').addEventListener('click', () => openForkModal(_ped.doc_id, null, _pedTitle()));
   const itemsEl = document.getElementById('ped-version-list-items');
   try {
     const r    = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/versions`, { headers: Auth.getHeaders() });
@@ -1050,11 +1053,13 @@ async function pedShowVersionHistory() {
       const ts = v.timestamp.replace(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5:$6');
       const desc = v.description ? `<span class="text-slate-500 italic ml-1">— ${_esc(v.description)}</span>` : '';
       row.innerHTML =
-        `<span class="flex-1 text-slate-300">${ts || v.version_file}${desc}</span>` +
+        `<span class="flex-1 text-slate-300">${_esc(ts || v.version_file)}${desc}</span>` +
         `<button class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 transition-colors" ` +
-        `onclick="pedRestoreVersion('${_esc(v.version_file)}')">Restore</button>` +
+        `data-action="restore">Restore</button>` +
         `<button class="px-2 py-0.5 rounded bg-violet-800 hover:bg-violet-700 text-white transition-colors" ` +
-        `onclick="openForkModal('${_esc(_ped.doc_id)}', '${_esc(v.version_file)}', '${_esc(_pedTitle())}')">Fork</button>`;
+        `data-action="fork">Fork</button>`;
+      row.querySelector('[data-action="restore"]').addEventListener('click', () => pedRestoreVersion(v.version_file));
+      row.querySelector('[data-action="fork"]').addEventListener('click', () => openForkModal(_ped.doc_id, v.version_file, _pedTitle()));
       itemsEl.appendChild(row);
     });
   } catch (e) {
