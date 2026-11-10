@@ -88,6 +88,21 @@ class TestNotJudged:
         assert n == {"cause": "stale", "partial": True,
                      "why": "2 of 3 sections have no as-of date (ci, docs), so their ages were not judged"}
 
+    def test_the_instructions_section_is_not_counted(self):
+        # Every real compile packs `instructions` (role "instructions"); it is not evidence and has no as-of.
+        [n] = not_judged(manifest(packed=[{"key": "instructions", "role": "instructions", "rung": "FULL"},
+                                          {"key": "deps", "role": "evidence", "rung": "FULL"},
+                                          {"key": "ci", "role": "evidence", "rung": "FULL"}],
+                                  declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                         answered_at="2026-11-10T00:00:00+00:00")
+        assert n["why"] == "1 of 2 sections have no as-of date (ci), so its age was not judged"
+
+    def test_all_evidence_dated_beside_instructions_is_judged(self):
+        assert not_judged(manifest(packed=[{"key": "instructions", "role": "instructions", "rung": "FULL"},
+                                           {"key": "deps", "role": "evidence", "rung": "FULL"}],
+                                   declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                          answered_at="2026-11-10T00:00:00+00:00") == []
+
     def test_one_undated_section_reads_in_the_singular(self):
         [n] = not_judged(manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "ci", "rung": "FULL"}],
                                   declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),

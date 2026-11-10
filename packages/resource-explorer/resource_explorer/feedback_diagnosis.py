@@ -153,9 +153,12 @@ def not_judged(manifest: dict, *, answered_at: str = "") -> list[dict]:
     dated = {k: (v or {}).get("as_of") for k, v in declared.items() if (v or {}).get("as_of")}
     if not dated:
         return [{"cause": "stale", "why": "no packed section declares an as-of date"}]
-    # Every section the compile names, packed or declared, in the order it names them.
+    # Every evidence section the compile names, packed or declared, in the order it names them. The instructions
+    # section is always packed and is not evidence: it has no age to measure, so counting it would make every
+    # compile report one undated section that no fix could ever date.
     sections = list(dict.fromkeys([p.get("key") for p in manifest.get("packed") or []
-                                   if isinstance(p, dict) and p.get("key")] + list(declared)))
+                                   if isinstance(p, dict) and p.get("key") and p.get("role", "evidence") == "evidence"]
+                                  + list(declared)))
     unreadable = sorted(k for k, v in dated.items() if _parse(v) is None)
     undated = sorted(k for k in sections if k not in dated)
     whys = []
