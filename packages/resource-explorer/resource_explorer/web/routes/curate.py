@@ -451,6 +451,13 @@ def list_all_feedback(
                                   kind="answer", cause=cause or None)
     if entity_type:
         answer_rows = [r for r in answer_rows if r.get("entity_type") == entity_type]
+    # Where each diagnosis was routed (closed-loop step 2a), read in one query for the page's answers.
+    if answer_rows:
+        from resource_explorer import feedback_routing
+
+        routes = reg.list_feedback_routes([r["id"] for r in answer_rows])
+        for r in answer_rows:
+            r["routes"] = [feedback_routing.describe(x, reg) for x in routes.get(r["id"], [])]
 
     combined = [dict(r, source="resource") for r in resource_rows]
     # Full rows now. `_without_contact_fields` was the INTERIM fix while this

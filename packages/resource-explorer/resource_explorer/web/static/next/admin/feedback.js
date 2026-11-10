@@ -145,9 +145,16 @@ function diagnosisHtml(d) {
     <span class="text-ink">${esc(causeWord(n.cause))}</span> — ${esc(n.why)}</div>`).join('');
   const charged = (d.charge_set || []).map((c) => `<span class="font-mono text-ink">${esc(c.analysis_id)}</span> ${esc(c.words)}`).join('; ')
     || 'no analysis (a catalog gap, or nothing was offered)';
+  // Closed-loop step 2a (Q2): a missing-evidence or analysis-defect diagnosis raises one gap, on the analysis picked
+  // here; the first in the charge set's order unless another is picked.
+  const picker = (d.charge_set || []).length > 1
+    ? `<div class="mt-[2px]">Gap goes to: <select data-route-analysis aria-label="Analysis the gap is raised on" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink">${
+      d.charge_set.map((c) => `<option value="${esc(c.analysis_id)}">${esc(c.analysis_id)} (${esc(c.words)})</option>`).join('')}</select>
+      <span>used for missing evidence and analysis defect</span></div>`
+    : '';
   const keys = (list, f) => (list || []).map(f).join(', ') || 'none';
   return `${sugg}${notJudged}
-    <div class="mt-[2px]">Charged to: ${charged}</div>
+    <div class="mt-[2px]">Charged to: ${charged}</div>${picker}
     <div class="mt-[2px]">Coverage: ${esc((m.coverage || {}).kind || 'unknown')}${(m.coverage || {}).question ? ` — “${esc(m.coverage.question)}”` : ''}</div>
     <div>Packed: ${esc(keys(m.packed, (p) => `${p.key} · ${p.rung}`))}</div>
     <div>Gaps: ${esc(keys(m.gaps, (g) => `${g.key} · ${g.reason || g.state || 'not judged'}`))}</div>
@@ -200,6 +207,21 @@ async function causeSummaryHtml() {
 /** The triage cell of a page or answer item: its status and who set it, a status control with a note, and its
  *  history on demand. Every change is a new event in trellis-feedback (append-only): the note belongs to that
  *  change and nothing earlier is overwritten. */
+/** What the last Save said about a route that is not stored (a cause no consumer takes yet, or a failure to retry),
+ *  by item id; shown once on the next render. */
+const routeNotes = new Map();
+
+/** Where each diagnosis was routed (closed-loop step 2a), and any note from the last Save. */
+function routesHtml(r) {
+  const lines = (r.routes || []).map((x) => `<div data-route="${esc(x.cause)}" class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted">${esc(x.words)}</div>`);
+  const note = routeNotes.get(String(r.id));
+  if (note) {
+    routeNotes.delete(String(r.id));
+    lines.push(`<div data-route-note class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted">${esc(note)}</div>`);
+  }
+  return lines.join('');
+}
+
 function triageHtml(r, statuses, causes = [], chain = []) {
   const t = r.triage || {};
   const current = r.triage_status || t.status || 'new';
@@ -220,6 +242,7 @@ function triageHtml(r, statuses, causes = [], chain = []) {
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-caveat text-accent-ink">Save</button>
     </div>
     ${r.source === 'answer' && causes.length ? causeHtml(r, causes, chain) : ''}
+    ${r.source === 'answer' ? routesHtml(r) : ''}
     <div data-triage-error class="text-provenance text-state-warn"></div>
     ${t.events ? `<details data-triage-history class="mt-[2px]"><summary class="cursor-pointer text-provenance text-ink-muted">history (${esc(String(t.events))})</summary><div data-history-body class="text-provenance text-ink-muted">Loading…</div></details>` : ''}
   </div>`;
@@ -487,6 +510,8 @@ function bindTriage() {
       if (causeSel && (causeSel.value !== causeSel.dataset.current || secondSel.value !== secondSel.dataset.current)) {
         payload.cause = causeSel.value;
         payload.secondary_cause = secondSel.value;
+        const picked = cell.querySelector('[data-route-analysis]');
+        if (picked && payload.cause) payload.analysis_id = picked.value;
       }
       // Nothing changed: an event with the same status, no note and no new cause would only add a line to the history.
       if (triageStatus === cell.querySelector('[data-triage-status]').dataset.current && !note && !('cause' in payload)) {
@@ -514,6 +539,14 @@ function bindTriage() {
         button.disabled = false;
         return;
       }
+      // A stored route is listed on the row after the reload; one that is not stored (not routed yet, or a failure
+      // to retry) is said once.
+      try {
+        const route = (await res.json()).route;
+        if (route && (route.state === 'skipped' || route.state === 'failed' || route.state === 'already')) {
+          routeNotes.set(String(id), route.words);
+        }
+      } catch { /* no body: nothing to say */ }
       reload({ saved: id });
     });
     bindDiagnosis(cell, id);

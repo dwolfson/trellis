@@ -46,6 +46,9 @@ class TriageUpdate(BaseModel):
     #: Blank keeps the current one. Product items take none; the library refuses one with a 400.
     cause: str = ""
     secondary_cause: str = ""
+    #: Which charged analysis a gap-routed diagnosis is about (closed-loop step 2a, Q2: the admin picks one).
+    #: Blank: the first in the charge set's role order. Must be in the charge set, or the Save is refused.
+    analysis_id: str = ""
 
 
 def _require_admin(request: Request) -> None:
@@ -211,10 +214,28 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
         raise HTTPException(
             status_code=400, detail=f"Invalid triage_status: {payload.triage_status!r}"
         )
+    from resource_explorer import feedback_routing
+    from resource_explorer.registry import ProjectRegistry
+
     store = FeedbackStore()
+    actor = _actor(request)
+    # Closed-loop step 2a: a Save that sets a cause routes it (BRIEF-CLOSED-LOOP-STEP2-ROUTING.md). The route is
+    # planned BEFORE the triage event is written, so a refused analysis pick costs nothing, and carried out after.
+    plan, registry = None, None
+    if payload.cause.strip():
+        before = store.get(feedback_id)
+        if before is None:
+            raise HTTPException(status_code=404, detail="Feedback record not found")
+        if before.get("kind") == "answer":
+            registry = ProjectRegistry()
+            try:
+                plan = feedback_routing.plan(before, payload.cause, analysis_id=payload.analysis_id,
+                                             registry=registry)
+            except feedback_routing.RouteRefused as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         updated = store.update_triage_status(
-            feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request),
+            feedback_id, payload.triage_status, note=payload.note.strip(), actor=actor,
             cause=payload.cause.strip(), secondary_cause=payload.secondary_cause.strip())
     except FeedbackError as exc:
         # A diagnosis that contradicts itself or its status, a status that contradicts the item's current cause
@@ -222,6 +243,9 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")
+    if plan is not None:
+        # Never raises: a route that could not be made says why, and the diagnosis stands.
+        updated["route"] = feedback_routing.execute(plan, updated, actor=actor, registry=registry)
     return updated
 
 
@@ -232,6 +256,13 @@ async def get_feedback(feedback_id: str, request: Request) -> dict:
     found = FeedbackStore().get(feedback_id)
     if found is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")
+    if found.get("kind") == "answer":
+        from resource_explorer import feedback_routing
+        from resource_explorer.registry import ProjectRegistry
+
+        registry = ProjectRegistry()
+        found["routes"] = [feedback_routing.describe(r, registry)
+                           for r in registry.list_feedback_routes([feedback_id]).get(feedback_id, [])]
     return found
 
 
