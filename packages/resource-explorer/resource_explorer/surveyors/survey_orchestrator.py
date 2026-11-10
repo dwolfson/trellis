@@ -14,6 +14,7 @@ from resource_explorer.observability import openlineage
 from resource_explorer.surveyors import credential_capability, prerequisite_resolver, step_cost_observer
 from resource_explorer.surveyors import result_status, step_preconditions
 from resource_explorer.surveyors.survey_report import summarise_annotations, ClassificationAnnotation, SurveyResult
+from resource_explorer.survey_time import as_utc_iso
 
 log = logging.getLogger(__name__)
 
@@ -201,7 +202,10 @@ class SurveyOrchestrator:
         # apart. Dependency/DataProfiler persistence isn't threaded here —
         # those write at ingest/refresh time via IngestionPipeline, a
         # separate code path this orchestrator doesn't touch.
-        surveyed_at = surveyed_at_dt.isoformat()
+        # Stored with its zone (survey_time); `surveyed_at_dt` stays naive because it names Egeria's SurveyReport
+        # and Annotations, and a kept survey published later must produce the same names (survey_snapshot.to_result
+        # strips the zone back off). Same instant either way.
+        surveyed_at = as_utc_iso(surveyed_at_dt)
 
         result = SurveyResult(
             resource_slug=project.slug,
