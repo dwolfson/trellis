@@ -195,19 +195,58 @@ class FeedbackStore:
         entry.id, entry.created_at = stored.id, stored.created_at
         return entry
 
+    def add_answer(
+        self,
+        *,
+        vote: int,
+        question: str,
+        answer: str = "",
+        user_id: str = "",
+        session_id: str = "",
+        compile_id: str = "",
+        intent: str = "",
+        entity_type: str = "",
+        slug: str = "",
+        message: str = "",
+        page: str = "",
+        element_guid: str = "",
+        extra: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> tuple[str, bool]:
+        """Store a rating of one answer (a chat vote, or a Questions-checklist verdict) as an `answer` item.
+
+        Q4/Q5 (design doc §7): the question and the full answer text are kept, with the signed-in user, and
+        only admins can read them. Returns `(item id, created)`; a retried call with the same
+        `idempotency_key` from the same user returns the first item's id and `created=False`.
+        """
+        item = FeedbackItem(
+            app=APP, kind="answer", vote=vote, query_text=(question or "").strip(),
+            response_text=answer or "", user_id=user_id or "", session_id=session_id or "",
+            compile_id=compile_id or "", intent_label=intent or "", entity_type=entity_type or "",
+            slug=slug or "", message=(message or "").strip(), page=page or "",
+            element_guid=element_guid or "", extra=dict(extra or {}),
+        )
+        stored, created = self.store.submit(item, idempotency_key=idempotency_key)
+        return stored.id, created
+
     def list(
         self,
         triage_status: str | None = None,
         category: str | None = None,
         limit: int = 200,
+        kind: str = "product",
     ) -> list[dict[str, Any]]:
+        """Items of one kind (`product`, the page widget; `answer`, ratings of answers), newest first."""
         # An unknown category matches nothing, as the old SQL filter did; the library refuses it, and
-        # curate.py's combined listing passes whatever the Admin filter holds.
-        if category and category not in VALID_CATEGORIES:
+        # curate.py's combined listing passes whatever the Admin filter holds. Answers have no category.
+        if category and (kind != "product" or category not in VALID_CATEGORIES):
             return []
-        rows = self.store.list(kind="product", status=triage_status or None,
+        rows = self.store.list(kind=kind, status=triage_status or None,
                                category=category or None, limit=limit)
         return [_flatten(r) for r in rows]
+
+    def count(self, kind: str = "product") -> int:
+        return self.store.count(kind=kind)
 
     def get(self, feedback_id: str) -> dict[str, Any] | None:
         item = self.store.get(feedback_id)

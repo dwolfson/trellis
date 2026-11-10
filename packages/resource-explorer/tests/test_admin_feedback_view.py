@@ -131,6 +131,7 @@ def test_both_stores_are_genuinely_empty_and_both_counts_say_so(client, admin_he
     assert data["counts"] == {
         "resource": {"total": 0, "resources": 0},
         "page": {"total": 0},
+        "answer": {"total": 0},
     }
 
 
