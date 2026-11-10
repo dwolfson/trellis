@@ -125,6 +125,13 @@ test('undo and discard ask first, and discard names the tables it drops', async 
   assert.ok(calls.some((c) => c.method === 'POST' && c.url === '/api/reindex/rr/undo'));
 });
 
+test('the dialog is resizable, as every pane is', async () => {
+  const { mod } = await setUp();
+  const el = await mod.openReindexDialog('rr');
+  await tick();
+  assert.match(el.querySelector('[role="dialog"]').getAttribute('style') || '', /resize:horizontal/);
+});
+
 test('a 403 in the dialog says it is for admins', async () => {
   const { mod } = await setUp({ refuse: 403 });
   const el = await mod.openReindexDialog('rr');

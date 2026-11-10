@@ -102,7 +102,8 @@ function outcomesHtml(pr) {
 
 /** Open the dialog for `slug`: the ask when nothing is in flight, else what the rebuild is doing and what can be done. */
 export async function openReindexDialog(slug) {
-  const el = openDialog('Rebuild the chat index', slug);
+  // Wide: only the wide dialog is user-resizable, and every pane's width is (the project owner's rule).
+  const el = openDialog('Rebuild the chat index', slug, { wide: true });
   const body = el.querySelector('#wl-detail-body');
   const close = () => el.querySelector('[data-act="close"]')?.click();
   let pr;
