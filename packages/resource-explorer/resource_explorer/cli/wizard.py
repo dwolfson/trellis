@@ -101,17 +101,24 @@ class OnboardingWizard:
                 if extra_docs_paths is not None and extra_docs_paths != project.extra_docs_paths:
                     self.registry.update_extra_docs_paths(slug, extra_docs_paths)
                 plan = self._augment_plan_for_extra_paths(plan, effective_extra, local_path)
-                # Drop existing collections so re-ingestion starts clean (no duplicate vectors)
-                from resource_explorer.vector_store_pg import MultiCollectionStore
+                # Drop existing collections so re-ingestion starts clean (no duplicate vectors). Chat votes on their
+                # chunks are read first and carried to the new ids (chunk_votes, R0), so a re-index keeps them.
+                from resource_explorer import chunk_votes
+                from resource_explorer.vector_store_pg import MultiCollectionStore, record_inserts
                 store = MultiCollectionStore()
-                for c in project.collections:
-                    store.drop_collection(c)
-                self._trigger_ingestion(
-                    slug, plan,
-                    subproject_path=project.subproject_path or None,
-                    extra_docs_paths=effective_extra or None,
-                    local_path=local_path,
-                )
+                voted = {c: chunk_votes.snapshot(store, c) for c in project.collections}
+                with record_inserts(set(project.collections)) as inserted:
+                    for c in project.collections:
+                        store.drop_collection(c)
+                    self._trigger_ingestion(
+                        slug, plan,
+                        subproject_path=project.subproject_path or None,
+                        extra_docs_paths=effective_extra or None,
+                        local_path=local_path,
+                    )
+                for c, v in voted.items():
+                    if v:
+                        self.console.print(f"[dim]{c}: {chunk_votes.carry(v, inserted).words()}[/dim]")
             return
 
         self._show_plan(plan)

@@ -20,7 +20,7 @@ import json
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -328,6 +328,42 @@ class MetricsCollector:
         boosts = self._read_chunk_boosts()
         self._boost_cache = (time.monotonic(), generation, boosts)
         return boosts
+
+    def chunk_vote_refs(self, collection: str) -> list[str]:
+        """Every `chunk_ref` with a vote in one collection (`<collection>:<id>`)."""
+        prefix = collection + ":"
+        with self._conn() as conn:
+            # A prefix compare, not LIKE: collection names hold "_", a LIKE wildcard, and the two dialects escape it
+            # differently.
+            rows = conn.execute("SELECT chunk_ref FROM chunk_feedback WHERE substr(chunk_ref, 1, ?) = ? "
+                                "AND total_count > 0", (len(prefix), prefix)).fetchall()
+        return [r["chunk_ref"] for r in rows]
+
+    def move_chunk_votes(self, old_ref: str, new_ref: str) -> bool:
+        """Move one chunk's votes to the ref it now has (`chunk_votes`, R0): added to any the new ref already holds,
+        then the old row removed, in one transaction. False when the old ref has no row."""
+        if old_ref == new_ref:
+            return False
+        # The same naive-UTC form record_feedback writes, without utcnow()'s deprecation.
+        now = datetime.now(UTC).replace(tzinfo=None).isoformat()
+        with self._conn() as conn:
+            row = conn.execute("SELECT positive_count, neutral_count, total_count FROM chunk_feedback "
+                               "WHERE chunk_ref = ?", (old_ref,)).fetchone()
+            if row is None:
+                return False
+            p, n, t = int(row["positive_count"] or 0), int(row["neutral_count"] or 0), int(row["total_count"] or 0)
+            conn.execute(
+                """INSERT INTO chunk_feedback (chunk_ref, positive_count, neutral_count, total_count, last_updated)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(chunk_ref) DO UPDATE SET
+                       positive_count = chunk_feedback.positive_count + ?,
+                       neutral_count = chunk_feedback.neutral_count + ?,
+                       total_count = chunk_feedback.total_count + ?,
+                       last_updated = ?""",
+                (new_ref, p, n, t, now, p, n, t, now))
+            conn.execute("DELETE FROM chunk_feedback WHERE chunk_ref = ?", (old_ref,))
+        _vote_generation["n"] += 1
+        return True
 
     def _read_chunk_boosts(self) -> dict[str, float]:
         with self._conn() as conn:
