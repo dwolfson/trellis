@@ -6,10 +6,13 @@ routing accuracy and response quality over time.
 """
 
 from typing import Optional, Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 import json
+import os
+import threading
 from loguru import logger
 
 from advisor.config import resolve_advisor_data_root, ensure_writable_dir
@@ -42,6 +45,10 @@ class FeedbackEntry:
     # Phase 2 enhancements
     perspective: Optional[str] = None   # active role: developer, data_steward, etc.
     routing_agent: Optional[str] = None # agent that handled: doc_agent, examples_agent, rag_fallback, etc.
+    # Phase 0 S4 (2026-11-10): who voted, and the UI's intent selector in its own field -- never in
+    # user_comment/feedback_text, where it was sentiment-analysed as if the user had written it.
+    user_id: Optional[str] = None       # signed-in user; None when anonymous
+    intent_override: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -97,117 +104,165 @@ class FeedbackCollector:
         category: Optional[str] = None,
         perspective: Optional[str] = None,
         routing_agent: Optional[str] = None,
+        user_id: Optional[str] = None,
+        intent_override: Optional[str] = None,
     ) -> bool:
         """
-        Record user feedback.
-        
-        Args:
-            query: User's query
-            query_type: Detected query type
-            collections_searched: Collections that were searched
-            response_length: Length of response in characters
-            rating: "positive", "negative", or "neutral"
-            feedback_text: Optional free-text feedback
-            suggested_collection: User's suggested collection (if routing was wrong)
-            session_id: Optional session identifier
-            user_comment: Optional user comment
-            star_rating: Optional 1-5 star rating
-            category: Optional category (accuracy, completeness, clarity, relevance)
-            
-        Returns:
-            True if feedback was recorded successfully
+        Record user feedback; True if the primary record was written. For callers that only need a
+        yes/no (the CLI). The web route uses record_vote(), which says why a write failed.
         """
         try:
-            # Validate star rating if provided
-            if star_rating is not None and not (1 <= star_rating <= 5):
-                logger.warning(f"Invalid star rating {star_rating}, must be 1-5")
-                star_rating = None
-            
-            # Validate category if provided
-            valid_categories = {"accuracy", "completeness", "clarity", "relevance"}
-            if category is not None and category not in valid_categories:
-                logger.warning(f"Invalid category {category}, must be one of {valid_categories}")
-                category = None
-            
-            entry = FeedbackEntry(
-                timestamp=datetime.utcnow().isoformat(),
-                query=query,
-                query_type=query_type,
-                collections_searched=collections_searched,
-                response_length=response_length,
-                rating=rating,
-                feedback_text=feedback_text,
-                suggested_collection=suggested_collection,
-                session_id=session_id,
-                user_comment=user_comment,
-                star_rating=star_rating,
-                category=category,
-                perspective=perspective,
-                routing_agent=routing_agent,
+            self.record_vote(
+                query=query, query_type=query_type, collections_searched=collections_searched,
+                response_length=response_length, rating=rating, feedback_text=feedback_text,
+                suggested_collection=suggested_collection, session_id=session_id,
+                user_comment=user_comment, star_rating=star_rating, category=category,
+                perspective=perspective, routing_agent=routing_agent, user_id=user_id,
+                intent_override=intent_override,
             )
-            
-            # Perform sentiment analysis on comments if available
-            sentiment_result = None
-            if SENTIMENT_AVAILABLE and user_comment:
-                try:
-                    analyzer = get_sentiment_analyzer()
-                    sentiment_result = analyzer.analyze(user_comment)
-                    logger.debug(f"Sentiment analysis: {sentiment_result.sentiment} ({sentiment_result.confidence:.2f})")
-                except Exception as e:
-                    logger.warning(f"Sentiment analysis failed: {e}")
-            
-            # Append to JSONL file
-            entry_dict = entry.to_dict()
-            if sentiment_result:
-                entry_dict['sentiment'] = sentiment_result.sentiment
-                entry_dict['sentiment_confidence'] = sentiment_result.confidence
-                entry_dict['sentiment_emotion'] = sentiment_result.emotion
-                entry_dict['sentiment_keywords'] = sentiment_result.keywords_found
-            
-            with open(self.feedback_file, 'a') as f:
-                f.write(json.dumps(entry_dict) + '\n')
-            
-            # Log to MLflow if available
-            self.log_feedback_to_mlflow(entry, sentiment_result)
-            
-            # Update query_metrics in Postgres
-            try:
-                from advisor.db_consolidated import get_db_manager
-                db_manager = get_db_manager()
-                success_val = rating != "negative"
-                update_sql = """
-                    UPDATE query_metrics
-                    SET success = %s,
-                        rating = %s,
-                        star_rating = %s,
-                        suggested_collection = %s,
-                        feedback_text = %s
-                    WHERE id = (
-                        SELECT id FROM query_metrics
-                        WHERE query_text = %s
-                        ORDER BY timestamp DESC
-                        LIMIT 1
-                    )
-                """
-                db_manager.execute_update(update_sql, (
-                    success_val,
-                    rating,
-                    star_rating,
-                    suggested_collection,
-                    feedback_text or user_comment,
-                    query
-                ))
-                logger.info(f"Updated query_metrics in Postgres with rating '{rating}' for query: {query[:50]}")
-            except Exception as db_err:
-                logger.warning(f"Failed to update query_metrics in Postgres with feedback: {db_err}")
-            
-            logger.info(f"Recorded {rating} feedback for query: {query[:50]}...")
             return True
-            
-        except Exception as e:
+        except FeedbackWriteError as e:
             logger.error(f"Failed to record feedback: {e}")
             return False
-    
+
+    def record_vote(
+        self,
+        query: str,
+        query_type: str,
+        collections_searched: List[str],
+        response_length: int,
+        rating: str,
+        feedback_text: Optional[str] = None,
+        suggested_collection: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_comment: Optional[str] = None,
+        star_rating: Optional[int] = None,
+        category: Optional[str] = None,
+        perspective: Optional[str] = None,
+        routing_agent: Optional[str] = None,
+        user_id: Optional[str] = None,
+        intent_override: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Record one vote. Phase 0 S4 hotfix (2026-11-10; replaced in Phase 2 by trellis-feedback).
+
+        - The PRIMARY record is user_feedback.jsonl. If it cannot be written this raises
+          FeedbackWriteError with the reason; nothing reports success for a vote that was not kept.
+        - MLflow is never on the caller's path: it is queued to one background worker, skipped when
+          the tracker's reachability probe disabled tracking, with a short timeout and no retries.
+          (Before this, a refused MLflow port was retried for ~4 minutes inside the request.)
+        - The Postgres query_metrics update is secondary and matches on user_id AND query_text (the
+          newest row); with no user id it is skipped rather than guessed, since a text-only match can
+          land on another user's row.
+
+        Synchronous: callers on an event loop must run it in a thread (run_in_threadpool).
+
+        Returns {"query_metrics": "ok" | "no_match" | "skipped" | "error"}.
+        """
+        # Validate star rating if provided
+        if star_rating is not None and not (1 <= star_rating <= 5):
+            logger.warning(f"Invalid star rating {star_rating}, must be 1-5")
+            star_rating = None
+
+        # Validate category if provided
+        valid_categories = {"accuracy", "completeness", "clarity", "relevance"}
+        if category is not None and category not in valid_categories:
+            logger.warning(f"Invalid category {category}, must be one of {valid_categories}")
+            category = None
+
+        entry = FeedbackEntry(
+            timestamp=datetime.utcnow().isoformat(),
+            query=query,
+            query_type=query_type,
+            collections_searched=collections_searched,
+            response_length=response_length,
+            rating=rating,
+            feedback_text=feedback_text,
+            suggested_collection=suggested_collection,
+            session_id=session_id,
+            user_comment=user_comment,
+            star_rating=star_rating,
+            category=category,
+            perspective=perspective,
+            routing_agent=routing_agent,
+            user_id=user_id,
+            intent_override=intent_override,
+        )
+
+        # Sentiment only on what the user actually wrote (never on the intent label)
+        sentiment_result = None
+        if SENTIMENT_AVAILABLE and user_comment:
+            try:
+                analyzer = get_sentiment_analyzer()
+                sentiment_result = analyzer.analyze(user_comment)
+                logger.debug(f"Sentiment analysis: {sentiment_result.sentiment} ({sentiment_result.confidence:.2f})")
+            except Exception as e:
+                logger.warning(f"Sentiment analysis failed: {e}")
+
+        entry_dict = entry.to_dict()
+        if sentiment_result:
+            entry_dict['sentiment'] = sentiment_result.sentiment
+            entry_dict['sentiment_confidence'] = sentiment_result.confidence
+            entry_dict['sentiment_emotion'] = sentiment_result.emotion
+            entry_dict['sentiment_keywords'] = sentiment_result.keywords_found
+
+        # PRIMARY: the vote is kept only if this line is written
+        try:
+            with open(self.feedback_file, 'a') as f:
+                f.write(json.dumps(entry_dict) + '\n')
+        except Exception as e:
+            raise FeedbackWriteError(f"{type(e).__name__}: {e}") from e
+
+        # Secondary: MLflow in the background, never awaited here
+        submit_mlflow_feedback(self, entry, sentiment_result)
+
+        # Secondary: query_metrics in Postgres, matched by user and query
+        query_metrics = self._update_query_metrics(
+            query=query, user_id=user_id, rating=rating, star_rating=star_rating,
+            suggested_collection=suggested_collection, feedback_text=feedback_text or user_comment,
+        )
+
+        logger.info(f"Recorded {rating} feedback for query: {query[:50]}... "
+                    f"(user={user_id or 'anonymous'}, query_metrics={query_metrics})")
+        return {"query_metrics": query_metrics}
+
+    def _update_query_metrics(self, *, query: str, user_id: Optional[str], rating: str,
+                              star_rating: Optional[int], suggested_collection: Optional[str],
+                              feedback_text: Optional[str]) -> str:
+        """ok | no_match | skipped (no user id: never guess whose row) | error."""
+        if not user_id:
+            return "skipped"
+        try:
+            from advisor.db_consolidated import get_db_manager
+            db_manager = get_db_manager()
+            update_sql = """
+                UPDATE query_metrics
+                SET success = %s,
+                    rating = %s,
+                    star_rating = %s,
+                    suggested_collection = %s,
+                    feedback_text = %s
+                WHERE id = (
+                    SELECT id FROM query_metrics
+                    WHERE user_id = %s AND query_text = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                )
+            """
+            affected = db_manager.execute_update(update_sql, (
+                rating != "negative",
+                rating,
+                star_rating,
+                suggested_collection,
+                feedback_text,
+                user_id,
+                query,
+            ))
+        except Exception as db_err:
+            logger.warning(f"Failed to update query_metrics in Postgres with feedback: {db_err}")
+            return "error"
+        return "ok" if affected else "no_match"
+
     def get_feedback_stats(self) -> Dict[str, Any]:
         """
         Get feedback statistics.
@@ -456,7 +511,7 @@ class FeedbackCollector:
 
         return gap
 
-    def log_feedback_to_mlflow(self, entry: FeedbackEntry, sentiment_result=None):
+    def log_feedback_to_mlflow(self, entry: FeedbackEntry, sentiment_result=None, raise_errors: bool = False):
         """
         Log feedback entry to MLflow for tracking and analysis.
         
@@ -483,6 +538,8 @@ class FeedbackCollector:
                 self._log_feedback_data(entry, sentiment_result)
                 
         except Exception as e:
+            if raise_errors:
+                raise
             logger.warning(f"Failed to log feedback to MLflow: {e}")
     
     def _log_feedback_data(self, entry: FeedbackEntry, sentiment_result=None):
@@ -597,6 +654,62 @@ class FeedbackCollector:
             logger.error(f"Failed to export feedback: {e}")
     
             return False
+
+
+class FeedbackWriteError(Exception):
+    """The primary feedback record (user_feedback.jsonl) could not be written."""
+
+
+# ── MLflow, best effort and off every request path (Phase 0 S4) ─────────────────
+#: Seconds an MLflow HTTP call may take before it is abandoned. No retries.
+MLFLOW_FEEDBACK_TIMEOUT_S = 2
+_mlflow_executor: Optional[ThreadPoolExecutor] = None
+_mlflow_lock = threading.Lock()
+_mlflow_failure_logged = False
+_mlflow_disabled_logged = False
+
+
+def _mlflow_fail_fast_env() -> None:
+    """mlflow reads these per HTTP request. A caller's own setting wins; otherwise fail fast: a
+    refused or slow tracking server costs at most MLFLOW_FEEDBACK_TIMEOUT_S, never a backoff loop.
+    Process-wide, which is the intent: EA's MLflowTracker already disables tracking rather than wait."""
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", str(MLFLOW_FEEDBACK_TIMEOUT_S))
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+
+
+def _mlflow_feedback_job(collector: "FeedbackCollector", entry: FeedbackEntry, sentiment_result) -> None:
+    global _mlflow_failure_logged, _mlflow_disabled_logged
+    try:
+        from advisor.mlflow_tracking import get_mlflow_tracker
+        # The tracker's one short TCP probe (no retries) decides; built here, in the worker, so even
+        # its first construction never runs on a request.
+        if not get_mlflow_tracker().enabled:
+            if not _mlflow_disabled_logged:
+                _mlflow_disabled_logged = True
+                logger.info("MLflow tracking is disabled or unreachable; feedback is not logged to MLflow")
+            return
+        _mlflow_fail_fast_env()
+        collector.log_feedback_to_mlflow(entry, sentiment_result, raise_errors=True)
+    except Exception as e:  # noqa: BLE001 -- best effort; logged once per process
+        if not _mlflow_failure_logged:
+            _mlflow_failure_logged = True
+            logger.warning(f"Feedback not logged to MLflow (further failures are not logged): {e}")
+        else:
+            logger.debug(f"Feedback not logged to MLflow: {e}")
+
+
+def submit_mlflow_feedback(collector: "FeedbackCollector", entry: FeedbackEntry, sentiment_result=None):
+    """Queue the MLflow log on one daemon worker and return at once (the Future, for tests)."""
+    global _mlflow_executor
+    with _mlflow_lock:
+        if _mlflow_executor is None:
+            _mlflow_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ea-feedback-mlflow")
+        executor = _mlflow_executor
+    try:
+        return executor.submit(_mlflow_feedback_job, collector, entry, sentiment_result)
+    except RuntimeError as e:  # interpreter shutting down
+        logger.debug(f"MLflow feedback not queued: {e}")
+        return None
 
 
 # Singleton instance
