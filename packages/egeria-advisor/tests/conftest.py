@@ -20,6 +20,7 @@ assertions in these tests must be superset-style ("in", not "=="), since
 real EA production tables are also present in the same schema.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -80,9 +81,32 @@ def pytest_configure(config):
         "requires_pgvector: needs a live reachable Postgres/pgvector instance "
         "(auto-skipped when one isn't available)",
     )
+    config.addinivalue_line(
+        "markers",
+        'live(reason="..."): needs a running service (Postgres, Egeria, MLflow or Phoenix). The reason '
+        "is required and names the service. With EA_SKIP_LIVE=1 (CI, the gate) every live test is "
+        "SKIPPED with that reason, so -rs lists it; it is never deselected silently.",
+    )
 
+
+# Phase 1 Q1 (2026-11-10). A test outside tests/unit that needs a service is marked live with its
+# reason. CI and the gate set EA_SKIP_LIVE=1 and run with -rs, so each such test shows up as
+# "SKIPPED live: <reason>" -- skipped with its reason rather than `-m "not live"`, which would
+# deselect it and print nothing. Locally, without EA_SKIP_LIVE, live tests run (requires_pgvector
+# still skips them when Postgres is unreachable).
+_SKIP_LIVE = os.environ.get("EA_SKIP_LIVE") == "1"
 
 def pytest_collection_modifyitems(config, items):
+    for item in items:
+        marker = item.get_closest_marker("live")
+        if marker is None:
+            continue
+        reason = marker.kwargs.get("reason") or (marker.args[0] if marker.args else "")
+        if not str(reason).strip():
+            raise pytest.UsageError(f"{item.nodeid}: @pytest.mark.live needs a reason naming the service")
+        if _SKIP_LIVE:
+            item.add_marker(pytest.mark.skip(reason=f"live: {reason}"))
+
     if _PGVECTOR_AVAILABLE:
         return
     skip = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
@@ -181,3 +205,96 @@ def ea_vs_store(vs_test_prefix):
     store.connect()
     yield store
     store.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Throwaway Postgres schema for tests that WRITE (Phase 1 Q1-1, 2026-11-10)
+# ---------------------------------------------------------------------------
+# RE's pattern (packages/resource-explorer/tests/conftest.py): a schema of its own per test,
+# created, used, dropped. Until Q1-1, test_code_intel_agent seeded and deleted rows in RE's REAL
+# resource_explorer schema and test_code_symbol_store in EA's real code_symbols, so every EA unit run
+# on laz wrote the shared Postgres. Now they write only `ea_test_<pid>_<hex>`, dropped afterwards;
+# schemas left by a crashed run are swept when their process is gone.
+
+_EA_TEST_SCHEMA_PREFIX = "ea_test_"
+
+
+def _pg_connect():
+    import psycopg2
+    from advisor.config import settings
+    return psycopg2.connect(
+        host=settings.pgvector_host, port=settings.pgvector_port,
+        dbname=settings.pgvector_dbname, user=settings.pgvector_user,
+        password=settings.pgvector_password, connect_timeout=5,
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sweep_orphan_ea_test_schemas(cur) -> None:
+    cur.execute("SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE %s",
+                (_EA_TEST_SCHEMA_PREFIX.replace("_", "\\_") + "%",))
+    for (name,) in cur.fetchall():
+        pid = name[len(_EA_TEST_SCHEMA_PREFIX):].split("_", 1)[0]
+        if pid.isdigit() and int(pid) != os.getpid() and not _pid_alive(int(pid)):
+            cur.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+
+
+@pytest.fixture
+def ea_test_schema():
+    """A Postgres schema of this test's own, dropped afterwards. Never public, never resource_explorer."""
+    if not _PGVECTOR_AVAILABLE:
+        pytest.skip("pgvector/Postgres not reachable at the configured host:port")
+    import uuid
+    name = f"{_EA_TEST_SCHEMA_PREFIX}{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    conn = _pg_connect()
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            _sweep_orphan_ea_test_schemas(cur)
+            cur.execute(f'CREATE SCHEMA "{name}"')
+        yield name
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
+        conn.close()
+
+
+@pytest.fixture
+def ea_test_db(ea_test_schema, monkeypatch):
+    """EA's ConsolidatedDBManager, scoped to the throwaway schema, installed as get_db_manager()'s
+    singleton for this test. Its connections use search_path=<schema>,public: EA's unqualified tables
+    are created and used in the throwaway schema (public stays on the path only for the vector type)."""
+    from psycopg2.pool import ThreadedConnectionPool
+    from advisor import code_symbol_store, db_consolidated
+
+    schema = ea_test_schema
+
+    class _SchemaScopedDB(db_consolidated.ConsolidatedDBManager):
+        def connect(self) -> None:
+            if self._pool is not None:
+                return
+            with self._lock:
+                if self._pool is not None:
+                    return
+                self._pool = ThreadedConnectionPool(
+                    minconn=1, maxconn=3, host=self.host, port=self.port, dbname=self.dbname,
+                    user=self.user, password=self.password, options=f"-csearch_path={schema},public")
+                self._initialize_schemas()
+
+    db = _SchemaScopedDB()
+    db.connect()
+    current = db.execute_query("SELECT current_schema() AS s")[0]["s"]
+    assert current == schema, f"test DB is not scoped to its throwaway schema (current_schema={current})"
+    monkeypatch.setattr(db_consolidated, "_db_manager", db)
+    monkeypatch.setattr(code_symbol_store, "_store", None)
+    yield db
+    db.disconnect()
