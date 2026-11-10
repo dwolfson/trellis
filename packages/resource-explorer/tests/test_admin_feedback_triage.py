@@ -99,6 +99,14 @@ class TestTheStatusFilter:
         data = client.get("/api/curate/feedback?status=new&limit=1", headers=admin_headers).json()
         assert data["resource_limited"] is False and data["resource_read"] == 1
 
+    def test_resource_read_counts_the_rows_read_not_the_rows_the_filter_kept(self, client, feedback_store,
+                                                                              admin_headers, monkeypatch):
+        monkeypatch.setattr("resource_explorer.web.routes.curate.RESOURCE_STATUS_READ_CAP", 5)
+        _seed(feedback_store)                                    # one resource row, status new
+        data = client.get("/api/curate/feedback?status=known_issue", headers=admin_headers).json()
+        assert data["resource_limited"] is False and data["resource_read"] == 1
+        assert not [r for r in data["feedback"] if r["source"] == "resource"]
+
     def test_without_a_status_the_listing_is_never_limited(self, client, feedback_store, admin_headers):
         # An unfiltered read is ordinary paging by `limit`, not an over-read that can miss matches.
         _seed(feedback_store)

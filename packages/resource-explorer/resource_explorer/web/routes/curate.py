@@ -427,7 +427,8 @@ def list_all_feedback(
         limit=read_cap, entity_type=entity_type, category=category)
     # The over-read is still a cap: when it came back full there are older rows it never read, and some of them
     # may have the asked status. Say so rather than present a short list as complete (#1020 P3).
-    resource_limited = bool(status) and len(resource_rows) >= read_cap
+    resource_read = len(resource_rows)  # rows read, before the status filter drops any
+    resource_limited = bool(status) and resource_read >= read_cap
     states = page_store.resource_states([r["id"] for r in resource_rows])
     for r in resource_rows:
         r["triage"] = states.get(str(r["id"])) or {"status": "new", "note": "", "actor": "", "updated_at": "",
@@ -473,8 +474,9 @@ def list_all_feedback(
         "filtered": bool(entity_type or category or source or status or cause),
         #: True when a status filter read the newest `resource_read` Curate rows and there may be older ones it
         #: did not read; the page says so. False whenever the read was not cut short (or no status was asked).
+        #: `resource_read` is how many Curate rows were read, before any status filter.
         "resource_limited": resource_limited,
-        "resource_read": read_cap if resource_limited else len(resource_rows),
+        "resource_read": resource_read,
         # Q7: Curate rows deleted since they were triaged. Their history is kept until an admin clears it
         # (DELETE /api/feedback/resource_feedback/{id}); deleting a row never reaches into the feedback store.
         "gone": page_store.gone_resource_rows(reg.resource_feedback_ids_present),
