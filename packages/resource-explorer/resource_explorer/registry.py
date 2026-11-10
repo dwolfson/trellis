@@ -5247,6 +5247,7 @@ class ProjectRegistry:
         self._migrate_investigation_visibility()
         self._migrate_file_systems_key_tail()
         self._migrate_feedback_routes_table()
+        self._migrate_feedback_rfas_table()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5421,6 +5422,78 @@ class ProjectRegistry:
         short transaction. Nothing existing is altered."""
         with self._conn() as conn:
             conn.execute(self.FEEDBACK_ROUTES_DDL)
+
+    #: Closed-loop step 2b (BRIEF-CLOSED-LOOP-STEP2-ROUTING.md §3; DDL record docs/ddl-feedback-rfas.md): the one RFA
+    #: raised per question, cause and entity. The key is what keeps two Saves on one question to one RFA.
+    FEEDBACK_RFAS_DDL = (
+        "CREATE TABLE IF NOT EXISTS feedback_rfas ("
+        " question_key TEXT NOT NULL,"
+        " cause TEXT NOT NULL,"
+        " entity_type TEXT NOT NULL,"
+        " entity_slug TEXT NOT NULL,"
+        " rfa_id TEXT NOT NULL DEFAULT '',"
+        " created_at TEXT NOT NULL,"
+        " PRIMARY KEY (question_key, cause, entity_type, entity_slug))"
+    )
+
+    def _migrate_feedback_rfas_table(self) -> None:
+        """Closed-loop step 2b (docs/ddl-feedback-rfas.md): one new table, `CREATE TABLE IF NOT EXISTS` in its own
+        short transaction. Nothing existing is altered."""
+        with self._conn() as conn:
+            conn.execute(self.FEEDBACK_RFAS_DDL)
+
+    def claim_feedback_rfa(self, question_key: str, cause: str, entity_type: str, entity_slug: str) -> bool:
+        """Claim the one RFA for (question, cause, entity) before raising it. True when this call made the row;
+        False when it exists, raised by an earlier Save or one running at the same moment."""
+        now = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._conn() as conn:
+            made = conn.execute(
+                "INSERT INTO feedback_rfas (question_key, cause, entity_type, entity_slug, rfa_id, created_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?) "
+                "ON CONFLICT (question_key, cause, entity_type, entity_slug) DO NOTHING",
+                (question_key, cause, entity_type, entity_slug, now)).rowcount
+        return bool(made)
+
+    def set_feedback_rfa(self, question_key: str, cause: str, entity_type: str, entity_slug: str,
+                         rfa_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE feedback_rfas SET rfa_id = ? WHERE question_key = ? AND cause = ? "
+                         "AND entity_type = ? AND entity_slug = ?",
+                         (rfa_id, question_key, cause, entity_type, entity_slug))
+
+    def release_feedback_rfa(self, question_key: str, cause: str, entity_type: str, entity_slug: str) -> None:
+        """Drop a claim whose RFA could not be written, so the next Save raises it."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM feedback_rfas WHERE question_key = ? AND cause = ? AND entity_type = ? "
+                         "AND entity_slug = ? AND rfa_id = 'pending'",
+                         (question_key, cause, entity_type, entity_slug))
+
+    def get_feedback_rfa(self, question_key: str, cause: str, entity_type: str, entity_slug: str) -> str:
+        """The RFA's activity id, 'pending' while it is being raised, or "" when there is none."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT rfa_id FROM feedback_rfas WHERE question_key = ? AND cause = ? "
+                               "AND entity_type = ? AND entity_slug = ?",
+                               (question_key, cause, entity_type, entity_slug)).fetchone()
+        return row["rfa_id"] if row else ""
+
+    def add_activity_item(self, entry_id: str, item: dict) -> bool:
+        """Append one structured pointer to an activity entry's `items` (an RFA that another answer joins). Returns
+        False when the entry is gone. An item already there is not added twice.
+
+        One transaction, and on Postgres the row is locked (`SELECT ... FOR UPDATE`, as `record_compile` does), so two
+        answers joining the same RFA at once both land: a pointer that silently vanished would be an absence nobody
+        could see (the architect's read-back of 4b522bc5). SQLite has no row lock; there, two joins at the same instant
+        can still race, which only a test or a one-box dev registry would meet."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT items_json FROM activity_log WHERE id = ?"
+                               + (" FOR UPDATE" if conn.is_postgres else ""), (entry_id,)).fetchone()
+            if not row:
+                return False
+            items = json.loads(row["items_json"] or "[]")
+            if item not in items:
+                items.append(item)
+                conn.execute("UPDATE activity_log SET items_json = ? WHERE id = ?", (json.dumps(items), entry_id))
+        return True
 
     def claim_feedback_route(self, item_id: str, cause: str, routed_by: str = "") -> bool:
         """Claim the route of one diagnosis before routing it. True when this call made the row; False when the
@@ -13064,6 +13137,9 @@ class ProjectRegistry:
         "step_annotations": "per surveyed resource, never an investigation",
         "step_runs": "per surveyed resource, never an investigation",
         "sub_resources": "per surveyed resource, never an investigation",
+        "feedback_rfas": "the one RFA routed per question (closed-loop step 2b), keyed by the resource the answer "
+                         "was about or the catalog/questions pseudo-entity, never an investigation; the RFA itself "
+                         "is activity_log history and stays",
     }
 
     @staticmethod
