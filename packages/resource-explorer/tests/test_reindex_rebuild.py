@@ -670,3 +670,29 @@ def test_a_drop_that_fails_is_on_the_run_row_and_retried(registry, store, monkey
     assert reindex.drop_expired_previous(registry, now=later, deps=d) == []
     assert "table locked" in reindex.progress(registry, SLUG)["drop_error"]
     monkeypatch.undo()
+    # The next pass drops it, and the error it recorded is cleared rather than left beside "discarded".
+    assert reindex.drop_expired_previous(registry, now=later, deps=d) == [SLUG]
+    assert reindex.progress(registry, SLUG)["drop_error"] == ""
+
+
+def test_a_failure_recording_a_failed_drop_does_not_stop_the_other_repositories(registry, store, monkeypatch):
+    """The architect's read-back of d4862b67: a registry error while recording one repository's failed drop is raised
+    after the loop, not in the middle of it."""
+    run_id, d = rebuilt(registry, store)
+    # Two expired rows stand in for two repositories: the loop must reach the second after the first's record fails.
+    real_list, real_merge = registry.list_runs, registry.merge_run_target
+    monkeypatch.setattr(registry, "list_runs", lambda **kw: real_list(**kw) * 2)
+    monkeypatch.setattr(store, "drop_collection", lambda name: (_ for _ in ()).throw(RuntimeError("table locked")))
+    failed_records = []
+
+    def merge(rid, patch):
+        if patch.get("drop_error") and not failed_records:
+            failed_records.append(rid)
+            raise RuntimeError("registry down")
+        return real_merge(rid, patch)
+    monkeypatch.setattr(registry, "merge_run_target", merge)
+    later = reindex._now() + timedelta(days=8)
+    with pytest.raises(RuntimeError, match="registry down"):
+        reindex.drop_expired_previous(registry, now=later, deps=d)
+    assert failed_records == [run_id]
+    assert "table locked" in target(registry, run_id)["drop_error"]       # the second pass through the loop recorded
