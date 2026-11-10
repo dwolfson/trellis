@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 
 dependencies = [
-    "pyegeria>=6.2.31",  # raised to 6.2.31 2026-11-10 (6.2.30 fixes Dr.Egeria Update wiping zones on a blank Zone Membership); matches the Portal's (PyegeriaWebHandler) floor -- avoid client-version drift within the same demo stack; raised with trellis' floor 2026-10-31 (the Portal is on 6.2.24; raised to 6.2.24 2026-11-07)
+    "pyegeria>=6.2.32",  # raised to 6.2.32 2026-11-10 (md_processing.templates: Dr.Egeria templates ship in the wheel, B2); raised to 6.2.31 2026-11-10 (6.2.30 fixes Dr.Egeria Update wiping zones on a blank Zone Membership); matches the Portal's (PyegeriaWebHandler) floor -- avoid client-version drift within the same demo stack; raised with trellis' floor 2026-10-31 (the Portal is on 6.2.24; raised to 6.2.24 2026-11-07)
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.3.0",
     "trellis-vectorstore",
