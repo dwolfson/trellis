@@ -4,10 +4,13 @@ See docs/trellis-feedback-extraction.md. The FastAPI router is in `trellis_feedb
 needs the `api` extra; it is not imported here, so the store can be used without fastapi.
 """
 from trellis_feedback.models import (
+    CAUSE_CHAIN,
+    CAUSES,
     ITEM_SOURCE,
     KINDS,
     PRODUCT_CATEGORIES,
     STATUSES,
+    UNDIAGNOSED,
     VOTES,
     FeedbackError,
     FeedbackItem,
@@ -17,7 +20,19 @@ from trellis_feedback.models import (
 from trellis_feedback.store import FeedbackStore, NotFound
 
 __all__ = [
-    "ITEM_SOURCE", "KINDS", "PRODUCT_CATEGORIES", "STATUSES", "VOTES",
-    "FeedbackError", "FeedbackItem", "FeedbackStore", "NotFound", "TriageEvent", "TriageState",
+    "CAUSES",
+    "CAUSE_CHAIN",
+    "ITEM_SOURCE",
+    "KINDS",
+    "PRODUCT_CATEGORIES",
+    "STATUSES",
+    "UNDIAGNOSED",
+    "VOTES",
+    "FeedbackError",
+    "FeedbackItem",
+    "FeedbackStore",
+    "NotFound",
+    "TriageEvent",
+    "TriageState",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
