@@ -640,3 +640,26 @@ def test_a_discard_killed_part_way_refuses_undo_and_the_next_pass_finishes_it(re
     assert reindex.drop_expired_previous(registry, deps=d) == [SLUG]        # inside the window, still finished
     assert not any(n.endswith("__previous") for n in store.tables)
     assert "stopped part-way" in reindex.progress(registry, SLUG)["outcomes"][-1]["words"]
+
+
+class TestTheAsk:
+    """R2's ask: what a rebuild would do, read before anyone says yes; nothing is queued by reading it."""
+
+    def test_the_ask_reads_counts_space_and_whether_it_is_the_first(self, registry, store):
+        out = reindex.ask(registry, SLUG, store=store)
+        assert out["refused"] == "" and out["first"] is True and out["keep_days"] == reindex.KEEP_PREVIOUS_DAYS
+        assert {c["collection"]: c["chunks"] for c in out["collections"]} == {
+            f"{SLUG}_markdown_docs": 2, f"{SLUG}_java_code": 1}
+        assert "needs about 3 MB more" in out["needs_words"]
+        assert registry.list_runs(kind=reindex.RUN_KIND, limit=5) == []        # reading the ask queues nothing
+
+    def test_a_rebuild_that_would_be_refused_says_why(self, registry, store):
+        queued(registry)
+        out = reindex.ask(registry, SLUG, store=store)
+        assert "already has a rebuild" in out["refused"]
+
+    def test_progress_names_the_tables_a_discard_would_drop(self, registry, store):
+        execute(registry, queued(registry), deps(registry, store))
+        p = reindex.progress(registry, SLUG)
+        assert p["undo_available"] is True
+        assert sorted(p["previous_tables"]) == [f"{SLUG}_java_code__previous", f"{SLUG}_markdown_docs__previous"]

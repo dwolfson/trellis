@@ -40,6 +40,14 @@ class QueueBody(BaseModel):
     slug: str
 
 
+@router.get("/ask")
+def ask(slug: str, request: Request) -> dict:
+    """What a rebuild of `slug` would do, before anyone says yes: the collections, the measured space, whether it is
+    the held first rebuild. `refused` says why one cannot be queued now."""
+    require_admin(request)
+    return reindex.ask(_registry(), slug)
+
+
 @router.post("/queue")
 def queue(body: QueueBody, request: Request) -> dict:
     """Queue a rebuild of one repository. The first rebuild ever is held for an admin to accept before it swaps."""
