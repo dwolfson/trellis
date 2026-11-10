@@ -139,6 +139,9 @@ Re-ingest" card. The architect accepted it at the read-back of 9fb4980b.
   build drops them first). The live index was never changed, so there is nothing to undo. A cancel does not end Q7:
   the next rebuild is held again, since only a rebuild that reaches `done` does. An accept whose continuation finds the
   original cancelled fails on its first step and swaps nothing.
+  Accept and cancel are each read-then-write, so they take one claim per held run (`reindex-decision:{run_id}`) around
+  their check and write; whichever comes second is refused ("right now", then "already accepted"/"already
+  cancelled"). The continuation also re-reads the original right before its swap (the architect's C-1 on 6a57117e).
 - **No batch.** One repository at a time, deliberately. A batch over the suspicious list is a sequence of single asks.
 
 **Operating rule on laz, not code:** a rebuild rewrites shared tables other sessions read, so it is requested after a
