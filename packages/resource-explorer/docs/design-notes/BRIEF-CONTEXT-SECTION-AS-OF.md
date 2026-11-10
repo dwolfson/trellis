@@ -157,3 +157,11 @@ the same compile"). `as_of` is provenance and must stay out of the hash. Only th
 Build note from the architect's read-back: the `as_of_seen` append is a read-modify-write of the stored
 JSON, so two concurrent hits could drop one history entry. Do the append in a single UPDATE (jsonb on PG),
 or state the loss in the build PR.
+
+**Decision (project owner, 2026-11-10):** split the build in two. Sizing the write sites showed that nearly every
+survey write feeds manifests: 77 findings and metrics write calls, 36 of which pass their own `surveyed_at`, built
+by 76 separate `utcnow()` calls. `surveyed_at` is also the string-compared read key (`MAX(surveyed_at)`).
+- **PR A:** library fields, compile stamping, the three readers, the repeat-compile history and the provenance
+  fixes. Dates are stamped as stored, so today's dates without a zone are reported as "cannot be read".
+- **PR B:** one `now_utc_iso()` helper through the survey write paths, with an audit of the readers (64
+  `fromisoformat` calls, and the read key).
