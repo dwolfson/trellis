@@ -13137,6 +13137,9 @@ class ProjectRegistry:
         "step_annotations": "per surveyed resource, never an investigation",
         "step_runs": "per surveyed resource, never an investigation",
         "sub_resources": "per surveyed resource, never an investigation",
+        "feedback_rfas": "the one RFA routed per question (closed-loop step 2b), keyed by the resource the answer "
+                         "was about or the catalog/questions pseudo-entity, never an investigation; the RFA itself "
+                         "is activity_log history and stays",
     }
 
     @staticmethod
