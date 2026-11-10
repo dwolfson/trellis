@@ -1,6 +1,7 @@
 # Brief: rebuild a repository's chat index from scratch
 
-Status: **proposal, awaiting the architect's read-back and the project owner's decisions (§8).** No code yet.
+Status: **design PASS from the architect's read-back of 463c555a (2026-11-10), with C1–C4 folded in below (§11).
+Q1, Q2, Q3 and Q5 decided; Q4, Q6, Q7 and Q8 open (§8).** No code yet.
 Asked for by the project owner on 2026-11-10 ("refresh the download and ingestion of a repo").
 
 ## 1. The gap
@@ -50,17 +51,29 @@ this kind.
    (§5). The pipeline's other writes (file inventory, dependencies, data profiles, CI, supply chain, conventions) are
    **not** run on a rebuild: they are survey results with steps of their own (Q6).
 3. **Check.** Per collection: old count, new count, and the files each came from. Refuse the swap when a collection
-   that had chunks now has none, unless the plan no longer proposes it.
+   that had chunks now has none, unless the plan no longer proposes it. The collection types come from the analyzer's
+   plan **today** (Q1), so the check also lists what changed: types added (`collection_drift.py`'s eligible-but-missing
+   ones) and types the plan no longer proposes. A dropped type leaves the live index at the swap and stays in
+   `__previous` with the rest, so undo brings it back.
 4. **Report or swap** (Q2): either stop here and show old and new counts for a person to accept (the coordinator's "dry
    run"), or swap at once when the check passes.
-5. **Swap**, per collection: rename live → `{name}__previous`, then `__rebuild` → live, with the rollback order
-   `repair.py` already uses for a repo rename. `MultiCollectionStore.rename_collection` exists. Then update
-   `projects.collections`, the baseline commit SHA, the `rag_ingestion` metric, and invalidate R's query cache, as
-   `run_first_index` does.
+5. **Swap, in one transaction** (C3): every one of R's collections, live → `{name}__previous` and `__rebuild` → live,
+   together with `projects.collections`, under a bounded `lock_timeout` and retried on a lock timeout. Not
+   `MultiCollectionStore.rename_collection` as it stands: it commits each RENAME alone, so between two of them chat
+   would read "relation does not exist". The swap also **renames each table's HNSW index** with it (C4, below). Then the
+   baseline commit SHA, the `rag_ingestion` metric, and R's query cache, as `run_first_index` does.
 6. **Keep the previous index** until it is discarded (Q4). **Undo** renames it back. A failed build drops the
    `__rebuild` tables and leaves the live index untouched.
 
-Space: up to twice R's index for the duration. Load: a full download and embed of R. Both are reported in the ask (§6).
+Space: up to twice R's index for the duration, so a rebuild is **refused when the database's free disk is below twice
+R's current index** (the architect's addition). Load: a full download and embed of R. Both are reported in the ask (§6).
+
+**Index names (C4).** Each collection's HNSW index is `{table}_embedding_idx`, created `IF NOT EXISTS`, and
+`ALTER TABLE … RENAME` does not rename indexes. Left alone, after one swap the live table's index would still be named
+`…__rebuild_embedding_idx`; the next rebuild's `CREATE INDEX IF NOT EXISTS` on a new `__rebuild` table would find that
+name taken and silently create nothing, and chat would scan sequentially. So the swap renames the indexes with their
+tables, and before swapping it checks that each `__rebuild` table owns its own vector index. Any table or index name
+over 63 bytes is refused before the build, since Postgres truncates it silently.
 
 ## 4. While it runs
 
@@ -76,9 +89,15 @@ Space: up to twice R's index for the duration. Load: a full download and embed o
 
 - **Same text at the same position, built under the final name:** the same id. The vote stays, with nothing to do.
   This is why ids are hashed under the final name in §3 step 2.
+- **But "position" is the insert batch's index, not the chunk's place in its file** (C1). A first index numbers a whole
+  collection from 0; a refresh numbers only its changed-file subset from 0 (`ingestion/incremental.py`). So one added
+  chunk shifts every later id, and a repository that has been refreshed has ids no full rebuild reproduces. **The remap
+  below is therefore the main path, not the exception.** Q8 proposes ids that do not depend on batch position.
 - **Same text at a different position** (a chunk before it was added or removed): a new id. The rebuild **remaps** it.
   Before the swap, for every voted ref in an old collection, read its text from the old table and look for a row in the
-  new table with identical text. On one match, the vote's counts move to the new ref. On several or none, see below.
+  new table with identical text. On one match, the vote's counts move to the new ref. Ties are narrowed by the same
+  `file_path` first (the architect's read-back); what is still tied is reported as **"ambiguous (N identical)"**, apart
+  from "text gone", and kept orphaned rather than guessed.
 - **Text gone or changed:** the vote is **kept, and said to be orphaned.** It is not dropped and not guessed onto
   another chunk. The result says "N votes carried over, M orphaned", and the Admin feedback view lists orphaned refs as
   such. They no longer affect retrieval, since no chunk has their ref.
@@ -99,6 +118,8 @@ already holds:
 
 ## 7. Where it is offered
 
+**Admins only** (Q3): every entry point below refuses anyone else, as Admin → Feedback does.
+
 - **Analysis**, on the "Refresh & Re-ingest" card: "Rebuild from scratch…", which opens the ask.
 - **CLI:** `resource-explorer refresh <slug> --rebuild`, which asks on the terminal unless `--yes` is given.
 - **API:** `POST /api/reindex/queue {slug}`, `GET /api/reindex/progress`, `POST /api/reindex/{run_id}/accept` (when Q2
@@ -110,6 +131,15 @@ peer round, and not during a heavy Egeria period or a gate (the coordinator's ru
 the rest is the coordinator's routine.
 
 ## 8. Questions for the project owner
+
+**Decision (project owner, 2026-11-10):** Q2, Q3 and Q5 as recommended: swap at once when the check passes, keeping the
+previous index for undo; admins only; the shared site collections get a separate re-crawl, later.
+
+**Decision (project owner, 2026-11-10):** Q1, not as recommended: a rebuild **re-plans** its collection types from the
+repository today (the analyzer's proposal), rather than keeping the set it has. §3 step 3 says what that changes.
+
+Open: Q4, Q6, Q7 and Q8. The architect suggests, under Q7, holding the **first** rebuild for acceptance, so that it
+doubles as the timing run, and swapping at once after that.
 
 1. **Which collections are rebuilt:** the ones R has now (recommended: a rebuild should not silently change what is
    indexed), or the ones the analyzer proposes today, which may add types (`collection_drift.py` already reports
@@ -125,7 +155,12 @@ the rest is the coordinator's routine.
 6. **The pipeline's other writes** (file inventory, dependencies, profiles): skipped on a rebuild (recommended: they
    are survey results with their own steps), or re-run alongside?
 7. **A first measurement:** may one mid-size repository be rebuilt, timed, once the code exists, to give the ask its
-   first real estimate (the coordinator's suggestion)?
+   first real estimate (the coordinator's suggestion), with that first rebuild held for acceptance (the architect's)?
+8. **Chunk ids per file** (C2, the architect's): mint an id as `sha256(collection:file_path:index_in_file:text)`
+   instead of by batch position. Ids would then survive a refresh and a rebuild wherever a file's chunks are unchanged,
+   and it fixes a bug that exists today: two refresh runs can give different files' chunks the same id (identical text
+   at the same batch index), and `ON CONFLICT` overwrites one with the other. It changes every id once, so it needs the
+   same vote remap, run once, when it lands. Recommended: yes, as its own PR before R1.
 
 ## 9. Phasing
 
@@ -141,6 +176,14 @@ No new table: the run row and the activity log carry the state, as for the first
 
 ## 10. Tests
 
+- A rebuild of a repository that has been refreshed: its ids differ from a full rebuild's, and the remap carries its
+  votes (C1).
+- The swap is one transaction: a reader between the two renames never sees a missing relation (C3).
+- After a swap the live table owns `{table}_embedding_idx`, and a second rebuild's `__rebuild` table gets its own vector
+  index (C4). A name over 63 bytes is refused before the build.
+- Tied identical text is narrowed by file path, and what remains is reported ambiguous, apart from text gone.
+- A rebuild is refused when free disk is below twice the index.
+
 - A rebuild with unchanged content keeps every id, so every vote stays where it was.
 - A chunk that moved keeps its vote through the remap; one whose text changed is reported orphaned and kept.
 - Chat reads the old collections until the swap, and the new ones after it.
@@ -148,3 +191,10 @@ No new table: the run row and the activity log carry the state, as for the first
 - A refresh during a rebuild is refused with its sentence; a second rebuild is refused while one runs.
 - Undo restores the previous index and its votes; discard drops it.
 - Shared `web_docs_*` collections are neither rebuilt nor dropped.
+
+## 11. The architect's read-back of 463c555a
+
+Design PASS, merge after C1–C4, all folded in above: C1 (position is the batch index, so the remap is the main path,
+§5), C2 (per-file ids, put to the owner as Q8), C3 (one-transaction swap, §3 step 5), C4 (index names, §3). Also taken:
+narrow remap ties by file path and report "ambiguous" separately; check free disk before a rebuild. `pg.py` caches no
+table names or statements, and the query-cache invalidation already exists.
