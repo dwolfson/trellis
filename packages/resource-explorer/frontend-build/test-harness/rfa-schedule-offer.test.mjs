@@ -17,7 +17,7 @@ const base = (id, over = {}) => ({
   notes: '', dismissal_key: `k-${id}`, dismissed: false, dismissal: null, offer: OFFER, ...over,
 });
 
-async function open({ rows, failSchedule = false }) {
+async function open({ rows, failSchedule = false, unchanged = false }) {
   const { document } = makeDomEnvironment();
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
@@ -28,6 +28,7 @@ async function open({ rows, failSchedule = false }) {
     if (method === 'GET' && u === '/api/activity/rfas') return ok(rows);
     if (method === 'POST' && u.startsWith('/api/schedules/')) {
       if (failSchedule) return { ok: false, status: 403, statusText: 'Forbidden', json: async () => ({ detail: 'you may not publish r1' }) };
+      if (unchanged) return ok({ status: 'unchanged', schedule: 'daily', reason: 'already scheduled daily, which is at least as often as weekly' });
       return ok({ status: 'ok' });
     }
     return ok({});
@@ -42,7 +43,7 @@ async function open({ rows, failSchedule = false }) {
   return { document, calls, rowFor };
 }
 
-test('a schedule offer is a button that posts what the per-card Schedule control posts', async () => {
+test('a schedule offer is a button that posts what the per-card Schedule control posts, only ever faster', async () => {
   const t = await open({ rows: [base('e1::0')] });
   const button = t.rowFor('e1::0').querySelector('[data-rfa-schedule]');
   assert.equal(text(button), 'Schedule licenses weekly');
@@ -50,7 +51,8 @@ test('a schedule offer is a button that posts what the per-card Schedule control
   await tick();
   const post = t.calls.find((c) => c.method === 'POST');
   assert.equal(post.url, '/api/schedules/repo/r1');
-  assert.deepEqual(post.body, { analysis_id: 'licenses', schedule: 'weekly', enabled: true, target_kind: 'analysis' });
+  assert.deepEqual(post.body,
+    { analysis_id: 'licenses', schedule: 'weekly', enabled: true, target_kind: 'analysis', only_if_faster: true });
   assert.match(text(t.document.querySelector('#next-rfa-flash')), /Scheduled licenses weekly on r1/);
 });
 
@@ -69,4 +71,12 @@ test('no offer, or a completed RFA, has no schedule button', async () => {
   // A completed RFA is hidden until "show closed"; shown or not, it offers no action.
   const done = t.rowFor('e2::0');
   assert.equal(done ? done.querySelector('[data-rfa-schedule]') : null, null);
+});
+
+test('a schedule already as fast is left alone, and the drawer says so', async () => {
+  const t = await open({ rows: [base('e1::0')], unchanged: true });
+  t.rowFor('e1::0').querySelector('[data-rfa-schedule]').click();
+  await tick();
+  assert.match(text(t.document.querySelector('#next-rfa-flash')),
+    /Not changed: licenses on r1 is already scheduled daily/);
 });

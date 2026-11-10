@@ -21,7 +21,10 @@ The rules, all decided by the project owner on 2026-11-10:
 
 Step 2a: the gap consumers (`missing_evidence`, `analysis_defect`, and the gap half of `catalog_gap`).
 Step 2c: Automate. A `stale` diagnosis proposes a schedule for the analysis behind the stale section, as an RFA whose
-drawer row can save it (Q7). One proposal per (resource, analysis), in the same `feedback_rfas` table; no question text.
+drawer row can save it, only ever making it faster (Q7). One proposal per (resource, analysis, cadence), in the same
+`feedback_rfas` table, so a completed weekly proposal does not stop a later daily one; no question text. An analysis
+that already runs daily and was still stale is an `analysis_defect` gap instead: the run, or its result's path to the
+compile, is what failed (the architect's read-back of 0969661a).
 Step 2b: the RFA consumers. `catalog_gap` also raises an RFA, attached to its gap (`analysis_gaps.rfa_activity_id`),
 or against the `catalog`/`questions` pseudo-entity when the answer had no resource; `unclear_question` raises an RFA
 only. One RFA per (question, cause, entity), claimed in `feedback_rfas` before it is written; a later answer on the
@@ -297,7 +300,16 @@ def execute(p: Plan | None, item: dict, *, actor: str, registry: Any) -> dict | 
         if p.rfa:
             rfa_id = _raise_rfa(p, item, gap_id=gap_id, registry=registry)
         if p.automate:
-            rfa_id = _propose_schedule(p, item, registry=registry)
+            try:
+                consumer, target = _propose_schedule(p, item, actor=actor, registry=registry)
+            except ValueError as exc:
+                # Already daily, so a defect gap, on a resource that cannot hold gaps (not a repository).
+                consumer, target = "", ""
+                gap_reason = f"it already runs daily, and no gap could be raised: {exc}"
+            if consumer == "gap":
+                gap_id = int(target)
+            elif consumer:
+                rfa_id = target
     except Exception as exc:  # a passing failure: release the claim so the next Save tries again
         logger.exception("routing %s of feedback %s failed", p.cause, item_id)
         registry.release_feedback_route(item_id, p.cause)
@@ -378,47 +390,54 @@ def _offer_cadence(current: dict | None) -> tuple[str, str]:
     return DEFAULT_CADENCE, "it is not scheduled"
 
 
-def _propose_schedule(p: Plan, item: dict, *, registry: Any) -> str:
-    """Automate's proposal for a stale answer: an RFA naming the analysis and resource, whose drawer row can save
-    the schedule (`offer`). One per (resource, analysis), claimed in `feedback_rfas`; a later stale answer on the
-    same analysis joins it. No question text: the proposal is about the analysis, not what was asked.
+def _propose_schedule(p: Plan, item: dict, *, actor: str, registry: Any) -> tuple[str, str]:
+    """Automate's answer to a stale diagnosis. Returns (consumer, target): ("automate", rfa id), or ("gap", gap id)
+    when the analysis already runs daily.
+
+    The proposal is an RFA naming the analysis and resource, whose drawer row can save the schedule (`offer`; the
+    save is `only_if_faster`, so it never slows a schedule someone has since sped up). One per (resource, analysis,
+    cadence), claimed in `feedback_rfas`; a later stale answer at the same cadence joins it, and one after the
+    schedule was raised gets the next cadence's proposal. No question text: it is about the analysis.
+
+    Already daily and still stale: a faster schedule is not the fix. The run, or the path from its result to the
+    compile, failed, which is the analysis owner's: an `analysis_defect` gap (raises ValueError for a resource that
+    cannot hold gaps, which `execute` records as not routed).
     """
     from resource_explorer.activity_logger import log_rfa
 
     entity_type = (item.get("entity_type") or "").strip() or "repo"
     slug = item["slug"].strip()
-    key = f"schedule:{p.analysis_id}"
+    current = next((s for s in registry.get_schedules(entity_type, slug)
+                    if s.get("analysis_id") == p.analysis_id), None)
+    cadence, now = _offer_cadence(current)
+    if not cadence:
+        defect = Plan(cause=p.cause, gap_kind=ANALYSIS_DEFECT, analysis_id=p.analysis_id, role=p.role,
+                      compile_id=p.compile_id)
+        return "gap", str(_raise_gap(defect, item, actor=actor, registry=registry))
+
+    key = f"schedule:{p.analysis_id}:{cadence}"
     pointer = {"kind": "feedback", "id": item["id"]}
     if not registry.claim_feedback_rfa(key, p.cause, entity_type, slug):
         rfa_id = registry.get_feedback_rfa(key, p.cause, entity_type, slug)
         if rfa_id and rfa_id != "pending":
             registry.add_activity_item(rfa_id, pointer)
-        return rfa_id or "pending"
+        return "automate", rfa_id or "pending"
     try:
-        current = next((s for s in registry.get_schedules(entity_type, slug)
-                        if s.get("analysis_id") == p.analysis_id), None)
-        cadence, now = _offer_cadence(current)
-        if cadence:
-            summary = f"Schedule {p.analysis_id} {cadence} on {slug}: an answer drew on its out-of-date result"
-        else:
-            summary = f"{p.analysis_id} on {slug} runs daily, and an answer still drew on an out-of-date result"
+        summary = f"Schedule {p.analysis_id} {cadence} on {slug}: an answer drew on its out-of-date result"
         detail = [f"An admin diagnosed a rated answer as stale; {now}."]
         if p.rule:
             detail.append(f"The manifest's rule: {p.rule}.")
         if p.compile_id:
             detail.append(f"The answer was built from compile {p.compile_id}.")
-        if not cadence:
-            detail.append("A faster schedule is not on offer; the run itself may be failing or the result not "
-                          "reaching the compile.")
-        offer = ({"kind": "schedule", "entity_type": entity_type, "entity_slug": slug,
-                  "analysis_id": p.analysis_id, "cadence": cadence} if cadence else None)
+        offer = {"kind": "schedule", "entity_type": entity_type, "entity_slug": slug,
+                 "analysis_id": p.analysis_id, "cadence": cadence}
         rfa_id = log_rfa(registry, entity_type, slug, slug, "open", summary, detail=" ".join(detail),
                          analysis_name="Automate: schedule proposal", items=[pointer], offer=offer)
     except Exception:
         registry.release_feedback_rfa(key, p.cause, entity_type, slug)
         raise
     registry.set_feedback_rfa(key, p.cause, entity_type, slug, rfa_id)
-    return rfa_id
+    return "automate", rfa_id
 
 
 def _stamp_gap(registry: Any, gap_id: int, rfa_id: str) -> None:

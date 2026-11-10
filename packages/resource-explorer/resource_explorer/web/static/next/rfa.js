@@ -323,11 +323,18 @@ async function _schedule(button) {
   const offer = row && row.offer;
   if (!offer) return;
   button.disabled = true;
+  let out;
   try {
-    await saveSchedule(offer.entity_type, offer.entity_slug, offer.analysis_id, offer.cadence, true);
+    // Only ever faster (the architect's R1): someone may have scheduled it more often since this RFA was written.
+    out = await saveSchedule(offer.entity_type, offer.entity_slug, offer.analysis_id, offer.cadence, true, 'analysis',
+      { onlyIfFaster: true });
   } catch (err) {
     flash(`Not scheduled: ${err.message || err}`);
     button.disabled = false;
+    return;
+  }
+  if (out && out.status === 'unchanged') {
+    flash(`Not changed: ${offer.analysis_id} on ${offer.entity_slug} is ${out.reason}.`);
     return;
   }
   flash(`Scheduled ${offer.analysis_id} ${offer.cadence} on ${offer.entity_slug}. Complete this RFA once it has run.`);
