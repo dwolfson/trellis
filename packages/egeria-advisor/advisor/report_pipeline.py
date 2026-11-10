@@ -653,6 +653,13 @@ class ReportPipeline:
         from pyegeria import exec_report_spec
 
         conn = self._read_pyegeria_connection(egeria_credentials=egeria_credentials)
+        from advisor.egeria_signin import SIGN_IN_TO_RUN_REPORTS, lacks_credential
+        if conn and lacks_credential(conn.get("token"), conn.get("user_pwd")):
+            # Neither a token nor a password: exec_report_spec would mint on
+            # pyegeria's configured password under this user id. Refuse, and
+            # say "sign in" rather than "not configured".
+            self._last_run_error = SIGN_IN_TO_RUN_REPORTS
+            return None
         if not _conn_is_complete(conn):
             raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
         # pyegeria >= 6.1.10 (ISSUE-86): exec_report_spec accepts the caller's
@@ -1290,6 +1297,9 @@ class ReportPipeline:
         pyegeria already distinguishes unknown-report, unsupported-format and
         no-action cases — we surface that distinction instead of a generic failure.
         """
+        from advisor.egeria_signin import SIGN_IN_TO_RUN_REPORTS
+        if run_error == SIGN_IN_TO_RUN_REPORTS:
+            return SIGN_IN_TO_RUN_REPORTS
         # Strip a leading "ExceptionType: " prefix for readability.
         detail = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*Error:\s*", "", run_error or "").strip()
         low = detail.lower()

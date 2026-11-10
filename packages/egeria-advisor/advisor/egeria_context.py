@@ -131,6 +131,13 @@ class EgeriaContext:
         conn = self._get_connection()
         if not conn:
             return None
+        from advisor.egeria_signin import SIGN_IN_TO_READ_EGERIA, lacks_credential
+        if lacks_credential(self._egeria_token, conn.get("user_pwd")):
+            # A user id with no token and no password: apply_token would mint
+            # with pyegeria's configured password under that id. Stay offline.
+            logger.info(f"EgeriaContext: {SIGN_IN_TO_READ_EGERIA} "
+                        f"(user {conn.get('user_id')!r} has no token or password)")
+            return None
         try:
             client = cls(**conn)
             # Signed-in caller: reuse their Egeria bearer token so Egeria's own
