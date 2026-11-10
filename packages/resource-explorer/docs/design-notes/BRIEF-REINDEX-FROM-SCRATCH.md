@@ -1,7 +1,7 @@
 # Brief: rebuild a repository's chat index from scratch
 
 Status: **design PASS from the architect's read-back of 463c555a (2026-11-10), with C1–C4 folded in below (§11).
-Q1, Q2, Q3 and Q5 decided; Q4, Q6, Q7 and Q8 open (§8).** No code yet.
+All eight questions decided (§8).** No code yet.
 Asked for by the project owner on 2026-11-10 ("refresh the download and ingestion of a repo").
 
 ## 1. The gap
@@ -48,8 +48,8 @@ this kind.
    time (the coordinator's rule; the run queue makes it visible to `running_work.py`, so a restart can wait for it).
 2. **Build** each collection type into `{slug}_{type}__rebuild`. The pipeline gains one parameter, the name a collection
    is written under, and the store's chunk ids are hashed under the **final** name (`{slug}_{type}`), not the aside one
-   (§5). The pipeline's other writes (file inventory, dependencies, data profiles, CI, supply chain, conventions) are
-   **not** run on a rebuild: they are survey results with steps of their own (Q6).
+   (§5). The pipeline's other writes (file inventory, dependencies, data profiles, CI, supply chain, conventions)
+   **are** run, as on a first index (Q6), and an undo does not undo them.
 3. **Check.** Per collection: old count, new count, and the files each came from. Refuse the swap when a collection
    that had chunks now has none, unless the plan no longer proposes it. The collection types come from the analyzer's
    plan **today** (Q1), so the check also lists what changed: types added (`collection_drift.py`'s eligible-but-missing
@@ -62,8 +62,10 @@ this kind.
    `MultiCollectionStore.rename_collection` as it stands: it commits each RENAME alone, so between two of them chat
    would read "relation does not exist". The swap also **renames each table's HNSW index** with it (C4, below). Then the
    baseline commit SHA, the `rag_ingestion` metric, and R's query cache, as `run_first_index` does.
-6. **Keep the previous index** until it is discarded (Q4). **Undo** renames it back. A failed build drops the
-   `__rebuild` tables and leaves the live index untouched.
+6. **Keep the previous index for 7 days** (Q4), then a scheduled job drops it. **Undo**, within those 7 days, renames
+   it back in one transaction, as the swap does. A type the re-plan **added** has no `__previous`, so undo also drops
+   (or sets aside as `__rebuild`) that added live collection, restoring `projects.collections` in the same transaction
+   (the architect's nit on cb9974fe). A failed build drops the `__rebuild` tables and leaves the live index untouched.
 
 Space: up to twice R's index for the duration, so a rebuild is **refused when the database's free disk is below twice
 R's current index** (the architect's addition). Load: a full download and embed of R. Both are reported in the ask (§6).
@@ -122,8 +124,8 @@ already holds:
 
 - **Analysis**, on the "Refresh & Re-ingest" card: "Rebuild from scratch…", which opens the ask.
 - **CLI:** `resource-explorer refresh <slug> --rebuild`, which asks on the terminal unless `--yes` is given.
-- **API:** `POST /api/reindex/queue {slug}`, `GET /api/reindex/progress`, `POST /api/reindex/{run_id}/accept` (when Q2
-  holds the swap), `POST /api/reindex/{slug}/undo`, `POST /api/reindex/{slug}/discard-previous`.
+- **API:** `POST /api/reindex/queue {slug}`, `GET /api/reindex/progress`, `POST /api/reindex/{run_id}/accept` (for the
+  held first rebuild, Q7), `POST /api/reindex/{slug}/undo`, `POST /api/reindex/{slug}/discard-previous`.
 - **No batch.** One repository at a time, deliberately. A batch over the suspicious list is a sequence of single asks.
 
 **Operating rule on laz, not code:** a rebuild rewrites shared tables other sessions read, so it is requested after a
@@ -138,8 +140,18 @@ previous index for undo; admins only; the shared site collections get a separate
 **Decision (project owner, 2026-11-10):** Q1, not as recommended: a rebuild **re-plans** its collection types from the
 repository today (the analyzer's proposal), rather than keeping the set it has. §3 step 3 says what that changes.
 
-Open: Q4, Q6, Q7 and Q8. The architect suggests, under Q7, holding the **first** rebuild for acceptance, so that it
-doubles as the timing run, and swapping at once after that.
+**Decision (project owner, 2026-11-10):** Q7 and Q8 as recommended: the first rebuild is a timed measurement on one
+mid-size repository, held for an admin to accept before it swaps (later rebuilds swap at once); and chunk ids are
+minted per file, in their own PR before R1.
+
+**Decision (project owner, 2026-11-10):** Q4, not as recommended: the previous index is kept for a **fixed 7 days**,
+then dropped. So undo is available for 7 days after a swap. The drop is a scheduled job (the scheduler that runs
+`rag_ingestion`), it is recorded in the activity log, and the ask and the progress view say when the undo window ends.
+
+**Decision (project owner, 2026-11-10):** Q6, not as recommended: a rebuild **re-runs the pipeline's other writes**
+(file inventory, line census, dependencies, data profiles, dataset descriptors, CI, supply chain, conventions), as a
+first index does. They run during the build, before the swap, and write the live tables directly: they are not
+built aside and are not undone by an undo, which restores only the chat index. The ask says so.
 
 1. **Which collections are rebuilt:** the ones R has now (recommended: a rebuild should not silently change what is
    indexed), or the ones the analyzer proposes today, which may add types (`collection_drift.py` already reports
@@ -166,9 +178,11 @@ doubles as the timing run, and swapping at once after that.
 
 Each its own PR, with tests and a read-back:
 
+- **R0** (Q8, before R1): chunk ids minted per file, `sha256(collection:file_path:index_in_file:text)`, with the
+  one-time vote remap to the new ids. It also fixes the refresh id collision (§8 Q8).
 - **R1.** The pipeline's write-name parameter and final-name ids; the rebuild run (build aside, check, swap, previous
   kept, undo); refresh refused during a rebuild; the vote remap. CLI `refresh --rebuild`. No UI.
-- **R2.** The ask, the Analysis card action, progress, accept (if Q2 holds the swap), undo and discard in the UI.
+- **R2.** The ask, the Analysis card action, progress, accept (the held first rebuild, Q7), undo and discard in the UI.
 - **R3** (if Q5 says so): the site re-crawl.
 
 No new table: the run row and the activity log carry the state, as for the first index. The `__rebuild` and
@@ -189,7 +203,8 @@ No new table: the run row and the activity log carry the state, as for the first
 - Chat reads the old collections until the swap, and the new ones after it.
 - A failed build leaves the live index and drops the `__rebuild` tables; a failed swap rolls back.
 - A refresh during a rebuild is refused with its sentence; a second rebuild is refused while one runs.
-- Undo restores the previous index and its votes; discard drops it.
+- Undo restores the previous index and its votes; discard drops it; after 7 days the scheduled job drops it.
+- Undo after a re-plan that ADDED a type removes the added live collection and restores `projects.collections`.
 - Shared `web_docs_*` collections are neither rebuilt nor dropped.
 
 ## 11. The architect's read-back of 463c555a
