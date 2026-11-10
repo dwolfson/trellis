@@ -2224,7 +2224,7 @@ requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pyegeria", specifier = ">=6.2.24" },
+    { name = "pyegeria", specifier = ">=6.2.31" },
     { name = "pygments", specifier = ">=2.17.0" },
     { name = "pygount", specifier = ">=1.6.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -7521,7 +7521,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.28"
+version = "6.2.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7555,9 +7555,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/86/a4c631c86666b1fc438871f7de55a9e7d605f5ac7deecdbdb4ced44e7491/pyegeria-6.2.28.tar.gz", hash = "sha256:2e67b6e1902f9eda0e28bb53bdd94de8826652836adf3ff5f1078ef63a7e180e", size = 2329261, upload-time = "2026-11-09T14:08:04.39Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/f1/0dce2eb74c670c373ddc069226e7592603d0e281c50cd500539c3699acfb/pyegeria-6.2.31.tar.gz", hash = "sha256:4bd9f3efba56db031c136ed1de47a9789c964dfa10c30810372da5fd4c70c484", size = 2463717, upload-time = "2026-11-10T13:44:43.256Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/8f/42195f40a8bd02b926bf0639912e62717bab826865bd345d93324f15e7b5/pyegeria-6.2.28-py3-none-any.whl", hash = "sha256:973d850e78aff27936db438c48d5a7dff70360336202b0ea64bcf7a31fa3c36a", size = 2052015, upload-time = "2026-11-09T14:08:02.384Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/3b/d370579fecc7606e063b24892f1e052793aa60ac409d7c3890a16beec85a/pyegeria-6.2.31-py3-none-any.whl", hash = "sha256:d5a7446bfc94999700fa13df5ba97115b75a190219aa2944f307de5067be4c90", size = 2184719, upload-time = "2026-11-10T13:44:41.24Z" },
 ]
 
 [[package]]
@@ -8642,7 +8642,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.2.24" },
+    { name = "pyegeria", specifier = ">=6.2.31" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
@@ -10196,7 +10196,7 @@ requires-dist = [
     { name = "nbformat", marker = "extra == 'dev'" },
     { name = "papermill", marker = "extra == 'dev'" },
     { name = "psycopg2-binary", marker = "extra == 'postgres'" },
-    { name = "pyegeria", specifier = ">=6.2.24" },
+    { name = "pyegeria", specifier = ">=6.2.31" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "python-dotenv", marker = "extra == 'dotenv'" },
     { name = "resource-explorer", marker = "extra == 're'", editable = "packages/resource-explorer" },
@@ -10267,7 +10267,7 @@ egeria = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pyegeria", marker = "extra == 'egeria'", specifier = ">=6.2.24" },
+    { name = "pyegeria", marker = "extra == 'egeria'", specifier = ">=6.2.31" },
     { name = "pyjwt", specifier = ">=2.8.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
