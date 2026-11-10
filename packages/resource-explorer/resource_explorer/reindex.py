@@ -737,7 +737,10 @@ def discard_previous(registry, slug: str, *, by: str, reason: str = "", deps: De
         why = reason or f"discarded by {by}"
         words = f"previous index dropped ({why}): {', '.join(dropped) or 'nothing was left to drop'}; undo is no longer " \
                 "available"
-        r.step("done", words, discarded=by, discarded_at=_now().isoformat(), vote_moves={})
+        # A failure an earlier 7-day pass recorded is over once the drop succeeds: clear it, so progress does not show
+        # a stale error beside "discarded".
+        r.step("done", words, discarded=by, discarded_at=_now().isoformat(), vote_moves={}, drop_error="",
+               drop_error_at="")
         from resource_explorer.activity_logger import log_reindex
 
         p = registry.get(slug)
@@ -754,6 +757,7 @@ def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps |
     dropped."""
     now_iso = (now or _now()).isoformat()
     done: list[str] = []
+    unrecorded: list[str] = []
     for row in registry.list_runs(kind=RUN_KIND, limit=500):
         t = _target(row)
         if t.get("phase") != "done" or t.get("undone") or t.get("discarded"):
@@ -775,8 +779,16 @@ def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps |
             # Recorded on the run row, not only logged (tests/test_no_silent_success.py): progress shows why the
             # previous index is still there, and the next pass tries again.
             log.exception("could not drop the previous index of %s; the next pass tries again", slug)
-            registry.merge_run_target(row["id"], {"drop_error": f"{type(exc).__name__}: {exc}"[:300],
-                                                  "drop_error_at": _now().isoformat()})
+            try:
+                registry.merge_run_target(row["id"], {"drop_error": f"{type(exc).__name__}: {exc}"[:300],
+                                                      "drop_error_at": _now().isoformat()})
+            except Exception as record_exc:  # noqa: BLE001 -- raised after the loop
+                # Recording failed too: go on to the remaining repositories, then raise below so the scheduler's
+                # tick logs it, rather than abort the loop here.
+                unrecorded.append(f"{slug} ({type(exc).__name__}: {exc}; recording it: {record_exc})")
+    if unrecorded:
+        raise RuntimeError("could not drop, nor record why, the previous index of: " + "; ".join(unrecorded)
+                           + (f" (dropped: {', '.join(done)})" if done else ""))
     return done
 
 
