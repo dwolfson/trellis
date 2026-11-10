@@ -11379,21 +11379,45 @@ class ProjectRegistry:
         `last_seen_at` moves; a new compile_id inserts. The first writer's
         user/session/timestamp stay on the row: the row describes the compile,
         and a repeat by someone else is evidence of replay, not a new compile.
+
+        One thing a repeat may change: the age of the evidence. The id hashes text only, so a re-surveyed but
+        unchanged result compiles to the same id with newer dates. Those are written into the stored manifest, and
+        the change is kept in its `as_of_seen` history (compile_as_of.refreshed; BRIEF-CONTEXT-SECTION-AS-OF.md
+        §3h), so the stored dates are never frozen at the first compile's. On Postgres the row is locked for the
+        read-modify-write, so concurrent repeats cannot drop a history entry. On SQLite (tests, single-user
+        fallback) two repeats racing could drop one; the packed dates stay right either way.
         Returns {"compile_id", "created": bool}.
         """
         import json as _json
+
+        from resource_explorer.compile_as_of import refreshed
         user_id = current_user_id() if user_id is None else user_id
         now = datetime.utcnow().isoformat()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT compile_id FROM context_compiles WHERE compile_id = ?", (compile_id,)
+                "SELECT compile_id, manifest FROM context_compiles WHERE compile_id = ?"
+                + (" FOR UPDATE" if conn.is_postgres else ""), (compile_id,)
             ).fetchone()
             if row is not None:
-                conn.execute(
-                    "UPDATE context_compiles SET hits = hits + 1, last_seen_at = ? "
-                    "WHERE compile_id = ?",
-                    (now, compile_id),
-                )
+                try:
+                    stored = _json.loads(row["manifest"] or "{}")
+                    # The history's own times carry a zone, unlike this table's columns, so they can be compared
+                    # with an answer's time.
+                    updated = refreshed(stored, manifest, datetime.now(timezone.utc).isoformat())
+                except (TypeError, ValueError):
+                    updated = None
+                if updated is not None:
+                    conn.execute(
+                        "UPDATE context_compiles SET hits = hits + 1, last_seen_at = ?, manifest = ? "
+                        "WHERE compile_id = ?",
+                        (now, _json.dumps(updated, sort_keys=True, default=str), compile_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE context_compiles SET hits = hits + 1, last_seen_at = ? "
+                        "WHERE compile_id = ?",
+                        (now, compile_id),
+                    )
                 return {"compile_id": compile_id, "created": False}
             conn.execute(
                 "INSERT INTO context_compiles (compile_id, project_slug, question, spec_id, "

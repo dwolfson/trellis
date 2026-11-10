@@ -24,6 +24,8 @@ from typing import Any
 
 from trellis_feedback import CAUSE_CHAIN
 
+from resource_explorer.compile_as_of import is_evidence, section_as_ofs
+
 logger = logging.getLogger(__name__)
 
 #: A gap in one of these states had no result: the analysis did not run, or nothing shows it produced the one
@@ -113,8 +115,10 @@ def suggestions(manifest: dict, *, answered_at: str = "",
     when = _parse(answered_at)
     if when is not None:
         old = []
-        for key, seen in (manifest.get("declared") or {}).items():
-            as_of = _parse((seen or {}).get("as_of") or "")
+        # Each section's as-of as it stood when the answer was given (compile_as_of: the packed entry, a repeat
+        # compile's history, or `declared` in older manifests).
+        for key, value in section_as_ofs(manifest, at=answered_at).items():
+            as_of = _parse(value)
             if as_of is not None and when - as_of > timedelta(days=STALE_AFTER_DAYS):
                 old.append((key, as_of, (when - as_of).days))
         if old:
@@ -150,14 +154,13 @@ def not_judged(manifest: dict, *, answered_at: str = "") -> list[dict]:
     declared = manifest.get("declared") or {}
     if _parse(answered_at) is None:
         return [{"cause": "stale", "why": "the answer's time is not known, so no age can be measured"}]
-    dated = {k: (v or {}).get("as_of") for k, v in declared.items() if (v or {}).get("as_of")}
+    dated = section_as_ofs(manifest, at=answered_at)
     if not dated:
         return [{"cause": "stale", "why": "no packed section declares an as-of date"}]
     # Every evidence section the compile names, packed or declared, in the order it names them. The instructions
     # section is always packed and is not evidence: it has no age to measure, so counting it would make every
     # compile report one undated section that no fix could ever date.
-    sections = list(dict.fromkeys([p.get("key") for p in manifest.get("packed") or []
-                                   if isinstance(p, dict) and p.get("key") and p.get("role", "evidence") == "evidence"]
+    sections = list(dict.fromkeys([p.get("key") for p in manifest.get("packed") or [] if is_evidence(p)]
                                   + list(declared)))
     unreadable = sorted(k for k, v in dated.items() if _parse(v) is None)
     undated = sorted(k for k in sections if k not in dated)

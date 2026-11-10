@@ -28,7 +28,7 @@ dependencies = [
     # makes it available in a workspace-wide sync but does NOT make it a
     # requirement. Any install that resolves resource-explorer alone — CI, a
     # clean per-package install — would have failed on the import.
-    "trellis-context",
+    "trellis-context>=0.2",
     # Shared TTL/LRU query cache, extracted alongside Egeria Advisor's
     # equivalent — packages/trellis-querycache
     "trellis-querycache",
