@@ -196,6 +196,7 @@
           <span id="report-count" class="text-xs text-slate-600"></span>
         </div>
       </div>
+      <div id="report-egeria-held" class="px-3 pb-1 text-xs text-slate-500 shrink-0"></div>
       <div id="report-catalog" class="px-2 pb-2 flex flex-col gap-0.5 text-sm border-b border-slate-700/60 pb-3" style="max-height:40%; overflow-y:auto;"></div>
 
       <!-- Custom Report Specs Section -->
@@ -753,6 +754,8 @@ async function loadReports() {
   reportFormats = data.formats || {};
   reportFormatLabels = data.format_labels || {};
   document.getElementById('report-count').textContent = `${data.total}`;
+  renderEgeriaHeld(data.egeria_held, data.shadowed || []);
+  const sources = data.sources || {};
   const el = document.getElementById('report-catalog');
   el.innerHTML = '';
   for (const [topic, names] of Object.entries(data.catalog)) {
@@ -770,12 +773,64 @@ async function loadReports() {
       btn.className = 'text-left px-2 py-0.5 rounded text-xs hover:bg-slate-700 transition-colors ' +
         (isDre ? 'text-slate-500 italic' : 'text-slate-300');
       btn.textContent = name;
-      btn.title = isDre ? 'Dr.Egeria operator report' : '';
+      const src = sources[name] || {};
+      const srcTitle = _specSourceTitle(src);
+      btn.title = [isDre ? 'Dr.Egeria operator report' : '', srcTitle].filter(Boolean).join(' — ');
+      if (src.source && src.source !== 'builtin') {
+        const badge = document.createElement('span');
+        badge.className = 'ml-1 px-1 rounded text-[10px] align-middle ' + (_SPEC_SOURCE_STYLE[src.source] || 'bg-slate-700 text-slate-300');
+        badge.textContent = _SPEC_SOURCE_LABEL[src.source] || src.source;
+        btn.appendChild(badge);
+      }
       btn.onclick = () => runReport(name);
       ul.appendChild(btn);
     });
     det.appendChild(ul);
     el.appendChild(det);
+  }
+}
+
+// ── Report spec sources (EGERIA tier, brief B3) ──────────────────────────────
+// Same words as the Portal: built-in / held in Egeria / local; "user" is a spec
+// authored in this Advisor. Built-ins get no badge (they are the majority).
+const _SPEC_SOURCE_LABEL = { builtin: 'built-in', egeria: 'held in Egeria', local: 'local', user: 'user', unknown: 'source unknown' };
+const _SPEC_SOURCE_STYLE = {
+  egeria: 'bg-cyan-900/60 text-cyan-300', local: 'bg-amber-900/50 text-amber-300',
+  user: 'bg-violet-900/50 text-violet-300', unknown: 'bg-slate-700 text-slate-400',
+};
+
+function _specSourceTitle(src) {
+  if (!src || !src.source) return '';
+  let t = `Source: ${_SPEC_SOURCE_LABEL[src.source] || src.source}`;
+  if (src.shadows) t += ` (shadows the ${_SPEC_SOURCE_LABEL[src.shadows] || src.shadows} copy)`;
+  return t;
+}
+
+// Never an empty list on its own: when nothing is held in Egeria, say why.
+function renderEgeriaHeld(held, shadowed) {
+  const el = document.getElementById('report-egeria-held');
+  if (!el) return;
+  el.innerHTML = '';
+  if (!held) { el.textContent = 'Held in Egeria: not reported by the server.'; return; }
+  const line = document.createElement('div');
+  if (held.count > 0) {
+    line.textContent = `Held in Egeria: ${held.count}` + (held.message ? ` — ${held.message}` : '');
+  } else {
+    line.textContent = held.message || 'None held in Egeria (no reason given).';
+  }
+  line.title = [
+    `Folders (${held.folders_source}): ${(held.folders || []).join(', ') || 'none'}`,
+    held.recursive ? 'Sub-folders are followed.' : 'Direct members only (sub-folders: pyegeria consumer-folders phase 2).',
+    held.synced_at ? `Last synced ${held.synced_at} as ${held.identity}` : 'Not synced in this run',
+    `Visibility: ${held.visibility}`,
+  ].join('\n');
+  el.appendChild(line);
+  if (shadowed.length) {
+    const sh = document.createElement('div');
+    sh.className = 'text-slate-600';
+    sh.textContent = `Shadowed copies: ${shadowed.length}`;
+    sh.title = shadowed.map(s => `${s.name} (${_SPEC_SOURCE_LABEL[s.source] || s.source}) shadowed by the ${_SPEC_SOURCE_LABEL[s.shadowed_by] || s.shadowed_by} copy`).join('\n');
+    el.appendChild(sh);
   }
 }
 

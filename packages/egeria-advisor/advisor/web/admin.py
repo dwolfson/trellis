@@ -8,7 +8,7 @@ Endpoints:
   POST /api/admin/repos/{repo}/pull     → start git pull
   GET  /api/admin/jobs                  → list recent jobs (last 20)
   GET  /api/admin/jobs/{job_id}         → single job status + output
-  POST /api/admin/maintenance/{action}  → refresh_perspectives | refresh_specs |
+  POST /api/admin/maintenance/{action}  → refresh_perspectives | sync_specs (alias refresh_specs) |
                                           clear_cache | invalidate_index |
                                           refresh_templates | check_draft_doc_ids |
                                           repair_draft_doc_ids
@@ -390,12 +390,19 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
         invalidate()
         return {"status": "ok", "message": "Perspective cache invalidated — will reload on next request"}
 
-    if action == "refresh_specs":
-        from advisor.report_pipeline import get_report_pipeline
-        pipe = get_report_pipeline()
-        pipe._egeria_specs_tried = False
-        threading.Thread(target=pipe._try_refresh_egeria_specs, daemon=True).start()
-        return {"status": "ok", "message": "Report spec refresh started in background"}
+    if action in ("sync_specs", "refresh_specs"):
+        # "Sync report specs from Egeria": fill the EGERIA tier from EA's consumer folder
+        # (advisor/egeria_spec_sync.py). refresh_specs is the old name, kept for callers.
+        from starlette.concurrency import run_in_threadpool
+        from advisor.egeria_spec_sync import SyncBusy, sync_now
+        try:
+            held = await run_in_threadpool(sync_now)
+        except SyncBusy as exc:
+            return {"status": "error", "message": str(exc)}
+        ok = held.get("state") == "ok"
+        summary = held.get("message") or (f"{held['count']} report spec(s) held in Egeria, from "
+                                         f"{', '.join(held.get('folders') or [])}")
+        return {"status": "ok" if ok else "error", "message": summary, "egeria_held": held}
 
     if action == "clear_cache":
         try:

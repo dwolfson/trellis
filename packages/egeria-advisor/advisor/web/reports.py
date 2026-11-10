@@ -65,12 +65,23 @@ async def list_reports(include_dre: bool = False) -> Dict[str, Any]:
     catalog = _load_report_catalog(include_dre=include_dre)
     total = sum(len(v) for v in catalog.values())
     formats = _catalog_formats(catalog)
+    # Where each spec comes from (builtin | egeria | local | user) and what it shadows, plus the
+    # Egeria-held status, which always says why when nothing is held (never a bare empty list).
+    from advisor.egeria_spec_sync import egeria_held_status, spec_sources
+    all_sources = spec_sources()
+    listed = {n for names in catalog.values() for n in names}
+    sources = {n: all_sources.get(n, {"source": "unknown", "shadows": None, "shadowed_by": None})
+               for n in listed}
+    shadowed = [{"name": n, **v} for n, v in sorted(all_sources.items()) if v.get("shadowed_by")]
     return {
         "catalog": catalog,
         "formats": formats,
         "format_labels": dict(_BROWSER_FORMATS),
         "total": total,
         "include_dre": include_dre,
+        "sources": sources,
+        "shadowed": shadowed,
+        "egeria_held": egeria_held_status(),
     }
 
 

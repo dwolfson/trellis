@@ -165,8 +165,9 @@
         <div class="grid grid-cols-2 gap-2">
           <button onclick="maintenance('refresh_perspectives')"
             class="maint-btn">↺ Refresh Perspectives</button>
-          <button onclick="maintenance('refresh_specs')"
-            class="maint-btn">↺ Refresh Report Specs</button>
+          <button onclick="maintenance('sync_specs')"
+            title="Sync the report specs held in Egeria (EA's consumer folder) into the EGERIA tier"
+            class="maint-btn">↺ Sync Report Specs from Egeria</button>
           <button onclick="maintenance('clear_cache')"
             class="maint-btn">🗑 Clear Query Cache</button>
           <button onclick="maintenance('invalidate_index')"
@@ -405,7 +406,7 @@ async function maintenance(action) {
   // check/repair_draft_doc_ids return a per-draft report — log it for detail
   // beyond the one-line summary shown in the UI.
   if (data.report) console.table(data.report);
-  setTimeout(() => msg.classList.add('hidden'), 4000);
+  setTimeout(() => msg.classList.add('hidden'), action === 'sync_specs' ? 15000 : 4000);
 }
 
 // ── Jobs ───────────────────────────────────────────────────────────────────

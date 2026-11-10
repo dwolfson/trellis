@@ -231,7 +231,8 @@ class QuestionSpecIndex:
         Returns a flat list of (spec_name, perspectives, question) triples —
         the same shape used by _build.  Specs already indexed from JSON are
         skipped here; the registry supplements, not replaces, the file-based data.
-        Called after load_egeria_report_specs() has merged Egeria data in.
+        Egeria-held specs (the EGERIA tier) carry no question_spec, so they are
+        indexed separately by _load_egeria_tier_sources().
         """
         entries: List[tuple] = []
         try:
@@ -254,11 +255,42 @@ class QuestionSpecIndex:
         logger.debug(f"QuestionSpecIndex: registry sources yielded {len(entries)} entries")
         return entries
 
+    def _load_egeria_tier_sources(self) -> List[tuple]:
+        """Search text for the report specs held in Egeria (D3: "read question specs from the
+        synced ReportSpecs").
+
+        A ReportSpec element has no question_spec property. What it does carry is read here:
+        - `additionalProperties.annotations["questions"]` (string list), if the author wrote
+          questions there; `annotations["perspectives"]` tags them, as question_spec does;
+        - otherwise its purpose (the spec's heading) and description, so a spec published to
+          EA's folder is findable by what it is for, with no extra authoring.
+        Returns (spec_name, perspectives, text) triples. Never raises.
+        """
+        entries: List[tuple] = []
+        try:
+            from pyegeria.view.egeria_spec_cache import egeria_tier
+            tier = egeria_tier()
+        except Exception as exc:
+            logger.debug(f"QuestionSpecIndex: EGERIA tier unavailable — {exc}")
+            return entries
+        for label, fs in tier.items():
+            annotations = getattr(fs, "annotations", None) or {}
+            perspectives = list(annotations.get("perspectives") or []) if isinstance(annotations, dict) else []
+            questions = list(annotations.get("questions") or []) if isinstance(annotations, dict) else []
+            if not questions:
+                questions = [t for t in (getattr(fs, "heading", None), getattr(fs, "description", None))
+                             if t and t != label]
+            for q in questions:
+                if isinstance(q, str) and q.strip():
+                    entries.append((label, perspectives, q.strip()))
+        logger.debug(f"QuestionSpecIndex: EGERIA tier yielded {len(entries)} entries")
+        return entries
+
     def invalidate(self) -> None:
         """Clear the built index so the next search triggers a full rebuild.
 
-        Call this after load_egeria_report_specs() has merged new data into
-        the pyegeria registry so the rebuild picks up the fresh question_specs.
+        Called after a report spec sync from Egeria (advisor.egeria_spec_sync)
+        so the rebuild picks up the specs the EGERIA tier now holds.
         """
         with self._lock:
             self._embeddings = None
@@ -298,10 +330,18 @@ class QuestionSpecIndex:
                         entries.append((spec_name, perspectives, q))
                         texts.append(q)
 
-        # Source 2: pyegeria runtime registry (includes Egeria-sourced specs after
-        # load_egeria_report_specs has run).  Deduplicate by (spec, question) pair.
+        # Source 2: pyegeria runtime registry (built-in, local and EA-registered specs
+        # that carry question_spec).  Deduplicate by (spec, question) pair.
         seen = {(spec, q) for spec, _, q in entries}
         for spec_name, perspectives, q in self._load_registry_sources():
+            if (spec_name, q) not in seen:
+                entries.append((spec_name, perspectives, q))
+                texts.append(q)
+                seen.add((spec_name, q))
+
+        # Source 3: report specs held in Egeria (the EGERIA tier, synced from EA's consumer
+        # folder). This replaces the retired Phase-1 QuestionSpec convention (D3).
+        for spec_name, perspectives, q in self._load_egeria_tier_sources():
             if (spec_name, q) not in seen:
                 entries.append((spec_name, perspectives, q))
                 texts.append(q)
@@ -408,7 +448,6 @@ class ReportPipeline:
     def __init__(self, config_path: str = str(Path(__file__).parent / "configdata" / "mcp_servers.json")):
         self._config_path = config_path
         self._agent = None          # lazy MCP agent
-        self._egeria_specs_tried = False  # attempt once per process lifetime
         # Read report tuning params from advisor.yaml (with safe fallbacks)
         try:
             import yaml as _yaml
@@ -453,39 +492,6 @@ class ReportPipeline:
             }
         except Exception:
             return {}
-
-    def _try_refresh_egeria_specs(self) -> None:
-        """Attempt to load question specs from Egeria into the pyegeria registry.
-
-        Uses a direct EgeriaTech client (not MCP) so this works even when
-        the MCP agent hasn't been started yet.  Silently skips if Egeria is
-        unreachable or pyegeria is not installed.  Invalidates _question_index so
-        the next search rebuilds from the merged registry.
-        """
-        if self._egeria_specs_tried:
-            return
-        self._egeria_specs_tried = True  # don't retry on failure
-        conn = self._read_pyegeria_connection()
-        if not _conn_is_complete(conn):
-            logger.debug("ReportPipeline: incomplete Egeria connection config — skipping spec refresh")
-            return
-        try:
-            from pyegeria.egeria_tech_client import EgeriaTech
-            from pyegeria.view.base_report_formats import load_egeria_report_specs
-            client = EgeriaTech(
-                view_server=conn["view_server"],
-                platform_url=conn["platform_url"],
-                user_id=conn["user_id"],
-                user_pwd=conn["user_pwd"],
-            )
-            from advisor.auth import apply_token
-            apply_token(client, conn.get("token"))
-            refreshed = load_egeria_report_specs(client)
-            if refreshed:
-                _question_index.invalidate()
-                logger.info("ReportPipeline: merged Egeria question specs into index")
-        except Exception as exc:
-            logger.info(f"ReportPipeline: Egeria spec refresh skipped [{type(exc).__name__}] — {exc}")
 
     def _ensure_agent(self):
         """Connect to MCP servers if not already done. Raises ConnectionError if unreachable."""
@@ -1198,11 +1204,8 @@ class ReportPipeline:
 
         Falls back to a helpful message if no spec is found or Egeria is unreachable.
         """
-        # Kick off spec refresh in background on first call — non-blocking so the
-        # current query is never delayed.  Subsequent queries benefit once done.
-        if not self._egeria_specs_tried:
-            import threading
-            threading.Thread(target=self._try_refresh_egeria_specs, daemon=True).start()
+        # Egeria-held specs reach the registry through the EGERIA tier, synced at startup and
+        # by the admin action (advisor/egeria_spec_sync.py), never on a query's path.
 
         # Discovery: "what/which reports are about X" → list matching specs, don't run.
         if self._REPORT_DISCOVERY_RE.match(query.strip()):
