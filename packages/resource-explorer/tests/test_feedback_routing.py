@@ -714,3 +714,27 @@ class TestAnOfferNeverSlowsASchedule:
     def test_a_disabled_schedule_counts_as_none(self, client, reg, monkeypatch):
         reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="daily", enabled=False)
         assert self._post(client, monkeypatch, "weekly")["status"] == "ok"
+
+
+def test_a_value_error_outside_the_defect_gap_is_a_passing_failure(client, reg, feedback_store, admin_headers,
+                                                                    monkeypatch):
+    """The architect's nit on 190d7aa1: only the defect gap's refusal reads as "already daily, no gap". A ValueError
+    from writing the proposal is released and retried like any other passing failure."""
+    _compile(reg, "c1", STALE)
+    item_id = _stale_answer(feedback_store)
+
+    def broken(*a, **kw):
+        raise ValueError("activity log rejected the row")
+    with monkeypatch.context() as m:
+        m.setattr("resource_explorer.activity_logger.log_rfa", broken)
+        route = _save(client, admin_headers, item_id, "stale").json()["route"]
+    assert route["state"] == "failed" and "already runs daily" not in route["words"]
+    assert reg.list_feedback_routes([item_id]) == {}
+
+
+def test_a_daily_analysis_on_a_resource_without_gaps_is_not_routed(client, reg, feedback_store, admin_headers):
+    reg.record_compile("c9", "db1", "q?", {**STALE, "text": ""}, [])
+    reg.save_schedule(entity_type="database", entity_slug="db1", analysis_id="licenses", schedule="daily", enabled=True)
+    item_id, _ = feedback_store.add_answer(vote=-1, question="q?", compile_id="c9", slug="db1", entity_type="database")
+    route = _save(client, admin_headers, item_id, "stale").json()["route"]
+    assert route["state"] == "not_routed" and "already runs daily" in route["words"]

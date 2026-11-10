@@ -158,6 +158,11 @@ def opaque_question_key(question: str, question_id: str = "") -> str:
     return f"question:sha1:{digest}"
 
 
+class DefectGapRefused(Exception):
+    """An already-daily stale analysis's defect gap could not be raised: its resource cannot hold gaps. Raised only
+    around that `_raise_gap` call, so no other error is mistaken for it (the architect's nit on 190d7aa1)."""
+
+
 class RouteRefused(ValueError):
     """The Save asked for something routing cannot honour (an analysis outside the charge set). Said as a 400,
     before anything is written."""
@@ -302,7 +307,7 @@ def execute(p: Plan | None, item: dict, *, actor: str, registry: Any) -> dict | 
         if p.automate:
             try:
                 consumer, target = _propose_schedule(p, item, actor=actor, registry=registry)
-            except ValueError as exc:
+            except DefectGapRefused as exc:
                 # Already daily, so a defect gap, on a resource that cannot hold gaps (not a repository).
                 consumer, target = "", ""
                 gap_reason = f"it already runs daily, and no gap could be raised: {exc}"
@@ -400,8 +405,8 @@ def _propose_schedule(p: Plan, item: dict, *, actor: str, registry: Any) -> tupl
     schedule was raised gets the next cadence's proposal. No question text: it is about the analysis.
 
     Already daily and still stale: a faster schedule is not the fix. The run, or the path from its result to the
-    compile, failed, which is the analysis owner's: an `analysis_defect` gap (raises ValueError for a resource that
-    cannot hold gaps, which `execute` records as not routed).
+    compile, failed, which is the analysis owner's: an `analysis_defect` gap (raises DefectGapRefused for a resource
+    that cannot hold gaps, which `execute` records as not routed; any other error stays a passing failure).
     """
     from resource_explorer.activity_logger import log_rfa
 
@@ -413,7 +418,10 @@ def _propose_schedule(p: Plan, item: dict, *, actor: str, registry: Any) -> tupl
     if not cadence:
         defect = Plan(cause=p.cause, gap_kind=ANALYSIS_DEFECT, analysis_id=p.analysis_id, role=p.role,
                       compile_id=p.compile_id)
-        return "gap", str(_raise_gap(defect, item, actor=actor, registry=registry))
+        try:
+            return "gap", str(_raise_gap(defect, item, actor=actor, registry=registry))
+        except ValueError as exc:
+            raise DefectGapRefused(str(exc)) from exc
 
     key = f"schedule:{p.analysis_id}:{cadence}"
     pointer = {"kind": "feedback", "id": item["id"]}
