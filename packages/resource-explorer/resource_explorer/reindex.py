@@ -577,6 +577,9 @@ def undo(registry, slug: str, *, requested_by: str, deps: Deps | None = None) ->
         raise ReindexRefused(f"{slug} has no rebuild whose previous index is still kept.", 404)
     deps = deps or Deps(registry=registry)
     r = _Run(row["id"], deps)
+    if r.t.get("discarding"):
+        raise ReindexRefused(f"{slug}'s previous index is being discarded (partly dropped); undo is no longer "
+                             "possible.")
     if r.t.get("previous_until", "") < _now().isoformat():
         raise ReindexRefused(f"The undo window for {slug} closed on {r.t.get('previous_until', '')[:10]}.")
     if is_rebuilding(registry, slug):
@@ -674,6 +677,92 @@ def recover_undos(registry, deps: Deps | None = None) -> list[str]:
     return out
 
 
+# ── the previous index: discarded by an admin, or dropped after 7 days (R1c) ─────────────────────────────────────
+
+def discard_previous(registry, slug: str, *, by: str, reason: str = "", deps: Deps | None = None) -> dict:
+    """Drop the previous index of `slug`'s last rebuild, ending its undo window early (an admin) or on time (the 7-day
+    job). Drops each `{name}__previous` table (its indexes go with it) and the vote-remap log, which only an undo reads,
+    and writes an activity row. Refused while the repository is rebuilding, or while another undo or discard holds it."""
+    if not (by or "").strip():
+        raise ReindexRefused("Discarding needs a signed-in admin.", 401)
+    row = latest_done(registry, slug)
+    if row is None:
+        raise ReindexRefused(f"{slug} has no rebuild whose previous index is still kept.", 404)
+    if is_rebuilding(registry, slug):
+        raise ReindexRefused(f"{slug} has a rebuild in progress; its previous index is kept until it ends.")
+    deps = deps or Deps(registry=registry)
+    holder = f"discard:{by}:{row['id']}"
+    if not registry.take_claim(_claim_key(slug), holder):
+        raise ReindexRefused(f"{slug}'s previous index is being discarded or undone right now.")
+    try:
+        r = _Run(row["id"], deps)
+        # The intent, before the first drop (the architect's read-back of 5d2b9865): an undo after a discard that died
+        # part-way must refuse up front, not change chat's list and then fail on a missing table.
+        if not r.t.get("discarding"):
+            r.t = registry.merge_run_target(row["id"], {"discarding": by, "discarding_at": _now().isoformat()})
+        dropped: list[str] = []
+        for n in (r.t.get("kept") or []) + (r.t.get("dropped") or []):
+            if deps.store.collection_exists(previous(n)):
+                deps.store.drop_collection(previous(n))
+                dropped.append(previous(n))
+        why = reason or f"discarded by {by}"
+        words = f"previous index dropped ({why}): {', '.join(dropped) or 'nothing was left to drop'}; undo is no longer " \
+                "available"
+        # A failure an earlier 7-day pass recorded is over once the drop succeeds: clear it, so progress does not show
+        # a stale error beside "discarded".
+        r.step("done", words, discarded=by, discarded_at=_now().isoformat(), vote_moves={}, drop_error="",
+               drop_error_at="")
+        from resource_explorer.activity_logger import log_reindex
+
+        p = registry.get(slug)
+        log_reindex(registry, slug, (p.display_name if p else "") or slug, "ok",
+                    f"Rebuild of {slug}'s chat index: {words}.")
+        return {"run_id": row["id"], "dropped": dropped}
+    finally:
+        registry.release_claim(_claim_key(slug), holder)
+
+
+def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps | None = None) -> list[str]:
+    """The 7-day job (Q4), run by the scheduler: drop every previous index whose undo window has closed. A repository
+    that is rebuilding, or whose previous index another process holds, is left for the next pass. Returns the slugs
+    dropped."""
+    now_iso = (now or _now()).isoformat()
+    done: list[str] = []
+    unrecorded: list[str] = []
+    for row in registry.list_runs(kind=RUN_KIND, limit=500):
+        t = _target(row)
+        if t.get("phase") != "done" or t.get("undone") or t.get("discarded"):
+            continue
+        # A discard that died part-way is finished whatever its window says; otherwise only an expired one is dropped.
+        if not t.get("discarding") and (not t.get("previous_until") or t["previous_until"] >= now_iso):
+            continue
+        slug = t.get("slug", "")
+        if latest_done(registry, slug) is None or latest_done(registry, slug)["id"] != row["id"]:
+            continue
+        try:
+            reason = (f"finishing a discard by {t['discarding']} that stopped part-way" if t.get("discarding")
+                      else f"the {KEEP_PREVIOUS_DAYS}-day undo window closed")
+            discard_previous(registry, slug, by="the scheduled 7-day job", reason=reason, deps=deps)
+            done.append(slug)
+        except ReindexRefused as exc:
+            log.info("previous index of %s kept for now: %s", slug, exc)
+        except Exception as exc:
+            # Recorded on the run row, not only logged (tests/test_no_silent_success.py): progress shows why the
+            # previous index is still there, and the next pass tries again.
+            log.exception("could not drop the previous index of %s; the next pass tries again", slug)
+            try:
+                registry.merge_run_target(row["id"], {"drop_error": f"{type(exc).__name__}: {exc}"[:300],
+                                                      "drop_error_at": _now().isoformat()})
+            except Exception as record_exc:  # noqa: BLE001 -- raised after the loop
+                # Recording failed too: go on to the remaining repositories, then raise below so the scheduler's
+                # tick logs it, rather than abort the loop here.
+                unrecorded.append(f"{slug} ({type(exc).__name__}: {exc}; recording it: {record_exc})")
+    if unrecorded:
+        raise RuntimeError("could not drop, nor record why, the previous index of: " + "; ".join(unrecorded)
+                           + (f" (dropped: {', '.join(done)})" if done else ""))
+    return done
+
+
 def _metrics():
     from resource_explorer.vector_store_pg import _metrics_collector
     return _metrics_collector()
@@ -690,5 +779,6 @@ def progress(registry, slug: str) -> dict:
                     "outcomes": t.get("outcomes") or [], "counts": t.get("counts") or {},
                     "survey": t.get("survey") or [], "previous_until": t.get("previous_until", ""),
                     "needs_words": needs_words(t.get("needs_bytes")) if "needs_bytes" in t else "",
+                    "drop_error": t.get("drop_error", ""),
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}
