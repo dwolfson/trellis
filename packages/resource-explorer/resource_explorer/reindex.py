@@ -771,8 +771,12 @@ def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps |
             done.append(slug)
         except ReindexRefused as exc:
             log.info("previous index of %s kept for now: %s", slug, exc)
-        except Exception:
+        except Exception as exc:
+            # Recorded on the run row, not only logged (tests/test_no_silent_success.py): progress shows why the
+            # previous index is still there, and the next pass tries again.
             log.exception("could not drop the previous index of %s; the next pass tries again", slug)
+            registry.merge_run_target(row["id"], {"drop_error": f"{type(exc).__name__}: {exc}"[:300],
+                                                  "drop_error_at": _now().isoformat()})
     return done
 
 
@@ -797,5 +801,6 @@ def progress(registry, slug: str) -> dict:
                                        and t.get("previous_until", "") >= _now().isoformat()),
                     "previous_tables": [previous(n) for n in (t.get("kept") or []) + (t.get("dropped") or [])]
                     if t.get("phase") == "done" and not t.get("undone") and not t.get("discarded") else [],
+                    "drop_error": t.get("drop_error", ""),
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

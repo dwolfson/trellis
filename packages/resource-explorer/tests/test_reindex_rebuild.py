@@ -663,3 +663,33 @@ class TestTheAsk:
         p = reindex.progress(registry, SLUG)
         assert p["undo_available"] is True
         assert sorted(p["previous_tables"]) == [f"{SLUG}_java_code__previous", f"{SLUG}_markdown_docs__previous"]
+
+
+def test_a_failed_recovery_is_in_the_reconciler_s_result_not_only_its_log(registry, monkeypatch):
+    """tests/test_no_silent_success.py: the reconciler reports a recovery it could not do, so a caller can see it."""
+    from resource_explorer import run_reconciler
+
+    run_id = queued(registry)
+
+    def broken(reg, row, deps=None):
+        raise RuntimeError("store unreachable")
+    monkeypatch.setattr(reindex, "recover", broken)
+    monkeypatch.setattr(registry, "list_runs", lambda state=None, kind=None, limit=1000: (
+        [{**registry.get_run(run_id), "runner": {"pid": 1}}] if state == "running" else []))
+    monkeypatch.setattr(run_reconciler, "_is_alive", lambda owner: False)
+    monkeypatch.setattr(registry, "finish_run", lambda *a, **kw: None)
+    out = run_reconciler.reconcile_runs(registry, ignore_heartbeat=True)
+    assert out["reindex_recovered"] == [] and "store unreachable" in out["reindex_recovery_errors"][0]
+
+
+def test_a_drop_that_fails_is_on_the_run_row_and_retried(registry, store, monkeypatch):
+    """tests/test_no_silent_success.py: the 7-day job's failure is recorded where progress shows it."""
+    _, d = rebuilt(registry, store)
+
+    def broken(name):
+        raise RuntimeError("table locked")
+    monkeypatch.setattr(store, "drop_collection", broken)
+    later = reindex._now() + timedelta(days=8)
+    assert reindex.drop_expired_previous(registry, now=later, deps=d) == []
+    assert "table locked" in reindex.progress(registry, SLUG)["drop_error"]
+    monkeypatch.undo()
