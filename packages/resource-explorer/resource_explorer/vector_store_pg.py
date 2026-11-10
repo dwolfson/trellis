@@ -307,6 +307,16 @@ class MultiCollectionStore:
         why this is a rename rather than a drop+reingest."""
         self._store.rename_collection(old_collection, new_collection)
 
+    # The rebuild's swap (BRIEF-REINDEX-FROM-SCRATCH.md §3, R1a): one transaction for every table and index rename.
+    def swap_collections(self, renames: list[tuple[str, str]], **kw) -> None:
+        self._store.swap_collections(renames, **kw)
+
+    def has_vector_index(self, collection: str) -> bool:
+        return self._store.has_vector_index(collection)
+
+    def check_names(self, *collections: str) -> list[str]:
+        return self._store.check_names(*collections)
+
     def count(self, collection: str) -> int:
         return int(self._store.get_collection_stats(collection).get("num_entities", 0))
 
