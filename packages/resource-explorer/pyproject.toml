@@ -42,7 +42,7 @@ dependencies = [
     "trellis-auth",
     # Page feedback and its triage (feedback_store.py), shared with Egeria Advisor —
     # packages/trellis-feedback, docs/trellis-feedback-extraction.md.
-    "trellis-feedback>=0.2,<0.3",  # stats() reads its items table directly
+    "trellis-feedback>=0.2,<0.4",  # stats() reads its items table directly
     # The Analytic Library: Curate's By-analysis tab calls
     # trellis_analytics.routines.curation_coverage (brief 2b). Since LS2 it is its own
     # distribution (odpi/egeria-trellis-analytics); the readers it asks for are RE's, in

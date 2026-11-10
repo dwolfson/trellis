@@ -21,7 +21,12 @@ def feedback_store(tmp_path):
 
 
 @pytest.fixture
-def client(monkeypatch, feedback_store):
+def client(monkeypatch, feedback_store, tmp_path):
+    # Its own registry file: this writes Curate feedback / projects, which must not reach another test even when
+    # REGISTRY_DATABASE_URL was set to one file for the whole run.
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", f"sqlite:///{tmp_path}/registry.db")
+    import resource_explorer.config as _config_module
+    _config_module._config = None
     monkeypatch.setattr(
         "resource_explorer.feedback_store.FeedbackStore.__init__",
         lambda self, db_path=None: setattr(self, "__dict__", feedback_store.__dict__) or None,
