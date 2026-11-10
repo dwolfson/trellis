@@ -4,6 +4,10 @@ Design: docs/trellis-feedback-extraction.md §4. One store instance belongs to o
 stamped on everything it writes. On Postgres each app keeps its tables in its own schema (the
 `trellis-vectorstore` arrangement); SQLite (tests, a from-scratch box) has no schemas.
 
+0.3 adds a diagnosis to a triage event: a `cause` and an optional `secondary_cause`
+(docs/feedback-closed-loop-design.md §2, §3.1). An events table made by 0.1/0.2 gains the two
+columns in place when a 0.3 store opens it.
+
 Nothing here updates a row in place. An item is written once; its status is the latest of its
 triage events, ordered by a monotonic sequence id. That removes both ways EA's file-based triage
 could go wrong (§1): a position that drifts from the record, and a whole-file rewrite.
@@ -33,22 +37,26 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
     literal,
     select,
     text,
 )
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 
 from trellis_feedback.models import (
+    CAUSES,
     ITEM_SOURCE,
     KINDS,
     PRODUCT_CATEGORIES,
     STATUSES,
+    UNDIAGNOSED,
     FeedbackError,
     FeedbackItem,
     TriageEvent,
     TriageState,
+    check_cause,
 )
 
 ITEMS_TABLE = "trellis_feedback_items"
@@ -56,6 +64,9 @@ EVENTS_TABLE = "trellis_feedback_events"
 
 _SCHEMA_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _SOURCE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+#: Event columns added after 0.2, with the DDL type each is added with to an existing table.
+_ADDED_EVENT_COLUMNS = (("cause", "VARCHAR(32)"), ("secondary_cause", "VARCHAR(32)"))
 
 #: Columns copied between FeedbackItem and the items table, other than id/created_at/extra.
 _ITEM_FIELDS = (
@@ -136,6 +147,10 @@ def _build_tables(schema: str | None) -> tuple[MetaData, Table, Table]:
         Column("note", Text, nullable=False, default=""),
         Column("actor", Text, nullable=False, default=""),
         Column("created_at", String(40), nullable=False),
+        # 0.3: the diagnosis this event records; "" when it changes status only. server_default so the
+        # in-place upgrade of an existing table (_add_missing_columns) and a new table agree.
+        Column("cause", String(32), nullable=False, default="", server_default=""),
+        Column("secondary_cause", String(32), nullable=False, default="", server_default=""),
         sqlite_autoincrement=True,
     )
     Index("ix_trellis_feedback_events_subject", events.c.app, events.c.source, events.c.ref_id, events.c.seq)
@@ -189,6 +204,27 @@ class FeedbackStore:
             if self.schema:
                 conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
         self._md.create_all(self.engine)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Bring an events table made by an older version up to this one's columns. Additive only,
+        with a default, so a 0.2 process still running against the same table keeps working.
+
+        Two processes may start at once: Postgres uses ADD COLUMN IF NOT EXISTS; SQLite has no such
+        clause, so a "duplicate column" from the loser of that race is checked for and ignored.
+        """
+        have = {c["name"] for c in inspect(self.engine).get_columns(self.events.name, schema=self.schema)}
+        table = f'"{self.schema}"."{self.events.name}"' if self.schema else f'"{self.events.name}"'
+        for name, ddl in _ADDED_EVENT_COLUMNS:
+            if name in have:
+                continue
+            guard = "" if self.is_sqlite else "IF NOT EXISTS "
+            try:
+                with self.engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {guard}{name} {ddl} NOT NULL DEFAULT ''"))
+            except (OperationalError, ProgrammingError) as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
 
     # ── items ───────────────────────────────────────────────────────────────────────────────
 
@@ -315,6 +351,7 @@ class FeedbackStore:
         kind: str | None = None,
         status: str | None = None,
         category: str | None = None,
+        cause: str | None = None,
         since: str | None = None,
         until: str | None = None,
         limit: int = 200,
@@ -325,7 +362,7 @@ class FeedbackStore:
         Every row carries the item's own `id`, and that id is the only handle triage takes -- there
         is no position for a client to get wrong (§6 step 2, EA's live bug).
         """
-        q = self._filtered(kind=kind, status=status, category=category, since=since, until=until)
+        q = self._filtered(kind=kind, status=status, category=category, cause=cause, since=since, until=until)
         i = self.items
         q = q.order_by(i.c.created_at.desc(), i.c.id).limit(max(1, min(int(limit), 1000))).offset(max(0, int(offset)))
         out = []
@@ -336,6 +373,7 @@ class FeedbackStore:
                     status=data.pop("t_status") or "new", note=data.pop("t_note") or "",
                     actor=data.pop("t_actor") or "", updated_at=data.pop("t_at") or "",
                     events=int(data.pop("t_events") or 0),
+                    cause=data.pop("t_cause") or "", secondary_cause=data.pop("t_secondary") or "",
                 )
                 item = self._item_from_row(data).to_dict()
                 item["triage"] = state.to_dict()
@@ -343,29 +381,43 @@ class FeedbackStore:
         return out
 
     def count_matching(self, *, kind: str | None = None, status: str | None = None,
-                       category: str | None = None, since: str | None = None, until: str | None = None) -> int:
+                       category: str | None = None, cause: str | None = None,
+                       since: str | None = None, until: str | None = None) -> int:
         """How many items `list` would return with these filters and no limit."""
-        q = self._filtered(kind=kind, status=status, category=category, since=since, until=until)
+        q = self._filtered(kind=kind, status=status, category=category, cause=cause, since=since, until=until)
         with self.engine.connect() as conn:
             return int(conn.execute(select(func.count()).select_from(q.subquery())).scalar_one())
 
-    def _filtered(self, *, kind, status, category, since, until):
-        """This app's items joined to their latest event, with the filters applied; no order/limit."""
+    def _filtered(self, *, kind, status, category, since, until, cause=None):
+        """This app's items joined to their latest event and latest diagnosis, with the filters
+        applied; no order/limit.
+
+        `cause` is one of CAUSES, or UNDIAGNOSED for answer items with no diagnosis yet (a product
+        report is never diagnosed, so it never matches UNDIAGNOSED either).
+        """
         if kind is not None and kind not in KINDS:
             raise FeedbackError(f"kind must be one of {list(KINDS)}, got {kind!r}")
         if status is not None and status not in STATUSES:
             raise FeedbackError(f"status must be one of {list(STATUSES)}, got {status!r}")
         if category is not None and category not in PRODUCT_CATEGORIES:
             raise FeedbackError(f"category must be one of {list(PRODUCT_CATEGORIES)}, got {category!r}")
+        if cause is not None and cause not in CAUSES and cause != UNDIAGNOSED:
+            raise FeedbackError(f"cause must be one of {[*CAUSES, UNDIAGNOSED]}, got {cause!r}")
         latest = self._latest_events_subquery(ITEM_SOURCE)
+        diag = self._latest_cause_subquery(ITEM_SOURCE)
         i = self.items
         q = (
             select(i, latest.c.status.label("t_status"), latest.c.note.label("t_note"),
                    latest.c.actor.label("t_actor"), latest.c.created_at.label("t_at"),
-                   latest.c.n.label("t_events"))
-            .select_from(i.outerjoin(latest, latest.c.ref_id == i.c.id))
+                   latest.c.n.label("t_events"),
+                   diag.c.cause.label("t_cause"), diag.c.secondary_cause.label("t_secondary"))
+            .select_from(i.outerjoin(latest, latest.c.ref_id == i.c.id).outerjoin(diag, diag.c.ref_id == i.c.id))
             .where(i.c.app == self.app)
         )
+        if cause == UNDIAGNOSED:
+            q = q.where(and_(i.c.kind == "answer", diag.c.cause.is_(None)))
+        elif cause:
+            q = q.where(diag.c.cause == cause)
         if kind:
             q = q.where(i.c.kind == kind)
         if category:
@@ -384,6 +436,21 @@ class FeedbackStore:
             q = q.where(self.items.c.kind == kind)
         with self.engine.connect() as conn:
             return int(conn.execute(q).scalar_one())
+
+    def cause_counts(self, *, vote: int | None = None, since: str | None = None,
+                     until: str | None = None) -> dict[str, int]:
+        """Answer items by their current cause: every cause in CAUSES (zeros included, so a view
+        never has to guess a missing key) plus UNDIAGNOSED. `vote` narrows to one vote (-1 for the
+        thumbs-down the closed loop is about); `since`/`until` bound the item's created_at."""
+        q = self._filtered(kind="answer", status=None, category=None, since=since, until=until).subquery()
+        stmt = select(func.coalesce(q.c.t_cause, literal(UNDIAGNOSED)).label("c"), func.count()).group_by("c")
+        if vote is not None:
+            stmt = stmt.where(q.c.vote == int(vote))
+        out = dict.fromkeys((*CAUSES, UNDIAGNOSED), 0)
+        with self.engine.connect() as conn:
+            for c, n in conn.execute(stmt).all():
+                out[c] = int(n)
+        return out
 
     def delete_item(self, item_id: str) -> bool:
         """Delete an item AND its triage events, in one transaction (Q6: deleting removes the item,
@@ -408,21 +475,29 @@ class FeedbackStore:
                 f"sources {sorted(self.external_sources)}")
 
     def triage(self, ref_id: str, status: str, *, source: str = ITEM_SOURCE, note: str = "",
-               actor: str = "") -> TriageEvent:
-        """Record a status change. Appends; never updates.
+               actor: str = "", cause: str = "", secondary_cause: str = "") -> TriageEvent:
+        """Record a status change, and optionally a diagnosis. Appends; never updates.
 
         A library item must exist. An external row cannot be checked from here -- it is the app's
         own table -- so the app's route checks it before calling (the router factory does, through
         the app's lookup).
+
+        `cause` (0.3) diagnoses an ANSWER item: product reports and external rows keep a status only
+        (closed-loop design §3.1). Omitting it keeps the item's current diagnosis; giving another
+        re-diagnoses it. There is no clearing a cause: re-diagnose instead, and the history keeps both.
         """
         if status not in STATUSES:
             raise FeedbackError(f"status must be one of {list(STATUSES)}, got {status!r}")
+        cause, secondary_cause = (cause or "").strip(), (secondary_cause or "").strip()
+        check_cause(status, cause, secondary_cause)
         self._check_source(source)
+        if cause and source != ITEM_SOURCE:
+            raise FeedbackError(f"a cause diagnoses an answer item; {source!r} rows take a status only")
         ref_id = str(ref_id or "").strip()
         if not ref_id:
             raise FeedbackError("ref_id is required")
         row = {"app": self.app, "source": source, "ref_id": ref_id, "status": status, "note": note or "",
-               "actor": actor or "", "created_at": _now()}
+               "actor": actor or "", "created_at": _now(), "cause": cause, "secondary_cause": secondary_cause}
         with self.engine.begin() as conn:
             seq = self._append_event(conn, row)
         return TriageEvent(seq=int(seq), **row)
@@ -439,19 +514,23 @@ class FeedbackStore:
         statement is enough there. Split out from `triage` so that test can hold the transaction open.
         """
         e = self.events
+        row = {"cause": "", "secondary_cause": "", **row}
         if row["source"] != ITEM_SOURCE:
             return int(conn.execute(insert(e).values(**row)).inserted_primary_key[0])
         i = self.items
-        cols = ["app", "source", "ref_id", "status", "note", "actor", "created_at"]
-        src = (
-            select(*[literal(row[c], type_=Text()).label(c) for c in cols])
-            .select_from(i)
-            .where(and_(i.c.app == self.app, i.c.id == row["ref_id"]))
-        )
+        cols = ["app", "source", "ref_id", "status", "note", "actor", "created_at", "cause", "secondary_cause"]
+        where = [i.c.app == self.app, i.c.id == row["ref_id"]]
+        if row["cause"]:
+            # In the same statement, so the kind is the one the item has when the event is written.
+            where.append(i.c.kind == "answer")
+        src = select(*[literal(row[c], type_=Text()).label(c) for c in cols]).select_from(i).where(and_(*where))
         if not self.is_sqlite:
             src = src.with_for_update(read=True, key_share=True)
         seq = conn.execute(insert(e).from_select(cols, src).returning(e.c.seq)).scalar()
         if seq is None:
+            if row["cause"] and conn.execute(
+                    select(i.c.kind).where(and_(i.c.app == self.app, i.c.id == row["ref_id"]))).scalar() is not None:
+                raise FeedbackError(f"a cause diagnoses an answer item; {row['ref_id']!r} is a product report")
             raise NotFound(f"no feedback item {row['ref_id']!r}")
         return int(seq)
 
@@ -473,10 +552,15 @@ class FeedbackStore:
         if not ids:
             return out
         latest = self._latest_events_subquery(source)
+        diag = self._latest_cause_subquery(source)
+        q = (select(latest, diag.c.cause.label("d_cause"), diag.c.secondary_cause.label("d_secondary"))
+             .select_from(latest.outerjoin(diag, diag.c.ref_id == latest.c.ref_id))
+             .where(latest.c.ref_id.in_(ids)))
         with self.engine.connect() as conn:
-            for row in conn.execute(select(latest).where(latest.c.ref_id.in_(ids))).mappings():
+            for row in conn.execute(q).mappings():
                 out[row["ref_id"]] = TriageState(status=row["status"], note=row["note"], actor=row["actor"],
-                                                 updated_at=row["created_at"], events=int(row["n"]))
+                                                 updated_at=row["created_at"], events=int(row["n"]),
+                                                 cause=row["d_cause"] or "", secondary_cause=row["d_secondary"] or "")
         return out
 
     def state(self, ref_id: str, *, source: str = ITEM_SOURCE) -> TriageState:
@@ -532,4 +616,20 @@ class FeedbackStore:
             select(e.c.ref_id, e.c.status, e.c.note, e.c.actor, e.c.created_at, agg.c.n)
             .select_from(e.join(agg, e.c.seq == agg.c.mx))
             .subquery("latest")
+        )
+
+    def _latest_cause_subquery(self, source: str):
+        """One row per DIAGNOSED subject in `source`: the cause of its highest-seq event that has one.
+        A later status-only event does not clear it (TriageState)."""
+        e = self.events
+        agg = (
+            select(e.c.ref_id.label("ref_id"), func.max(e.c.seq).label("mx"))
+            .where(and_(e.c.app == self.app, e.c.source == source, e.c.cause != ""))
+            .group_by(e.c.ref_id)
+            .subquery("dagg")
+        )
+        return (
+            select(e.c.ref_id, e.c.cause, e.c.secondary_cause)
+            .select_from(e.join(agg, e.c.seq == agg.c.mx))
+            .subquery("diag")
         )
