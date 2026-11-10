@@ -359,6 +359,7 @@ class TestRoutes:
         assert client.post("/api/reindex/queue", json={"slug": SLUG}).status_code in (401, 403)
         assert client.get(f"/api/reindex/progress?slug={SLUG}").status_code in (401, 403)
         assert client.post(f"/api/reindex/{SLUG}/undo").status_code in (401, 403)
+        assert client.post("/api/reindex/some-run/cancel").status_code in (401, 403)
 
 
 class TestActivity:
@@ -719,3 +720,104 @@ def test_a_failure_recording_a_failed_drop_does_not_stop_the_other_repositories(
         reindex.drop_expired_previous(registry, now=later, deps=d)
     assert failed_records == [run_id]
     assert "table locked" in target(registry, run_id)["drop_error"]       # the second pass through the loop recorded
+
+
+# ── a held rebuild: honest words when it stops, and a way to cancel it (before the first timed run) ─────────────
+
+def held_and_built(registry, store):
+    run_id = queued(registry, held=True)
+    d = deps(registry, store)
+    assert execute(registry, run_id, d) == ("succeeded", "")
+    assert target(registry, run_id)["phase"] == "awaiting_accept"
+    return run_id, d
+
+
+class TestHeldWords:
+    def test_a_held_run_says_built_and_held_not_done(self, registry):
+        from resource_explorer.run_queue import RunOutcome, _activity_words
+
+        status, words = _activity_words(registry, "reindex", {"slug": SLUG, "held": True}, RunOutcome("succeeded"))
+        assert status == "ok" and "held for an admin to accept" in words and "nothing has been swapped" in words
+        assert "done" not in words
+
+    def test_a_rebuild_that_swapped_still_says_done(self, registry):
+        from resource_explorer.run_queue import RunOutcome, _activity_words
+
+        for t in ({"slug": SLUG, "held": False}, {"slug": SLUG, "held": False, "continue_of": "r1"}):
+            assert _activity_words(registry, "reindex", t, RunOutcome("succeeded"))[1].endswith("chat index: done.")
+
+    def test_a_held_run_that_failed_says_failed(self, registry):
+        from resource_explorer.run_queue import RunOutcome, _activity_words
+
+        status, words = _activity_words(registry, "reindex", {"slug": SLUG, "held": True},
+                                        RunOutcome("failed", error="the check refused the swap"))
+        assert status == "error" and "failed" in words
+
+
+class TestCancelHeld:
+    def test_cancel_drops_what_it_built_and_frees_the_repository(self, registry, store):
+        live_before = {k: list(v) for k, v in store.tables.items() if not k.endswith("__rebuild")}
+        list_before = list(registry.get(SLUG).collections)
+        run_id, d = held_and_built(registry, store)
+        assert any(n.endswith("__rebuild") for n in store.tables) and reindex.is_rebuilding(registry, SLUG)
+        out = reindex.cancel_held(registry, run_id, by="erin", deps=d)
+        assert out["left_aside"] == []
+        assert not any(n.endswith("__rebuild") for n in store.tables)
+        assert {k: v for k, v in store.tables.items()} == live_before          # the live index never changed
+        assert list(registry.get(SLUG).collections) == list_before
+        assert not reindex.is_rebuilding(registry, SLUG)
+        pr = reindex.progress(registry, SLUG)
+        assert pr["phase"] == "cancelled" and not pr["undo_available"] and pr["previous_tables"] == []
+        assert "cancelled by erin before it swapped" in pr["outcomes"][-1]["words"]
+        rows = [a for a in registry.list_activity(entity_slug=SLUG, limit=50) if a.get("operation") == "reindex"]
+        assert any("cancelled by erin" in a["summary"] for a in rows)
+
+    def test_after_a_cancel_accept_refuses_and_the_next_rebuild_is_held_again(self, registry, store):
+        run_id, d = held_and_built(registry, store)
+        reindex.cancel_held(registry, run_id, by="erin", deps=d)
+        with pytest.raises(reindex.ReindexRefused, match="not waiting to be accepted"):
+            reindex.accept(registry, run_id, requested_by="erin")
+        with pytest.raises(reindex.ReindexRefused, match="nothing to cancel"):
+            reindex.cancel_held(registry, run_id, by="erin", deps=d)
+        assert reindex.queue(registry, SLUG, requested_by="erin", store=FakeStore())["held"] is True
+
+    def test_cancel_refuses_an_accepted_run_and_needs_an_admin(self, registry, store):
+        run_id, d = held_and_built(registry, store)
+        with pytest.raises(reindex.ReindexRefused) as e:
+            reindex.cancel_held(registry, run_id, by="", deps=d)
+        assert e.value.status == 401
+        with pytest.raises(reindex.ReindexRefused) as e:
+            reindex.cancel_held(registry, "no-such-run", by="erin", deps=d)
+        assert e.value.status == 404
+        reindex.accept(registry, run_id, requested_by="erin")
+        with pytest.raises(reindex.ReindexRefused, match="nothing to cancel"):
+            reindex.cancel_held(registry, run_id, by="erin", deps=d)
+
+    def test_an_accept_that_raced_a_cancel_swaps_nothing(self, registry, store):
+        run_id, d = held_and_built(registry, store)
+        live_before = {k: list(v) for k, v in store.tables.items() if not k.endswith("__rebuild")}
+        cont = reindex.accept(registry, run_id, requested_by="erin")["run_id"]
+        # The cancel landed between the accept's check and its continuation: the original is cancelled, its tables
+        # dropped. Forced here, since cancel_held itself refuses an accepted run.
+        registry.merge_run_target(run_id, {"phase": "cancelled"})
+        reindex._drop_aside(reindex._Run(run_id, d))
+        state, error = execute(registry, cont, d)
+        assert state == "failed" and "cancelled" in error
+        assert {k: v for k, v in store.tables.items()} == live_before
+        assert d.pipeline.survey_calls == []
+
+    def test_a_drop_that_fails_is_named_not_hidden(self, registry, store, monkeypatch):
+        run_id, d = held_and_built(registry, store)
+        monkeypatch.setattr(store, "drop_collection", lambda name: (_ for _ in ()).throw(RuntimeError("locked")))
+        out = reindex.cancel_held(registry, run_id, by="erin", deps=d)
+        assert out["left_aside"] and all(n.endswith("__rebuild") for n in out["left_aside"])
+        pr = reindex.progress(registry, SLUG)
+        assert pr["phase"] == "cancelled" and pr["left_aside"] == out["left_aside"]
+        assert not reindex.is_rebuilding(registry, SLUG)       # the next build drops leftover aside tables first
+        rows = [a for a in registry.list_activity(entity_slug=SLUG, limit=50) if a.get("operation") == "reindex"]
+        assert any(a["status"] == "error" and "could not drop" in a["summary"] for a in rows)
+
+    def test_a_cancelled_run_has_nothing_to_recover(self, registry, store):
+        run_id, d = held_and_built(registry, store)
+        reindex.cancel_held(registry, run_id, by="erin", deps=d)
+        assert reindex.recover(registry, registry.get_run(run_id), deps=d) == "nothing to recover at cancelled"

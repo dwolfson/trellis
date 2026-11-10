@@ -40,7 +40,7 @@ const PHASE_WORDS = {
   queued: 'queued', building: 'building aside', built: 'built', surveyed: 'survey results updated',
   pruning: 'swapping', list_pruned: 'swapping', swapping: 'swapping', swapped: 'swapped', extending: 'finishing',
   list_extended: 'finishing', awaiting_accept: 'built, waiting for you to accept', done: 'rebuilt',
-  rolled_back: 'rolled back', failed: 'failed',
+  rolled_back: 'rolled back', failed: 'failed', cancelled: 'cancelled before it swapped',
 };
 
 const g = (name) => `<span class="font-glyph" aria-hidden="true">${stateEntry(name).glyph}</span>`;
@@ -170,7 +170,10 @@ async function renderAsk(el, body, slug, pr, close) {
 function renderState(el, body, slug, pr, close) {
   const phase = pr.phase || '';
   const actions = [];
-  if (phase === 'awaiting_accept') actions.push(btn('data-reindex-accept', 'Accept and swap', true));
+  if (phase === 'awaiting_accept') {
+    actions.push(btn('data-reindex-accept', 'Accept and swap', true));
+    actions.push(btn('data-reindex-cancel', 'Cancel the rebuild'));
+  }
   if (phase === 'done' && pr.undo_available) {
     actions.push(btn('data-reindex-undo', 'Undo the rebuild'));
     actions.push(btn('data-reindex-discard', 'Discard the previous index'));
@@ -207,6 +210,10 @@ function renderState(el, body, slug, pr, close) {
   };
   body.querySelector('[data-reindex-accept]')?.addEventListener('click', (ev) => act(ev.currentTarget, 'POST',
     `/api/reindex/${encodeURIComponent(pr.run_id)}/accept`, 'Accepted: the survey writes and the swap are queued.'));
+  body.querySelector('[data-reindex-cancel]')?.addEventListener('click', () => ask(
+    'Cancel drops what this rebuild built. Chat keeps the index it has now, which was never changed. The next rebuild will be held for you again.',
+    'Yes, cancel it', (b) => act(b, 'POST', `/api/reindex/${encodeURIComponent(pr.run_id)}/cancel`,
+      'Cancelled: what it built was dropped; the live index is unchanged.')));
   body.querySelector('[data-reindex-undo]')?.addEventListener('click', () => ask(
     'Undo puts the previous index back for chat and moves the votes back. The survey results stay as the rebuild left them.',
     'Yes, undo', (b) => act(b, 'POST', `/api/reindex/${encodeURIComponent(slug)}/undo`, 'Undone: the previous index is live again.')));

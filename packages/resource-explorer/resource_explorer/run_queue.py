@@ -632,6 +632,10 @@ def _activity_words(registry, kind: str, target: dict, outcome: "RunOutcome") ->
         return status, f"First index of {name} for chat failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."
     if kind == "reindex":
         name = slug or "the repository"
+        if ok and isinstance(target, dict) and target.get("held"):
+            # The held first rebuild ends its run once built; nothing has swapped. Saying "done" here read as finished.
+            return status, (f"Rebuild of {name}'s chat index: built and held for an admin to accept; nothing has "
+                            "been swapped yet.")
         if ok:
             return status, f"Rebuild of {name}'s chat index: done."
         return status, f"Rebuild of {name}'s chat index failed: {_first_sentence(outcome.error, 400) or 'no reason recorded'}."

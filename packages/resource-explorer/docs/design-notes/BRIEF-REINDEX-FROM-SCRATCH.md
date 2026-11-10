@@ -129,7 +129,16 @@ Re-ingest" card. The architect accepted it at the read-back of 9fb4980b.
 - **Analysis**, on the "Refresh & Re-ingest" card: "Rebuild from scratch…", which opens the ask.
 - **CLI:** `resource-explorer refresh <slug> --rebuild`, which asks on the terminal unless `--yes` is given.
 - **API:** `POST /api/reindex/queue {slug}`, `GET /api/reindex/progress`, `POST /api/reindex/{run_id}/accept` (for the
-  held first rebuild, Q7), `POST /api/reindex/{slug}/undo`, `POST /api/reindex/{slug}/discard-previous`.
+  held first rebuild, Q7), `POST /api/reindex/{run_id}/cancel` (the same, refused), `POST /api/reindex/{slug}/undo`,
+  `POST /api/reindex/{slug}/discard-previous`.
+- **A held rebuild, said plainly (added 2026-11-10, before the first timed run).** Its run ends once built, so the run
+  queue records it as succeeded; the activity row says "built and held for an admin to accept; nothing has been
+  swapped yet", never "done". Judge it by `phase == "awaiting_accept"`. While held, the repository counts as rebuilding
+  (refresh, first index and a new rebuild wait), so a held run can be **cancelled**: the phase becomes `cancelled`
+  first, then its `__rebuild` tables are dropped (any left over are named on the run row as `left_aside`, and the next
+  build drops them first). The live index was never changed, so there is nothing to undo. A cancel does not end Q7:
+  the next rebuild is held again, since only a rebuild that reaches `done` does. An accept whose continuation finds the
+  original cancelled fails on its first step and swaps nothing.
 - **No batch.** One repository at a time, deliberately. A batch over the suspicious list is a sequence of single asks.
 
 **Operating rule on laz, not code:** a rebuild rewrites shared tables other sessions read, so it is requested after a
