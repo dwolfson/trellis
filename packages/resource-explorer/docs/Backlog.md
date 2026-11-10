@@ -10,6 +10,19 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## A schedule proposal is completed by hand (logged 2026-11-10, from the step 2c read-back)
+
+**What:** closed-loop step 2c's schedule-proposal RFA (`feedback_routing._propose_schedule`) is left open after its drawer button saves the schedule, because scheduling is not the fix: a fresh result reaching a compile is.
+**Fix:** complete the RFA automatically when the next scheduled run of that analysis on that resource succeeds (`scheduler.py` records `last_run_status`), with a resolution note naming the run.
+**Status:** not scheduled.
+
+## Gaps exist for repositories only (logged 2026-11-10, from the step 2a read-back)
+
+**What:** `analysis_gaps.project_slug` is a foreign key to `projects`, and `upsert_gap` checks `registry.get`, so only a repository can hold a gap. A database or file-system analysis that could not be established, or an answer about one diagnosed in Admin → Feedback, has nowhere to be recorded.
+**Today:** closed-loop step 2a records such a diagnosis as "not routed", with that reason (`feedback_routing.py`).
+**Fix:** key gaps by `(entity_type, slug)`, as `resource_schedules` is keyed. That is real-schema DDL on the shared registry, so it needs its own DDL record and the coordinator's clearance.
+**Status:** not scheduled.
+
 ## The RFA drawer shows every RFA to every signed-in user (logged 2026-11-10, from the step 2 read-back)
 
 **What:** `GET /api/activity/rfas` needs sign-in, but `rfas.flatten_rfas` returns every RFA to every signed-in user. There is no per-viewer filter: no private-investigation, membership or zone check. An RFA raised about a private investigation or a zone-restricted resource is readable by all RE users.

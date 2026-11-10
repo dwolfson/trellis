@@ -2119,9 +2119,11 @@ export const deleteSchedule = (entityType, entitySlug, analysisId) =>
  *  action posts to (classic's `saveSchedule()`, index.html) and chat's inline
  *  scheduling form reuses (`_chatSubmitSchedule()`) — one scheduling code
  *  path, not a new one for every place that offers to set a cadence. */
-export const saveSchedule = (entityType, entitySlug, analysisId, schedule, enabled = true, targetKind = 'analysis') =>
+export const saveSchedule = (entityType, entitySlug, analysisId, schedule, enabled = true, targetKind = 'analysis',
+  { onlyIfFaster = false } = {}) =>
   post(`/api/schedules/${encodeURIComponent(entityType)}/${encodeURIComponent(entitySlug)}`,
-       { analysis_id: analysisId, schedule, enabled, target_kind: targetKind });
+       { analysis_id: analysisId, schedule, enabled, target_kind: targetKind,
+         ...(onlyIfFaster ? { only_if_faster: true } : {}) });
 
 /** Runs THE SCHEDULE, through the same dispatch its timer uses — so what
  *  this does is exactly what the cadence would do, not a separate code

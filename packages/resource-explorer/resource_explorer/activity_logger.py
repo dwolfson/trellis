@@ -301,8 +301,14 @@ def log_rfa(
     detail: str = "",
     analysis_name: str = "",
     items: list[dict] | None = None,
+    offer: dict | None = None,
 ) -> str:
     """Write an RFA and make sure it actually reaches the RFA drawer.
+
+    `offer` is an action the drawer can take for the reader, carried on the annotation because the drawer reads
+    annotations, not the entry's items. Today one kind: `{"kind": "schedule", "entity_type", "entity_slug",
+    "analysis_id", "cadence"}` (closed-loop step 2c, Automate's proposal), which the drawer saves through the same
+    schedule call the per-card "Schedule" control makes.
 
     `items` carries the same structured pointers an ordinary activity entry can
     (see renderActivityLog's link handling) — an RFA that says "3 publishes are
@@ -347,6 +353,7 @@ def log_rfa(
             "count": 1,
             "summary": summary,
             "status": status,
+            **({"offer": offer} if offer else {}),
         }],
     ))
     return entry_id

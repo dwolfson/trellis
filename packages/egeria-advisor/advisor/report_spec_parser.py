@@ -249,10 +249,21 @@ def validate_report_spec(spec: FormatSet) -> List[str]:
     return warnings
 
 
+#: Names EA itself registered (its own report-spec document store, drafts, the Spec Builder). pyegeria
+#: counts them in its "local" tier together with its CONFIG specs; EA's catalog shows them as "user".
+_EA_REGISTERED: set = set()
+
+
+def ea_registered_specs() -> set:
+    """The spec names EA registered through `register_report_spec` in this process."""
+    return set(_EA_REGISTERED)
+
+
 def register_report_spec(name: str, spec: FormatSet) -> None:
     """Register a custom FormatSet in the base report specs dictionary."""
     import sys
     registered = False
+    _EA_REGISTERED.add(name)
     
     # 1. Update all copies in sys.modules to prevent path/import mismatch issues
     for mod_name, module in list(sys.modules.items()):
