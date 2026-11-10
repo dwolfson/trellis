@@ -129,6 +129,14 @@ analysis per diagnosis; catalog RFAs stay unassigned; `over_compressed` and `rea
 **include the question as asked**, with the cause, the item reference, and the curator note for
 `unclear_question`. The asker's id still never travels into a gap or an RFA (§3).
 
+**Decision (project owner, 2026-11-10), Q8's limit:** an answer given in a **private or zone-restricted
+context** (a private investigation, or a resource whose zones restrict it) is routed with the item reference
+and the cause only, no question text. The reason, from the architect's follow-up read-back of 90e95a51:
+`GET /api/activity/rfas` needs sign-in, but `rfas.flatten_rfas` returns every RFA to every signed-in user,
+with no private, investigation or zone check, so the question would otherwise be readable by all RE users.
+Filtering the RFA drawer by viewer is a separate backlog item, useful beyond this step. This rule is built
+in 2b, with the RFA consumers.
+
 1. **Route on Save, automatically** (recommended), or only on an explicit "Route" button after Save?
 2. **Several analyses charged:** the admin picks one, defaulting to the first in role order
    (recommended), or one gap per absent analysis?

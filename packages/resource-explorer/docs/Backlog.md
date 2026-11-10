@@ -10,6 +10,13 @@ This is a list, not a design doc — keep entries short. Link to a full design d
 
 ---
 
+## The RFA drawer shows every RFA to every signed-in user (logged 2026-11-10, from the step 2 read-back)
+
+**What:** `GET /api/activity/rfas` needs sign-in, but `rfas.flatten_rfas` returns every RFA to every signed-in user. There is no per-viewer filter: no private-investigation, membership or zone check. An RFA raised about a private investigation or a zone-restricted resource is readable by all RE users.
+**Today:** closed-loop step 2 works around it for routed feedback: an answer from a private or zone-restricted context is routed with the item reference and cause only, no question text (`docs/design-notes/BRIEF-CLOSED-LOOP-STEP2-ROUTING.md`, Q8's limit). Other RFA writers (Automate, Enrichment, linkage divergences) have no such rule.
+**Fix:** filter the drawer by viewer, so an RFA from a private context is seen only by that context's members. Once it exists, step 2's reference-only rule can be revisited.
+**Status:** not scheduled.
+
 ## TestGen deployment as a data channel (deferred 2026-10-30)
 
 **Decision (project owner, 2026-10-30):** TestGen deployment as a data channel (`DESIGN-TESTGEN-DEPLOYMENT-AS-DATA-CHANNEL`, slices TG1–TG3, owner rulings §9): deferred to the backlog by the owner 2026-10-30.
