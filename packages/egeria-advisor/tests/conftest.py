@@ -20,6 +20,7 @@ assertions in these tests must be superset-style ("in", not "=="), since
 real EA production tables are also present in the same schema.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -80,9 +81,52 @@ def pytest_configure(config):
         "requires_pgvector: needs a live reachable Postgres/pgvector instance "
         "(auto-skipped when one isn't available)",
     )
+    config.addinivalue_line(
+        "markers",
+        'live(reason="..."): needs a running service (Postgres, Egeria, MLflow or Phoenix). The reason '
+        "is required and names the service. With EA_SKIP_LIVE=1 (CI, the gate) every live test is "
+        "SKIPPED with that reason, so -rs lists it; it is never deselected silently.",
+    )
+
+
+# Phase 1 Q1 (2026-11-10). A test outside tests/unit that needs a service is marked live with its
+# reason. CI and the gate set EA_SKIP_LIVE=1 and run with -rs, so each such test shows up as
+# "SKIPPED live: <reason>" -- skipped with its reason rather than `-m "not live"`, which would
+# deselect it and print nothing. Locally, without EA_SKIP_LIVE, live tests run (requires_pgvector
+# still skips them when Postgres is unreachable).
+_SKIP_LIVE = os.environ.get("EA_SKIP_LIVE") == "1"
+
+# Tests under tests/unit that WRITE the shared database, marked live here (by file) rather than in
+# the test files, which belong to other briefs. Found by Q1 running tests/unit against a throwaway
+# Postgres: these two seed and delete rows (under dummy names) in a real database, so in the gate on
+# laz they wrote the shared Postgres -- one of them RE's resource_explorer schema. Moving them onto a
+# throwaway schema is a follow-up; until then they are live, and skipped with this reason under
+# EA_SKIP_LIVE=1.
+_LIVE_BY_FILE = {
+    "tests/unit/test_code_intel_agent.py":
+        "Postgres with RE's resource_explorer schema; seeds and deletes rows in resource_explorer.projects / "
+        "project_code_symbols / project_code_relationships (slug test_code_intel_dummy)",
+    "tests/unit/test_code_symbol_store.py":
+        "Postgres; seeds and deletes rows in EA's code_symbols / code_relationships "
+        "(collection test_collection_dummy)",
+}
 
 
 def pytest_collection_modifyitems(config, items):
+    for item in items:
+        rel = Path(str(item.fspath)).resolve().relative_to(project_root.resolve()).as_posix() \
+            if str(item.fspath).startswith(str(project_root.resolve())) else ""
+        if rel in _LIVE_BY_FILE and item.get_closest_marker("live") is None:
+            item.add_marker(pytest.mark.live(reason=_LIVE_BY_FILE[rel]))
+        marker = item.get_closest_marker("live")
+        if marker is None:
+            continue
+        reason = marker.kwargs.get("reason") or (marker.args[0] if marker.args else "")
+        if not str(reason).strip():
+            raise pytest.UsageError(f"{item.nodeid}: @pytest.mark.live needs a reason naming the service")
+        if _SKIP_LIVE:
+            item.add_marker(pytest.mark.skip(reason=f"live: {reason}"))
+
     if _PGVECTOR_AVAILABLE:
         return
     skip = pytest.mark.skip(reason="pgvector/Postgres not reachable at the configured host:port")
