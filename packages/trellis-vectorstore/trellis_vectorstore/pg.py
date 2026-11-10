@@ -582,6 +582,114 @@ class PgVectorStore(BaseVectorStore):
         finally:
             self._put_conn(conn)
 
+    # ------------------------------------------------------------------
+    # Swapping collections (RE's rebuild from scratch, BRIEF-REINDEX-FROM-SCRATCH.md §3 steps 5-6, R1a)
+    # ------------------------------------------------------------------
+
+    #: Postgres truncates identifiers longer than this many BYTES, silently, so a name over it is refused before any
+    #: table is built or renamed (the architect's C4).
+    MAX_IDENTIFIER_BYTES = 63
+
+    def vector_index_name(self, collection_name: str) -> str:
+        """The name `create_index` gives a collection's HNSW index: `{table}_embedding_idx`."""
+        return f"{self._table(collection_name)}_embedding_idx"
+
+    def check_names(self, *collection_names: str) -> list[str]:
+        """The problems with these names as tables and as their vector index's name: each one that Postgres would
+        truncate. Empty when all fit."""
+        problems: list[str] = []
+        for name in collection_names:
+            for ident in (self._table(name), self.vector_index_name(name)):
+                n = len(ident.encode("utf-8"))
+                if n > self.MAX_IDENTIFIER_BYTES:
+                    problems.append(f"{ident!r} is {n} bytes; Postgres truncates names over "
+                                    f"{self.MAX_IDENTIFIER_BYTES}")
+        return problems
+
+    def has_vector_index(self, collection_name: str) -> bool:
+        """Whether the collection's table owns an index under the name `create_index` gives it. A table can exist
+        without one, and a rename leaves the old index name behind (`swap_collections` renames both), so a rebuild
+        checks this before it swaps (the architect's C4)."""
+        self.connect()
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM pg_indexes WHERE schemaname = %s AND tablename = %s AND indexname = %s",
+                    (self._catalog_schema, self._table(collection_name), self.vector_index_name(collection_name)),
+                )
+                return cur.fetchone() is not None
+        finally:
+            self._put_conn(conn)
+
+    def swap_collections(self, renames: Sequence[tuple[str, str]], *, lock_timeout: str = "5s",
+                         attempts: int = 3, retry_wait_s: float = 2.0) -> None:
+        """Rename several collections' tables AND their vector indexes, in order, in ONE transaction.
+
+        `renames` is a list of (from, to), applied in that order, so a swap is
+        `[(live, previous), (rebuilt, live)]` and its undo is the reverse. Every reader sees either all of it or
+        none: with `rename_collection`, which commits each rename alone, a reader between two renames would get
+        "relation does not exist" (the architect's C3).
+
+        Each table's index is renamed with it (`ALTER INDEX ... RENAME`): `ALTER TABLE ... RENAME` leaves the index
+        under its old name, and the next `create_index` on a table that takes that old name would find it taken and
+        silently create nothing (C4). A table with no index of its own is renamed alone.
+
+        Checked before anything runs, raising ValueError: every name fits in 63 bytes, and the sequence is possible
+        (each `from` exists at its turn and each `to` does not). Waits at most `lock_timeout` for the locks a rename
+        needs, so a long reader cannot stall the swap, and retries `attempts` times; on any failure the transaction
+        rolls back and nothing is renamed.
+        """
+        if not renames:
+            return
+        problems = self.check_names(*[n for pair in renames for n in pair])
+        if problems:
+            raise ValueError("; ".join(problems))
+        self.connect()
+        present = {t for t in self.list_collections()}
+        for old, new in renames:
+            old_t, new_t = self._table(old), self._table(new)
+            if old_t not in present:
+                raise ValueError(f"cannot rename {old_t!r}: it does not exist at that point in the swap")
+            if new_t in present:
+                raise ValueError(f"cannot rename onto {new_t!r}: it already exists at that point in the swap")
+            present.discard(old_t)
+            present.add(new_t)
+
+        import time
+
+        last_exc: Exception | None = None
+        for attempt in range(1, max(1, attempts) + 1):
+            conn = self._get_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout = %s", (lock_timeout,))
+                    for old, new in renames:
+                        old_t, new_t = self._table(old), self._table(new)
+                        cur.execute(
+                            "SELECT 1 FROM pg_indexes WHERE schemaname = %s AND tablename = %s AND indexname = %s",
+                            (self._catalog_schema, old_t, f"{old_t}_embedding_idx"),
+                        )
+                        owns_index = cur.fetchone() is not None
+                        cur.execute(f'ALTER TABLE {self._qualified(old_t)} RENAME TO "{new_t}"')
+                        if owns_index:
+                            cur.execute(f'ALTER INDEX {self._qualified(old_t + "_embedding_idx")} '
+                                        f'RENAME TO "{new_t}_embedding_idx"')
+                conn.commit()
+                self._logger.info("Swapped collections: " + ", ".join(f"{a} -> {b}" for a, b in renames))
+                return
+            except Exception as exc:  # rolled back; a lock timeout is retried, anything else raised
+                conn.rollback()
+                last_exc = exc
+                if getattr(exc, "pgcode", "") != "55P03" or attempt >= attempts:   # 55P03: lock_not_available
+                    raise
+                self._logger.warning(f"Swap waited past lock_timeout (attempt {attempt}); retrying")
+                time.sleep(retry_wait_s)
+            finally:
+                self._put_conn(conn)
+        if last_exc:
+            raise last_exc
+
     def rename_collection(self, old_name: str, new_name: str) -> None:
         """Rename a collection's underlying table in place — an `ALTER TABLE
         ... RENAME TO`, not a drop+recreate. Added for RE's repo-rename repair
