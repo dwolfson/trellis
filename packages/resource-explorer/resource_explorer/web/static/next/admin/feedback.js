@@ -206,7 +206,9 @@ function triageHtml(r, statuses, causes = [], chain = []) {
   const when = t.updated_at ? ` · ${esc(t.updated_at.slice(0, 16).replace('T', ' '))}` : '';
   const last = t.note ? `<div class="max-w-[28ch] whitespace-normal text-provenance text-ink-muted">“${esc(t.note)}”</div>` : '';
   const options = statuses.map((s) => `<option value="${esc(s)}"${s === current ? ' selected' : ''}>${esc(statusWord(s))}</option>`).join('');
-  return `<div data-triage="${esc(r.id)}">
+  // Page and answer items are trellis-feedback items; Curate rows are triaged by reference (their own route).
+  const src = r.source === 'resource' ? 'resource_feedback' : 'item';
+  return `<div data-triage="${esc(r.id)}" data-triage-source="${src}">
     <div><span class="text-ink">${esc(statusWord(current))}</span><span class="text-provenance text-ink-muted">${by}${when}</span></div>
     ${last}
     <div class="mt-[2px] flex flex-wrap items-center gap-[6px]">
@@ -356,9 +358,7 @@ async function reload({ saved = null } = {}) {
           ? (r.page ? `<span class="font-mono text-ink">${esc(r.page)}</span>` : '<span class="text-ink-muted" title="No page recorded with this submission">—</span>')
           : `<span class="text-ink-muted">${esc(r.entity_type || '')}</span> <span class="font-mono text-ink">${esc(r.entity_slug || '')}</span>`;
       }
-      const status = (isPage || isAnswer)
-        ? triageHtml(r, statuses, causes, chain)
-        : '<span class="italic text-ink-muted" title="resource_feedback has no triage workflow yet">n/a</span>';
+      const status = triageHtml(r, statuses, causes, chain);
       return `<tr class="border-b border-rule hover:bg-paper-surface">
         <td class="whitespace-nowrap py-s2 pr-s3 font-mono text-provenance text-ink-muted">${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${sourceBadge(r.source)}</td>
@@ -397,26 +397,73 @@ async function reload({ saved = null } = {}) {
     <div class="mb-s3 flex flex-wrap items-center gap-[6px]">
       ${chip('Any status', 'status', '')}
       ${statuses.map((s) => chip(statusWord(s), 'status', s)).join('')}
-      ${filter.status ? '<span class="text-provenance text-ink-muted">Resource feedback has no status yet, so a status filter shows page and answer items only.</span>' : ''}
     </div>
     ${causes.length ? `<div class="mb-s3 flex flex-wrap items-center gap-[6px]">
       ${chip('Any cause', 'cause', '')}
       ${[...causes, data.undiagnosed || 'undiagnosed'].map((c) => chip(causeWord(c), 'cause', c)).join('')}
       ${filter.cause ? '<span class="text-provenance text-ink-muted">Only rated answers are diagnosed, so a cause filter shows answers only.</span>' : ''}
     </div>` : ''}
-    <div class="max-h-[46vh] overflow-auto rounded-sm border border-rule">${body}</div>`;
+    <div class="max-h-[46vh] overflow-auto rounded-sm border border-rule">${body}</div>
+    ${goneHtml(data.gone || [])}`;
 
   restoreDrafts(kept);
   bindFilters();
   bindTriage();
 }
 
+/** Curate feedback rows deleted after they were triaged (Q7): their history is kept, and shown here, until an
+ *  admin clears it. Deleting the row on its resource's Curate tab never removes it. */
+function goneHtml(gone) {
+  if (!gone.length) return '';
+  return `<div class="mt-s3" data-gone-list>
+    <h4 class="m-0 text-caps uppercase tracking-caps text-ink-muted">Item gone (${gone.length})</h4>
+    <p class="mt-[2px] max-w-[65ch] text-provenance text-ink-muted">Resource feedback that was triaged and has since
+      been deleted. Its status history is kept until you clear it.</p>
+    ${gone.map((g) => {
+      const t = g.triage || {};
+      return `<div class="mt-[2px] flex flex-wrap items-center gap-[6px] text-caveat" data-gone="${esc(g.ref_id)}">
+        <span class="font-mono text-ink-muted">${esc(g.source)} ${esc(g.ref_id)}</span>
+        <span class="text-ink">last: ${esc(statusWord(t.status || 'new'))}</span>
+        ${t.actor ? `<span class="text-ink-muted">· ${esc(t.actor)}</span>` : ''}
+        ${t.note ? `<span class="text-ink-muted">“${esc(t.note)}”</span>` : ''}
+        <button type="button" data-gone-clear
+          class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-2 py-[1px] text-caveat text-ink-muted hover:text-ink">Clear history</button>
+        <span data-gone-error class="text-provenance text-state-warn"></span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
 /** Save one status change: PATCH /api/feedback/{id} with the status and note, then reload so the row, its counts
  *  and any active status filter all agree with the store. A refusal is said on the row, not swallowed. */
 function bindTriage() {
   if (!_host) return;
+  _host.querySelectorAll('[data-gone]').forEach((rowEl) => {
+    rowEl.querySelector('[data-gone-clear]')?.addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      button.disabled = true;
+      try {
+        const res = await fetch(`/api/feedback/resource_feedback/${encodeURIComponent(rowEl.dataset.gone)}`,
+          { method: 'DELETE', headers: authHeaders() });
+        if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+          throw new Error(detail);
+        }
+      } catch (err) {
+        rowEl.querySelector('[data-gone-error]').textContent = `Not cleared: ${err.message}`;
+        button.disabled = false;
+        return;
+      }
+      reload();
+    });
+  });
   _host.querySelectorAll('[data-triage]').forEach((cell) => {
     const id = cell.dataset.triage;
+    // A Curate row is triaged by reference through its own route; a library item by its id.
+    const url = cell.dataset.triageSource === 'resource_feedback'
+      ? `/api/feedback/resource_feedback/${encodeURIComponent(id)}`
+      : `/api/feedback/${encodeURIComponent(id)}`;
     const error = cell.querySelector('[data-triage-error]');
     cell.querySelector('[data-triage-save]')?.addEventListener('click', async (e) => {
       const button = e.currentTarget;
@@ -440,7 +487,7 @@ function bindTriage() {
       error.textContent = '';
       let res;
       try {
-        res = await fetch(`/api/feedback/${encodeURIComponent(id)}`, {
+        res = await fetch(url, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify(payload),
@@ -465,7 +512,7 @@ function bindTriage() {
       if (!box.open || box.dataset.loaded) return;
       const body = box.querySelector('[data-history-body]');
       try {
-        const res = await fetch(`/api/feedback/${encodeURIComponent(id)}`, { headers: authHeaders() });
+        const res = await fetch(url, { headers: authHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const item = await res.json();
         box.dataset.loaded = '1';

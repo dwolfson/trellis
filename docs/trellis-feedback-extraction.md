@@ -208,9 +208,18 @@ Each step is its own PR, with tests.
    keep items until deleted, and delete an item together with its triage history.
 3. **RE adoption:**
 
-   Done so far: page feedback is stored in the library, and the legacy `feedback` table is copied
-   in once (trellis-feedback 0.2 `import_item`; the old table is kept). Admin's PATCH takes all six
-   statuses, a note, and records who made the change.
+   Progress, in four PRs:
+   - **A (#1013, merged and deployed 2026-11-09):** page feedback is stored in the library, and the
+     legacy `feedback` table is copied in once (trellis-feedback 0.2 `import_item`; the old table is
+     kept; 27 rows on the production database). Admin's PATCH takes all six statuses and a note, and
+     records who made the change.
+   - **B (#1014):** chat votes and Questions-checklist verdicts are `answer` items with the question,
+     answer and user. Admin lists them.
+   - **C:** Admin → Feedback has a status control with a note on each item, a status filter and each
+     item's history.
+   - **D:** Curate's `resource_feedback` rows are triaged by reference (source `resource_feedback`).
+     A triaged row that is deleted is listed as "item gone" with its history until an admin clears it
+     (Q7).
    - migrate `feedback`;
    - record chat votes as `answer` items;
    - add a status control, notes and a filter to Admin → Feedback;

@@ -17,9 +17,12 @@ const LISTING = {
     { id: 'a1', source: 'answer', vote: -1, query_text: 'what changed?', response_text: 'it did', user_id: 'peterprofile',
       created_at: '2026-11-09T09:00:00+00:00', triage_status: 'new',
       triage: { status: 'new', note: '', actor: '', updated_at: '', events: 0 }, extra: { text_from: 'stored exchange' } },
-    { id: 7, source: 'resource', entity_type: 'repo', entity_slug: 'r1', message: 'solid', rating: 4,
-      created_at: '2026-11-08T09:00:00+00:00' },
+    { id: 'r7', source: 'resource', entity_type: 'repo', entity_slug: 'r1', message: 'solid', rating: 4,
+      created_at: '2026-11-08T09:00:00+00:00', triage_status: 'new',
+      triage: { status: 'new', note: '', actor: '', updated_at: '', events: 0 } },
   ],
+  gone: [{ ref_id: 'r0', source: 'resource_feedback',
+    triage: { status: 'deferred', note: 'later', actor: 'erinoverview', updated_at: '2026-11-01T10:00:00+00:00', events: 1 } }],
   counts: { resource: { total: 1, resources: 1 }, page: { total: 1 }, answer: { total: 1 } },
   filtered: false,
   statuses: STATUSES,
@@ -48,7 +51,7 @@ async function setUp(routes) {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-test('page and answer rows get a status control set to their status; resource rows say they have none', async () => {
+test('every row gets a status control set to its status, Curate rows through their own route', async () => {
   const { host, pane } = await setUp([['/api/curate/feedback', { reply: () => ok(LISTING) }]]);
   await pane.renderFeedback(host);
   const page = host.querySelector('[data-triage="p1"]');
@@ -60,8 +63,9 @@ test('page and answer rows get a status control set to their status; resource ro
   const answer = host.querySelector('[data-triage="a1"]');
   assert.equal(answer.querySelector('[data-triage-status]').value, 'new');
   assert.equal(answer.querySelector('[data-triage-history]'), null, 'no history link for an item never changed');
-  assert.equal(host.querySelectorAll('[data-triage]').length, 2);
-  assert.match(text(host), /resource_feedback has no triage workflow yet|n\/a/);
+  assert.equal(host.querySelectorAll('[data-triage]').length, 3);
+  assert.equal(host.querySelector('[data-triage="r7"]').dataset.triageSource, 'resource_feedback');
+  assert.equal(host.querySelector('[data-triage="p1"]').dataset.triageSource, 'item');
   const options = [...page.querySelectorAll('[data-triage-status] option')].map((o) => o.value);
   assert.deepEqual(options, STATUSES);
 });
@@ -119,4 +123,46 @@ test('history loads every change from the item route', async () => {
   box.dispatchEvent(new host.ownerDocument.defaultView.Event('toggle'));
   await settle(); await settle(); await settle();
   assert.match(text(box.querySelector('[data-history-body]')), /2026-11-09 11:00 · triaged · erinoverview — looking/);
+});
+
+test('saving a Curate row goes to its by-reference route', async () => {
+  const { host, pane, calls } = await setUp([
+    ['/api/curate/feedback', { reply: () => ok(LISTING) }],
+    ['/api/feedback/resource_feedback/r7', { method: 'PATCH', reply: () => ok({ id: 'r7', triage_status: 'actioned' }) }],
+  ]);
+  await pane.renderFeedback(host);
+  const cell = host.querySelector('[data-triage="r7"]');
+  cell.querySelector('[data-triage-status]').value = 'actioned';
+  cell.querySelector('[data-triage-save]').click();
+  await settle(); await settle(); await settle();
+  const patch = calls.find((c) => c.method === 'PATCH');
+  assert.equal(patch.url, '/api/feedback/resource_feedback/r7');
+  assert.deepEqual(patch.body, { triage_status: 'actioned', note: '' });
+});
+
+test('a deleted Curate row that was triaged is listed as gone, and Clear deletes its history', async () => {
+  const { host, pane, calls } = await setUp([
+    ['/api/curate/feedback', { reply: () => ok(LISTING) }],
+    ['/api/feedback/resource_feedback/r0', { method: 'DELETE', reply: () => ok({ cleared: 1 }) }],
+  ]);
+  await pane.renderFeedback(host);
+  const gone = host.querySelector('[data-gone="r0"]');
+  assert.ok(gone, 'no item-gone entry');
+  assert.match(text(gone), /resource_feedback r0 last: deferred · erinoverview “later”/);
+  gone.querySelector('[data-gone-clear]').click();
+  await settle(); await settle(); await settle();
+  assert.ok(calls.some((c) => c.method === 'DELETE' && c.url === '/api/feedback/resource_feedback/r0'));
+});
+
+test('a refused clear says why on that entry', async () => {
+  const { host, pane } = await setUp([
+    ['/api/curate/feedback', { reply: () => ok(LISTING) }],
+    ['/api/feedback/resource_feedback/r0', { method: 'DELETE', reply: () => ({ ok: false, status: 409, json: async () => ({ detail: 'The row still exists' }) }) }],
+  ]);
+  await pane.renderFeedback(host);
+  const gone = host.querySelector('[data-gone="r0"]');
+  gone.querySelector('[data-gone-clear]').click();
+  await settle(); await settle(); await settle();
+  assert.equal(text(gone.querySelector('[data-gone-error]')), 'Not cleared: The row still exists');
+  assert.equal(gone.querySelector('[data-gone-clear]').disabled, false);
 });
