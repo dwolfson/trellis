@@ -1,7 +1,7 @@
 # Brief: closed-loop step 2, routing a diagnosis to its consumer
 
 Status: **design PASS from the architect's read-back of 32ca01ed (2026-11-10), with three required
-additions (§9). Q1, Q3, Q4 and Q7 decided; Q2, Q5, Q6 and Q8 open (§6).**
+additions (§9). All eight questions decided (§6).**
 Design: `docs/feedback-closed-loop-design.md` §3.2 (the routing table) and §6 step 2 ("the gaps and RFA
 consumers, then Automate's"). Step 1 (#1019) records a cause on a rated answer and routes nothing.
 
@@ -120,7 +120,14 @@ later would keep its own.
 
 **Decision (project owner, 2026-11-10):** Q1, Q3, Q4 and Q7 as recommended: route on Save; a re-diagnosis
 leaves the earlier route standing; slug-less RFAs go to a `catalog`/`questions` pseudo-entity; Automate
-proposes with an RFA. Q2, Q5, Q6 and Q8 are open.
+proposes with an RFA.
+
+**Decision (project owner, 2026-11-10):** Q2, Q5 and Q6 as recommended: the admin picks one charged
+analysis per diagnosis; catalog RFAs stay unassigned; `over_compressed` and `reasoning` stay out of step 2.
+
+**Decision (project owner, 2026-11-10):** Q8, not as recommended: a routed RFA and its gap sentence
+**include the question as asked**, with the cause, the item reference, and the curator note for
+`unclear_question`. The asker's id still never travels into a gap or an RFA (§3).
 
 1. **Route on Save, automatically** (recommended), or only on an explicit "Route" button after Save?
 2. **Several analyses charged:** the admin picks one, defaulting to the first in role order
@@ -173,7 +180,8 @@ Each its own PR, with tests and a read-back:
   the gap→RFA route in `projects.py`, which knows only the two old kinds.
 - **A2, deleting a feedback item** deletes its `feedback_routes` rows. A gap's evidence or an RFA's items
   that name the deleted item say "feedback item deleted" when read, rather than pointing at nothing.
-- **A3, what an RFA says:** Q8 above.
+- **A3, what an RFA says:** raised as Q8 above, and decided by the project owner: the question is
+  included.
 
 Smaller points from the same read-back, all taken:
 
