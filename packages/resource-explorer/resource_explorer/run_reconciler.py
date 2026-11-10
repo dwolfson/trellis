@@ -285,15 +285,20 @@ def reconcile_runs(
 
     # An undo of a rebuild runs in a request, not in the queue: one that died is found by its phase and an unheld
     # claim (reindex.recover_undos), and finished or reversed by what its tables say.
+    # Recovery outcomes go in the result, not only the log (tests/test_no_silent_success.py): a caller can branch on
+    # `reindex_recovery_errors`, and a failed recovery is never reported as a quiet success.
     undos: list[str] = []
+    recovered: list[str] = []
+    recovery_errors: list[str] = []
     try:
         from resource_explorer import reindex
 
         undos = reindex.recover_undos(registry)
         for words in undos:
             log.info("reconciled a rebuild's undo: %s", words)
-    except Exception:
+    except Exception as exc:
         log.exception("could not check for unfinished undos of rebuilds")
+        recovery_errors.append(f"undo check: {type(exc).__name__}: {exc}"[:300])
 
     for row in resolved:
         last_beat = row.get("heartbeat_at") or row.get("claimed_at") or "unknown"
@@ -311,9 +316,12 @@ def reconcile_runs(
             try:
                 from resource_explorer import reindex
 
-                log.info("reconciled rebuild %s: %s", row["id"], reindex.recover(registry, row))
-            except Exception:
+                words = reindex.recover(registry, row)
+                recovered.append(f"{row['id']}: {words}")
+                log.info("reconciled rebuild %s: %s", row["id"], words)
+            except Exception as exc:
                 log.exception("could not recover rebuild %s; its run row says how far it got", row["id"])
+                recovery_errors.append(f"{row['id']}: {type(exc).__name__}: {exc}"[:300])
 
     return {
         "resolved": len(resolved),
@@ -321,6 +329,8 @@ def reconcile_runs(
         "left_alone": len(left_alone),
         "resolved_ids": [r["id"] for r in resolved],
         "undos_recovered": undos,
+        "reindex_recovered": recovered,
+        "reindex_recovery_errors": recovery_errors,
     }
 
 
