@@ -283,6 +283,18 @@ def reconcile_runs(
         # avoid doing lightly.
         left_alone.append(row["id"])
 
+    # An undo of a rebuild runs in a request, not in the queue: one that died is found by its phase and an unheld
+    # claim (reindex.recover_undos), and finished or reversed by what its tables say.
+    undos: list[str] = []
+    try:
+        from resource_explorer import reindex
+
+        undos = reindex.recover_undos(registry)
+        for words in undos:
+            log.info("reconciled a rebuild's undo: %s", words)
+    except Exception:
+        log.exception("could not check for unfinished undos of rebuilds")
+
     for row in resolved:
         last_beat = row.get("heartbeat_at") or row.get("claimed_at") or "unknown"
         error = (
@@ -308,6 +320,7 @@ def reconcile_runs(
         "still_running": len(still_running),
         "left_alone": len(left_alone),
         "resolved_ids": [r["id"] for r in resolved],
+        "undos_recovered": undos,
     }
 
 

@@ -322,6 +322,9 @@ class MultiCollectionStore:
     def has_vector_index(self, collection: str) -> bool:
         return self._store.has_vector_index(collection)
 
+    def table_bytes(self, collection: str) -> int:
+        return self._store.table_bytes(collection)
+
     def check_names(self, *collections: str) -> list[str]:
         return self._store.check_names(*collections)
 

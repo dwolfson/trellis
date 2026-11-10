@@ -57,6 +57,9 @@ class FakeStore:
                 self.indexed.discard(old)
                 self.indexed.add(new)
 
+    def table_bytes(self, n):
+        return 1_048_576 * len(self.tables.get(n, []))
+
     def rows_by_ids(self, n, ids):
         return [{"id": i, "text": t, "metadata": m} for i, t, m in self.tables.get(n, []) if i in ids]
 
@@ -249,7 +252,7 @@ class TestRecovery:
         with pytest.raises(SystemExit):
             execute(registry, run_id, d)
         monkeypatch.setattr(registry, "set_project_collections", real)
-        assert target(registry, run_id)["phase"] == "swapped"
+        assert target(registry, run_id)["phase"] == "extending"           # the intent was recorded first
         assert f"{SLUG}_python_code" not in registry.get(SLUG).collections   # the half-done state
         assert reindex.recover(registry, registry.get_run(run_id), d) == "finished forward"
         assert f"{SLUG}_python_code" in registry.get(SLUG).collections
@@ -376,3 +379,146 @@ def test_extra_docs_paths_of_a_subproject_are_rebuilt_too(registry, store, tmp_p
     d = deps(registry, store)
     execute(registry, queued(registry), d)
     assert d.pipeline.extra_seen == [("markdown_docs", ["docs/guide.md"])]
+
+
+class TestRecoveryReadsTheTables:
+    """The architect's B1-B3 on a6ef63b1: intent before effect, and recovery decides from the tables."""
+
+    def _kill_after(self, monkeypatch, obj, name):
+        real = getattr(obj, name)
+
+        def wrapped(*a, **kw):
+            real(*a, **kw)
+            raise SystemExit(f"killed after {name}")
+        monkeypatch.setattr(obj, name, wrapped)
+        return real
+
+    def test_killed_after_the_prune_took_effect_but_before_it_was_recorded(self, registry, store, monkeypatch):
+        list_before = sorted(registry.get(SLUG).collections)
+        d = deps(registry, store)
+        run_id = queued(registry)
+        real = self._kill_after(monkeypatch, registry, "set_project_collections")
+        with pytest.raises(SystemExit):
+            reindex.run(run_id, d)
+        monkeypatch.setattr(registry, "set_project_collections", real)
+        assert target(registry, run_id)["phase"] == "pruning"
+        assert f"{SLUG}_java_code" not in registry.get(SLUG).collections          # the prune happened
+        assert reindex.recover(registry, registry.get_run(run_id), d) == "rolled back"
+        assert sorted(registry.get(SLUG).collections) == list_before
+        assert not any(n.endswith("__rebuild") for n in store.tables)
+
+    def test_killed_after_the_swap_committed_but_before_it_was_recorded(self, registry, store, monkeypatch):
+        d = deps(registry, store)
+        run_id = queued(registry)
+        real = self._kill_after(monkeypatch, store, "swap_collections")
+        with pytest.raises(SystemExit):
+            reindex.run(run_id, d)
+        monkeypatch.setattr(store, "swap_collections", real)
+        assert target(registry, run_id)["phase"] == "swapping"
+        assert reindex.recover(registry, registry.get_run(run_id), d) == "finished forward"
+        t = target(registry, run_id)
+        assert t["phase"] == "done" and t["previous_until"]
+        assert f"{SLUG}_python_code" in registry.get(SLUG).collections
+        registry.finish_run(run_id, "failed", error="killed")
+        assert reindex.undo(registry, SLUG, requested_by="erin", deps=d)       # undo is available
+
+    def test_a_swap_that_commits_and_then_raises_is_finished_forward(self, registry, store, monkeypatch):
+        real = store.swap_collections
+
+        def commit_then_raise(renames, **kw):
+            real(renames, **kw)
+            raise RuntimeError("connection lost after commit")
+        monkeypatch.setattr(store, "swap_collections", commit_then_raise)
+        assert execute(registry, queued(registry), deps(registry, store)) == ("succeeded", "")
+        assert store.count(f"{SLUG}_markdown_docs") == 3
+
+    def test_votes_are_recorded_per_collection_and_forward_recovery_carries_only_the_rest(self, registry, store,
+                                                                                          monkeypatch):
+        from resource_explorer.vector_store_pg import _metrics_collector
+        col = f"{SLUG}_markdown_docs"
+        usage_id = next(i for i, t, _ in store.tables[col] if t == "usage")
+        m = _metrics_collector()
+        with m._conn() as conn:
+            conn.execute("INSERT INTO chunk_feedback (chunk_ref, positive_count, neutral_count, total_count, "
+                         "last_updated) VALUES (?, 1, 0, 1, 'now')", (f"{col}:{usage_id}",))
+        d = deps(registry, store)
+        run_id = queued(registry)
+        real = self._kill_after(monkeypatch, store, "swap_collections")
+        with pytest.raises(SystemExit):
+            reindex.run(run_id, d)
+        monkeypatch.setattr(store, "swap_collections", real)
+        reindex.recover(registry, registry.get_run(run_id), d)               # carries from the __previous table
+        new_id = next(i for i, t, _ in store.tables[col] if t == "usage")
+        assert m.chunk_vote_refs(col) == [f"{col}:{new_id}"]
+        assert target(registry, run_id)["vote_moves"] == {f"{col}:{usage_id}": f"{col}:{new_id}"}
+
+
+class TestUndoIsRecoverable:
+    def _rebuilt(self, registry, store):
+        d = deps(registry, store)
+        execute(registry, queued(registry), d)
+        return d
+
+    def test_an_undo_killed_after_its_swap_committed_is_finished(self, registry, store, monkeypatch):
+        d = self._rebuilt(registry, store)
+        real = store.swap_collections
+
+        def die_after(renames, **kw):
+            real(renames, **kw)
+            raise SystemExit("killed")
+        monkeypatch.setattr(store, "swap_collections", die_after)
+        with pytest.raises(SystemExit):
+            reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+        monkeypatch.setattr(store, "swap_collections", real)
+        out = reindex.recover_undos(registry, deps=d)
+        assert out and "undo finished forward" in out[0]
+        assert store.count(f"{SLUG}_java_code") == 1 and not store.collection_exists(f"{SLUG}_python_code")
+        assert sorted(registry.get(SLUG).collections) == sorted(
+            [f"{SLUG}_markdown_docs", f"{SLUG}_java_code", "web_docs_site"])
+
+    def test_an_undo_killed_before_its_swap_is_reversed_and_undo_stays_available(self, registry, store):
+        d = self._rebuilt(registry, store)
+        store.fail_swap = True
+        with pytest.raises(RuntimeError):
+            reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+        store.fail_swap = False
+        out = reindex.recover_undos(registry, deps=d)
+        assert out and "undo reversed" in out[0]
+        assert f"{SLUG}_python_code" in registry.get(SLUG).collections        # the rebuilt index is still live
+        assert reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+
+    def test_a_live_undo_s_claim_keeps_recovery_away(self, registry, store):
+        d = self._rebuilt(registry, store)
+        row = reindex.latest_done(registry, SLUG)
+        registry.merge_run_target(row["id"], {"phase": "undo_swapping"})
+        registry.take_claim(reindex._claim_key(SLUG), "a live undo")
+        assert reindex.recover_undos(registry, deps=d) == []
+
+
+class TestTheRestOfTheReadBack:
+    def test_a_second_rebuild_is_refused_when_claimed(self, registry, store, monkeypatch):
+        run_id = queued(registry)
+        real = registry.list_runs
+        monkeypatch.setattr(registry, "list_runs", lambda state=None, kind=None, limit=50: (
+            [{"id": "other", "target": {"slug": "elsewhere"}}] if state == "running"
+            else real(state=state, kind=kind, limit=limit)))
+        state, error = reindex.run(run_id, deps(registry, store))
+        assert state == "failed" and "one at a time" in error
+
+    def test_disk_full_is_named_and_the_aside_tables_dropped(self, registry, store, monkeypatch):
+        class DiskFull(Exception):
+            pgcode = "53100"
+        d = deps(registry, store)
+
+        def fill(*a, **kw):
+            store.insert(f"{SLUG}_markdown_docs__rebuild", ["half"], [{"file_path": "x"}])
+            raise DiskFull("could not extend file")
+        monkeypatch.setattr(d.pipeline, "_ingest_collection", fill)
+        state, error = reindex.run(queued(registry), d)
+        assert state == "failed" and "ran out of disk" in error
+        assert not store.collection_exists(f"{SLUG}_markdown_docs__rebuild")
+
+    def test_the_ask_states_the_measured_space_a_rebuild_needs(self, registry, store):
+        out = reindex.queue(registry, SLUG, requested_by="erin", store=store)
+        assert out["needs_bytes"] == 3 * 1_048_576                           # the repo's own tables, not web_docs
+        assert "needs about 3 MB more" in out["needs_words"]

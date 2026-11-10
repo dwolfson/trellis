@@ -352,7 +352,7 @@ def _queue_rebuild(registry, slugs, all_projects: bool, yes: bool) -> None:
         console.print(f"[red]Not queued:[/red] {exc}")
         raise typer.Exit(1) from exc
     held = " It is the first rebuild, so it is held for an admin to accept before it swaps." if out["held"] else ""
-    console.print(f"[green]Queued[/green] as run {out['run_id']}; a worker runs it.{held}")
+    console.print(f"[green]Queued[/green] as run {out['run_id']}; a worker runs it. It {out['needs_words']}.{held}")
 
 
 @app.command()

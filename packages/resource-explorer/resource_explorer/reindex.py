@@ -43,9 +43,11 @@ ASIDE, PREVIOUS = "__rebuild", "__previous"
 KEEP_PREVIOUS_DAYS = 7
 ACTIVE_STATES = ("queued", "claimed", "running")
 
-#: The steps, in order. A run's target carries `phase` (the last step completed) and `outcomes` (each step's words).
-PHASES = ("queued", "building", "built", "awaiting_accept", "surveyed", "list_pruned", "swapped", "list_extended",
-          "done", "rolled_back", "failed")
+#: The steps, in order. A run's target carries `phase` and `outcomes` (each step's words). An -ing phase is an INTENT,
+#: recorded before its effect; the past-tense one after it (the architect's B1). Undo's phases mirror the swap's.
+PHASES = ("queued", "building", "built", "awaiting_accept", "surveyed", "pruning", "list_pruned", "swapping",
+          "swapped", "extending", "list_extended", "done", "rolled_back", "failed",
+          "undo_pruning", "undo_swapping", "undo_swapped", "undo_extending")
 #: Phases at which nothing live has changed: a dead run is rolled back by dropping its aside tables.
 BEFORE_LIVE = ("queued", "building", "built", "awaiting_accept", "surveyed")
 
@@ -163,14 +165,28 @@ def queue(registry, slug: str, *, requested_by: str, store=None) -> dict:
     if problems:
         raise ReindexRefused("; ".join(problems), 400)
     held = not ever_completed(registry)
+    # Measured, not estimated: Postgres cannot report its filesystem's free space (the architect's read-back), so the
+    # ask states the space a rebuild needs again until its previous index is dropped.
+    try:
+        needs = sum(store.table_bytes(c) for c in own_collections(slug, p.collections))
+    except Exception:  # noqa: BLE001 -- an unmeasured size is said to be unknown, not zero
+        needs = None
     from resource_explorer.activity_logger import log_reindex
 
     activity_id = log_reindex(registry, slug, name, "running", f"Rebuild of {name}'s chat index: queued by "
                               f"{requested_by}" + (" (the first rebuild: held for accept before it swaps)." if held
                                                    else "."))
-    target = {"slug": slug, "phase": "queued", "held": held, "asked_by": requested_by, "outcomes": []}
+    target = {"slug": slug, "phase": "queued", "held": held, "asked_by": requested_by, "outcomes": [],
+              "needs_bytes": needs}
     run_id = registry.enqueue_run(RUN_KIND, target, requested_by=requested_by, result_ref=activity_id)
-    return {"run_id": run_id, "held": held}
+    return {"run_id": run_id, "held": held, "needs_bytes": needs, "needs_words": needs_words(needs)}
+
+
+def needs_words(needs: int | None) -> str:
+    if needs is None:
+        return "the space it needs could not be measured"
+    return (f"needs about {needs / 1_048_576:,.0f} MB more in the database (the current index's size, measured) "
+            f"until its previous index is dropped, {KEEP_PREVIOUS_DAYS} days after the swap")
 
 
 # ── the run ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -227,6 +243,12 @@ def run(run_id: str, deps: Deps) -> tuple[str, str]:
     (state, error) for the run queue. Never writes the project's status."""
     r = _Run(run_id, deps)
     slug = r.t["slug"]
+    # queue() checks, then enqueues: two admins at once could both pass. The claim is the second check.
+    others = [x for x in deps.registry.list_runs(state="running", kind=RUN_KIND, limit=50) if x["id"] != run_id]
+    if others:
+        msg = f"another rebuild ({_target(others[0]).get('slug', '?')}) is running; one at a time"
+        r.step("failed", f"refused when claimed: {msg}")
+        return "failed", msg
     if r.t.get("continue_of"):
         return _continue_accepted(r)
     try:
@@ -234,8 +256,9 @@ def run(run_id: str, deps: Deps) -> tuple[str, str]:
     except Exception as exc:  # the run row says what failed; the live index is untouched
         log.exception("rebuild of %s failed while building", slug)
         _drop_aside(r)
-        r.step("failed", f"the build failed, and the live index is unchanged: {exc}")
-        return "failed", str(exc)[:500]
+        why = _why(exc)
+        r.step("failed", f"the build failed, and the live index is unchanged: {why}")
+        return "failed", why[:500]
     if r.t.get("refused"):
         _drop_aside(r)
         r.step("failed", f"the check refused the swap: {r.t['refused']}")
@@ -245,6 +268,15 @@ def run(run_id: str, deps: Deps) -> tuple[str, str]:
                                   "swaps")
         return "succeeded", ""
     return _finish(r)
+
+
+def _why(exc: BaseException) -> str:
+    """The words for a failure. Postgres running out of disk (SQLSTATE 53100) is named as such: the aside tables are
+    what filled it, and they are dropped."""
+    if getattr(exc, "pgcode", "") == "53100" or "disk full" in str(exc).lower() or "No space left" in str(exc):
+        return ("the database ran out of disk while building; the aside tables were dropped and the live index is "
+                f"unchanged ({type(exc).__name__})")
+    return str(exc)
 
 
 def _build(r: _Run) -> None:
@@ -337,10 +369,10 @@ def _finish(r: _Run) -> tuple[str, str]:
         return "failed", str(exc)[:500]
     try:
         _swap(r)
-    except Exception as exc:  # recover() decides by the phase reached
+    except Exception as exc:  # recover_target decides by the tables
         log.exception("rebuild of %s failed during the swap", r.t["slug"])
         result = recover_target(r)
-        return "failed", f"{exc} ({result})"[:500]
+        return ("succeeded", "") if result == "finished forward" else ("failed", f"{_why(exc)} ({result})"[:500])
     return "succeeded", ""
 
 
@@ -369,12 +401,72 @@ def _survey(r: _Run) -> None:
 
 
 def _set_list(r: _Run, collections: list[str]) -> None:
+    """Set the project's collections list and invalidate its query cache. Idempotent: setting the same list twice is
+    the same as once, so recovery can repeat a list step it cannot tell happened."""
     d, slug = r.d, r.t["slug"]
     d.registry.set_project_collections(slug, collections)
     d.query_cache.invalidate_project(slug)
 
 
+def _final_list(r: _Run) -> list[str]:
+    d, slug = r.d, r.t["slug"]
+    p = d.registry.get(slug)
+    shared = shared_collections(slug, p.collections if p else [])
+    kept, added = r.t.get("kept") or [], r.t.get("added") or []
+    return kept + added + [c for c in shared if c not in kept + added]
+
+
+def _swap_committed(r: _Run) -> bool:
+    """Whether the swap's transaction committed, read from the TABLES, never from the phase (the architect's B1): the
+    phase is written after its effect can have happened. Committed: every live table that was rebuilt or dropped now
+    exists as `__previous`, and no table that was built is still aside."""
+    s = r.d.store
+    kept, added, dropped = r.t.get("kept") or [], r.t.get("added") or [], r.t.get("dropped") or []
+    renamed = [old for old, _ in (r.t.get("renames") or []) if not old.endswith(ASIDE)]
+    return (all(s.collection_exists(previous(n)) for n in renamed or kept + dropped)
+            and not any(s.collection_exists(aside(n)) for n in kept + added))
+
+
+def _carry_votes(r: _Run, snaps: dict) -> None:
+    """Carry each collection's votes to its new rows, recording the moves on the run row per collection AS THEY
+    HAPPEN (B2), so a forward recovery carries only what is not yet moved and undo can move each one back."""
+    from resource_explorer import chunk_votes
+
+    d = r.d
+    for n, snap in snaps.items():
+        if not snap:
+            continue
+        rows = [(n, row["id"], row.get("text") or "", str((row.get("metadata") or {}).get("file_path") or
+                 (row.get("metadata") or {}).get("source_url") or ""))
+                for row in d.store.all_rows(n)]
+        report = chunk_votes.carry(snap, rows)
+        moved = {**(r.t.get("vote_moves") or {}), **report.moved}
+        words = list(r.t.get("vote_words") or []) + [f"{n}: {report.words()}"]
+        r.t = d.registry.merge_run_target(r.id, {"vote_moves": moved, "vote_words": words,
+                                                 "votes_done": list(r.t.get("votes_done") or []) + [n]})
+
+
+def _snapshots_from_previous(r: _Run) -> dict:
+    """For a forward recovery: the voted chunks of each rebuilt collection, read from its `__previous` table (where
+    the old rows went at the swap), minus the collections already carried and the refs already moved."""
+    from resource_explorer import chunk_votes
+
+    d = r.d
+    done = set(r.t.get("votes_done") or [])
+    moved = set((r.t.get("vote_moves") or {}).keys())
+    out = {}
+    for n in r.t.get("kept") or []:
+        if n in done or not d.store.collection_exists(previous(n)):
+            continue
+        snap = chunk_votes.snapshot(d.store, n, rows_from=previous(n))
+        snap.voted = [v for v in snap.voted if v.ref not in moved]
+        out[n] = snap
+    return out
+
+
 def _swap(r: _Run) -> None:
+    """Prune, swap, carry, extend: each step's INTENT is recorded before its effect (B1), so recovery knows what may
+    have happened, and decides whether the swap committed from the tables."""
     from resource_explorer import chunk_votes
 
     d, slug = r.d, r.t["slug"]
@@ -382,35 +474,27 @@ def _swap(r: _Run) -> None:
     shared = shared_collections(slug, p.collections)
     live = own_collections(slug, p.collections)
     dropped, added, kept = r.t.get("dropped") or [], r.t.get("added") or [], r.t.get("kept") or []
-    snaps = {n: chunk_votes.snapshot(d.store, n) for n in live if d.store.collection_exists(n)}
-    # 1. prune: the dropped types leave the list while their tables still exist, so no reader names a missing one.
+    snaps = {n: chunk_votes.snapshot(d.store, n) for n in kept if d.store.collection_exists(n)}
+    list_before = live + [c for c in shared if c not in live]
     pruned = [c for c in live if c not in dropped] + [c for c in shared if c not in live]
+    # 1. prune: the dropped types leave the list while their tables still exist, so no reader names a missing one.
+    r.step("pruning", list_before=list_before, pruned=pruned)
     _set_list(r, pruned)
-    r.step("list_pruned", f"dropped from the list: {', '.join(dropped) or 'none'}", list_before=live + [
-        c for c in shared if c not in live])
+    r.step("list_pruned", f"dropped from the list: {', '.join(dropped) or 'none'}")
     # 2. swap, one transaction: live -> previous for every live table rebuilt or dropped; aside -> live for the built.
     renames = [(n, previous(n)) for n in kept + dropped if d.store.collection_exists(n)]
     renames += [(aside(n), n) for n in kept + added]
+    r.step("swapping", renames=renames)
     d.store.swap_collections(renames)
-    r.step("swapped", f"swapped {len(kept) + len(added)} collection(s); the previous index is kept",
-           renames=renames)
-    # 3. votes, now that the new rows are live.
-    moved: dict[str, str] = {}
-    vote_words: list[str] = []
-    for n, snap in snaps.items():
-        if not snap or n in dropped:
-            continue
-        rows = [(n, row["id"], row.get("text") or "", str((row.get("metadata") or {}).get("file_path") or
-                 (row.get("metadata") or {}).get("source_url") or ""))
-                for row in d.store.all_rows(n)]
-        report = chunk_votes.carry(snap, rows)
-        moved.update(report.moved)
-        vote_words.append(f"{n}: {report.words()}")
+    r.step("swapped", f"swapped {len(kept) + len(added)} collection(s); the previous index is kept")
+    # 3. votes, now that the new rows are live; recorded per collection.
+    _carry_votes(r, snaps)
     # 4. extend: the added types join the list now that their tables exist.
-    final = kept + added + [c for c in shared if c not in kept + added]
+    final = _final_list(r)
+    r.step("extending", final=final)
     _set_list(r, final)
-    r.step("list_extended", f"added to the list: {', '.join(added) or 'none'}" +
-           (f"; {'; '.join(vote_words)}" if vote_words else ""), vote_moves=moved)
+    words = "; ".join(r.t.get("vote_words") or [])
+    r.step("list_extended", f"added to the list: {', '.join(added) or 'none'}" + (f"; {words}" if words else ""))
     _complete(r, final)
 
 
@@ -444,33 +528,33 @@ def _drop_aside(r: _Run) -> None:
 
 # ── recovery ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
+#: Phases at or after which the swap's transaction may have committed; recovery reads the tables to know.
+SWAP_MAY_HAVE_COMMITTED = ("swapping", "swapped", "extending", "list_extended")
+
+
 def recover_target(r: _Run) -> str:
-    """Finish forward or roll back by the phase reached. Never leaves "swapped but the list not extended" (an added type
-    never queried) or "pruned but the swap failed" (a dropped type gone from chat while its old index still serves)."""
+    """Finish forward or roll back, by what the TABLES say, never by the phase alone (B1). Never leaves "pruned but the
+    swap failed" (a dropped type gone from chat while its old index serves) or "swapped but not extended" (an added
+    type never queried), and a forward recovery ends `done` with undo available."""
     phase = r.t.get("phase")
-    d, slug = r.d, r.t["slug"]
-    if phase in BEFORE_LIVE:
-        _drop_aside(r)
-        r.step("rolled_back", f"rolled back at {phase}: nothing live had changed; the aside tables were dropped")
-        return "rolled back"
-    if phase == "list_pruned":
-        before = r.t.get("list_before") or []
-        _set_list(r, before)
-        _drop_aside(r)
-        r.step("rolled_back", "rolled back after the list was pruned and before the swap: the list is restored and "
-                              "the live index was never changed")
-        return "rolled back"
-    if phase in ("swapped", "list_extended"):
-        kept, added = r.t.get("kept") or [], r.t.get("added") or []
-        p = d.registry.get(slug)
-        shared = shared_collections(slug, p.collections if p else [])
-        final = kept + added + [c for c in shared if c not in kept + added]
-        if phase == "swapped":
+    if phase in ("done", "rolled_back", "failed", "awaiting_accept"):
+        return f"nothing to recover at {phase}"
+    if _swap_committed(r) and (phase in SWAP_MAY_HAVE_COMMITTED or r.t.get("renames")):
+        if phase not in ("extending", "list_extended") or not r.t.get("votes_done"):
+            _carry_votes(r, _snapshots_from_previous(r))
+        final = _final_list(r)
+        if phase != "list_extended":
+            r.step("extending", "finished forward after the swap had committed", final=final)
             _set_list(r, final)
-            r.step("list_extended", "finished forward after the swap: the added types joined the list")
+            r.step("list_extended", "finished forward: the added types joined the list")
         _complete(r, final)
         return "finished forward"
-    return f"nothing to recover at {phase}"
+    if r.t.get("list_before"):
+        _set_list(r, r.t["list_before"])
+    _drop_aside(r)
+    r.step("rolled_back", f"rolled back at {phase}: the swap had not committed, so the live index is unchanged; "
+                          "the list is as it was and the aside tables were dropped")
+    return "rolled back"
 
 
 def recover(registry, row: dict, deps: Deps | None = None) -> str:
@@ -483,8 +567,9 @@ def recover(registry, row: dict, deps: Deps | None = None) -> str:
 
 def undo(registry, slug: str, *, requested_by: str, deps: Deps | None = None) -> dict:
     """Restore the previous index of `slug`'s last rebuild, within its 7 days, in the mirror order: types the rebuild
-    ADDED leave the list first, the swap is reversed (an added type's table is set aside as `__rebuild`), then the
-    types it DROPPED rejoin the list. Votes moved by the rebuild are moved back. Survey writes are not reverted."""
+    ADDED leave the list first, the swap is reversed (each rebuilt table is set aside as `__rebuild`), then the types
+    it DROPPED rejoin the list. Votes moved by the rebuild are moved back. Survey writes are not reverted. Recoverable
+    like the rebuild (B3): intent before effect, and `recover_undo` reads the tables."""
     if not (requested_by or "").strip():
         raise ReindexRefused("Undo needs a signed-in admin.", 401)
     row = latest_done(registry, slug)
@@ -496,31 +581,97 @@ def undo(registry, slug: str, *, requested_by: str, deps: Deps | None = None) ->
         raise ReindexRefused(f"The undo window for {slug} closed on {r.t.get('previous_until', '')[:10]}.")
     if is_rebuilding(registry, slug):
         raise ReindexRefused(f"{slug} has another rebuild in progress.")
-    d = deps
+    holder = f"undo:{requested_by}:{row['id']}"
+    if not registry.take_claim(_claim_key(slug), holder):
+        raise ReindexRefused(f"{slug}'s previous index is being discarded or undone right now.")
+    try:
+        _undo(r, requested_by)
+        return {"run_id": row["id"], "votes_moved_back": len(r.t.get("votes_back") or [])}
+    finally:
+        registry.release_claim(_claim_key(slug), holder)
+
+
+def _claim_key(slug: str) -> str:
+    """One claim per repository for the steps that act on its previous index (undo, discard, the 7-day drop), so two
+    of them can never run at once in two processes. A stale claim (900 s) marks a dead undo for `recover_undos`."""
+    return f"reindex-previous:{slug}"
+
+
+def _undo_committed(r: _Run) -> bool:
+    """Whether the undo's swap committed, from the tables: no previous table is left, and each rebuilt table is aside."""
+    s = r.d.store
+    kept, added, dropped = r.t.get("kept") or [], r.t.get("added") or [], r.t.get("dropped") or []
+    return (not any(s.collection_exists(previous(n)) for n in kept + dropped)
+            and all(s.collection_exists(aside(n)) or not s.collection_exists(n) for n in added))
+
+
+def _undo(r: _Run, requested_by: str, *, resume: bool = False) -> None:
+    d, slug = r.d, r.t["slug"]
     kept, added, dropped = r.t.get("kept") or [], r.t.get("added") or [], r.t.get("dropped") or []
     p = d.registry.get(slug)
-    shared = shared_collections(slug, p.collections)
-    _set_list(r, kept + [c for c in shared if c not in kept])
-    renames = [(n, aside(n)) for n in kept + added] + [(previous(n), n) for n in kept + dropped]
-    d.store.swap_collections(renames)
-    restored = kept + dropped
-    _set_list(r, restored + [c for c in shared if c not in restored])
+    shared = shared_collections(slug, p.collections if p else [])
+    restored = kept + dropped + [c for c in shared if c not in kept + dropped]
+    if not resume:
+        r.step("undo_pruning", undo_by=requested_by,
+               undo_list_before=_final_list(r), undo_pruned=kept + [c for c in shared if c not in kept])
+        _set_list(r, r.t["undo_pruned"])
+        renames = [(n, aside(n)) for n in kept + added] + [(previous(n), n) for n in kept + dropped]
+        r.step("undo_swapping", undo_renames=renames)
+        d.store.swap_collections(renames)
+        r.step("undo_swapped", "the previous index is live again")
     metrics = _metrics()
-    back = 0
+    back = list(r.t.get("votes_back") or [])
     for old, new in (r.t.get("vote_moves") or {}).items():
-        if metrics.move_chunk_votes(new, old):
-            back += 1
+        if old in back:
+            continue
+        metrics.move_chunk_votes(new, old)
+        back.append(old)
+        r.t = d.registry.merge_run_target(r.id, {"votes_back": back})
+    r.step("undo_extending", undo_restored=restored)
+    _set_list(r, restored)
     for n in kept + added:
         if d.store.collection_exists(aside(n)):
             d.store.drop_collection(aside(n))
-    d.query_cache.invalidate_project(slug)
-    words = (f"undone by {requested_by}: the previous index is live again; {back} vote(s) moved back; "
+    words = (f"undone by {requested_by}: the previous index is live again; {len(back)} vote(s) moved back; "
              f"{UNDO_NOT_REVERTED} stay as the rebuild left them")
     r.step("done", words, undone=requested_by, undone_at=_now().isoformat())
     from resource_explorer.activity_logger import log_reindex
 
-    log_reindex(registry, slug, p.display_name or slug, "ok", f"Rebuild of {slug}'s chat index {words}.")
-    return {"run_id": row["id"], "votes_moved_back": back}
+    log_reindex(d.registry, slug, (p.display_name if p else "") or slug, "ok", f"Rebuild of {slug}'s chat index {words}.")
+
+
+def recover_undo(r: _Run) -> str:
+    """Finish or reverse an undo that died part-way, by what the tables say (B3)."""
+    phase = r.t.get("phase", "")
+    if not phase.startswith("undo_"):
+        return f"nothing to recover at {phase}"
+    if _undo_committed(r):
+        _undo(r, r.t.get("undo_by") or "recovery", resume=True)
+        return "undo finished forward"
+    if r.t.get("undo_list_before"):
+        _set_list(r, r.t["undo_list_before"])
+    r.step("done", "an undo that died before its swap committed was reversed: the rebuilt index is still live and "
+                   "undo is still available")
+    return "undo reversed"
+
+
+def recover_undos(registry, deps: Deps | None = None) -> list[str]:
+    """For the reconciler: every rebuild left in an undo phase whose claim no live process holds is finished or
+    reversed. An undo still running holds its claim, so it is left alone."""
+    out = []
+    for row in registry.list_runs(kind=RUN_KIND, limit=500):
+        t = _target(row)
+        if not str(t.get("phase", "")).startswith("undo_"):
+            continue
+        slug = t.get("slug", "")
+        holder = f"recovery:{row['id']}"
+        if not registry.take_claim(_claim_key(slug), holder):
+            continue
+        try:
+            out.append(f"{slug}: {recover_undo(_Run(row['id'], deps or Deps(registry=registry)))}")
+        finally:
+            registry.release_claim(_claim_key(slug), holder)
+    return out
 
 
 def _metrics():
@@ -538,5 +689,6 @@ def progress(registry, slug: str) -> dict:
             return {"run_id": r["id"], "state": r.get("state"), "phase": t.get("phase"), "held": t.get("held"),
                     "outcomes": t.get("outcomes") or [], "counts": t.get("counts") or {},
                     "survey": t.get("survey") or [], "previous_until": t.get("previous_until", ""),
+                    "needs_words": needs_words(t.get("needs_bytes")) if "needs_bytes" in t else "",
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

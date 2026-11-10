@@ -86,7 +86,8 @@ def _metrics():
     return _metrics_collector()
 
 
-def snapshot(store: Any, collection: str, files: Iterable[str] | None = None, *, metrics: Any = None) -> Snapshot:
+def snapshot(store: Any, collection: str, files: Iterable[str] | None = None, *, metrics: Any = None,
+             rows_from: str | None = None) -> Snapshot:
     """The voted chunks of `collection`, read before their rows are replaced. `files`: only chunks from these files
     (a per-file refresh); None for the whole collection (a full rebuild). A voted ref whose row is already gone, or
     whose id cannot be one, is listed as already orphaned. Never raises: a snapshot that cannot be read is empty, and
@@ -100,7 +101,9 @@ def snapshot(store: Any, collection: str, files: Iterable[str] | None = None, *,
         ids = {r.split(":", 1)[1]: r for r in refs if ":" in r}
         wanted = set(files) if files is not None else None
         found: set[str] = set()
-        for row in store.rows_by_ids(collection, list(ids)):
+        # rows_from: read the voted rows from another table than the one their refs name (a rebuild's recovery reads
+        # them from `{collection}__previous`, where the swap moved them).
+        for row in store.rows_by_ids(rows_from or collection, list(ids)):
             found.add(row["id"])
             meta = row.get("metadata") or {}
             file = str(meta.get("file_path") or meta.get("source_url") or "")
