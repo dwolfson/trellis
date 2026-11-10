@@ -5,6 +5,7 @@ Endpoints:
   GET  /admin                           → admin.html
   GET  /api/admin/status                → collection + repo + system status
   POST /api/admin/collections/{n}/reindex  → start incremental or force re-index
+                                          (force=true also needs confirm=<n>: it drops the collection)
   POST /api/admin/repos/{repo}/pull     → start git pull
   GET  /api/admin/jobs                  → list recent jobs (last 20)
   GET  /api/admin/jobs/{job_id}         → single job status + output
@@ -12,6 +13,9 @@ Endpoints:
                                           clear_cache | invalidate_index |
                                           refresh_templates | check_draft_doc_ids |
                                           repair_draft_doc_ids
+
+Every route here is admin-only: `advisor.web.app` gates the whole `/api/admin/` prefix with
+`trellis_auth.AdminPathMiddleware` (Phase 0 S1, 2026-11-10), so a route added here later is gated by default.
 """
 from __future__ import annotations
 
@@ -348,10 +352,19 @@ async def admin_status() -> Dict[str, Any]:
 
 
 @router.post("/api/admin/collections/{name}/reindex")
-async def reindex_collection(name: str, force: bool = False) -> Dict[str, Any]:
+async def reindex_collection(name: str, force: bool = False, confirm: str = "") -> Dict[str, Any]:
+    """Start a re-index job. A FORCE re-index runs `ingest_collections.py --force`, which drops the collection's
+    table (`DROP TABLE ... CASCADE`), so it also needs `confirm=<the collection's name>`; without it, or with any
+    other name, nothing starts (400). An incremental re-index needs only the admin gate."""
     from advisor.collection_config import ALL_COLLECTIONS
     if name not in ALL_COLLECTIONS:
         raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
+
+    if force and (confirm or "").strip() != name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A force re-index drops '{name}' and rebuilds it: confirm it by passing confirm={name}",
+        )
 
     if force:
         desc = f"Force re-index: {name}"

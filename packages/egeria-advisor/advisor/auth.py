@@ -100,7 +100,9 @@ from trellis_auth import validate_egeria_credentials as _validate_egeria_credent
 from trellis_auth import validate_egeria_token as _validate_egeria_token
 
 __all__ = [
+    "ADMIN_ENV_PREFIX",
     "EgeriaCredentials",
+    "is_admin",
     "apply_token",
     "get_policy",
     "reset_policy_cache",
@@ -470,6 +472,28 @@ def require_egeria_user(request: Request) -> Dict[str, Any]:
 def is_authenticated(request: Request) -> bool:
     """Convenience helper for conditional auth checks in the query pipeline."""
     return get_current_user(request) is not None
+
+
+#: The env prefix of EA's admin configuration (`trellis_auth.resolve_admin`): `ADVISOR_ADMIN_USERS` /
+#: `ADVISOR_ADMIN_TOKEN`, over the shared `TRELLIS_ADMIN_USERS` / `TRELLIS_ADMIN_TOKEN`.
+ADMIN_ENV_PREFIX = "ADVISOR"
+
+
+def is_admin(request: Request) -> bool:
+    """Whether this request is an admin's, by the one shared gate (`trellis_auth.require_admin`, Phase 0 S1).
+
+    For the UI only (`/api/auth/me` `is_admin`, which hides the Admin link): the server's gate is
+    `trellis_auth.AdminPathMiddleware`, installed in `advisor.web.app`. Never raises."""
+    from starlette.exceptions import HTTPException as _StarletteHTTPException
+    from trellis_auth import require_admin
+
+    try:
+        require_admin(request, app_prefix=ADMIN_ENV_PREFIX, user=get_current_user(request))
+        return True
+    except _StarletteHTTPException:
+        return False
+    except Exception:  # noqa: BLE001 - a cosmetic flag: anything unexpected is "not an admin"
+        return False
 
 
 # ---------------------------------------------------------------------------

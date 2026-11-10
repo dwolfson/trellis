@@ -91,6 +91,32 @@ def _install_login_required_middleware() -> None:
     )
 
 
+#: Admin-only paths (Phase 0 S1, owner's decision 2026-11-10: one admin definition for RE and EA). A prefix, so a
+#: route added under it is gated by default; plus the feedback triage reads and edits. NOT `POST /api/feedback`
+#: (voting is for every signed-in user), and not `/admin` (the static page: every call it makes is gated).
+ADMIN_PATH_PREFIXES = ("/api/admin/",)
+ADMIN_EXACT_PATHS = ("/api/feedback/extended", "/api/feedback/analysis")
+
+
+def _install_admin_path_middleware() -> None:
+    """Install `trellis_auth.AdminPathMiddleware` for the admin paths above.
+
+    Added BEFORE the login middleware, so it sits INSIDE it (Starlette: the last added is the outermost): a
+    request with no session gets the login 401, and this 403 answers only signed-in non-admins. The identity is
+    EA's own `get_current_user` (its anonymous-mode stand-in counts as anonymous, so it is refused)."""
+    from trellis_auth import AdminPathMiddleware
+    from advisor.auth import ADMIN_ENV_PREFIX, get_current_user
+
+    app.add_middleware(
+        AdminPathMiddleware,
+        app_prefix=ADMIN_ENV_PREFIX,
+        current_user=get_current_user,
+        prefixes=ADMIN_PATH_PREFIXES,
+        exact=ADMIN_EXACT_PATHS,
+    )
+
+
+_install_admin_path_middleware()
 _install_login_required_middleware()
 
 
