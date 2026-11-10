@@ -274,9 +274,12 @@ class MultiCollectionStore:
             _warn_boosts_unavailable(exc)
             return {}
 
-    def insert(self, collection: str, texts: list[str], metadatas: list[dict]) -> int:
-        # Deterministic ids, minted per file (`chunk_ids`).
-        ids = chunk_ids(collection, texts, metadatas)
+    def insert(self, collection: str, texts: list[str], metadatas: list[dict], *,
+               id_collection: str | None = None) -> int:
+        # Deterministic ids, minted per file (`chunk_ids`). `id_collection`: hash the ids under this name instead of
+        # the table written to. A rebuild writes into `{name}__rebuild` but mints the ids the live `{name}` will hold
+        # after the swap, so an unchanged chunk keeps its id and its votes (BRIEF-REINDEX-FROM-SCRATCH.md §3 step 2).
+        ids = chunk_ids(id_collection or collection, texts, metadatas)
         count = self._store.insert_data(collection, texts, ids=ids, metadata=metadatas)
         if _INSERT_RECORDERS:
             with _RECORDERS_LOCK:
@@ -311,8 +314,16 @@ class MultiCollectionStore:
     def swap_collections(self, renames: list[tuple[str, str]], **kw) -> None:
         self._store.swap_collections(renames, **kw)
 
+    def all_rows(self, collection: str) -> list[dict]:
+        """Every row (id, text, metadata) of a collection. Used by a rebuild to carry votes, for the collections that
+        have votes only."""
+        return self._store.query_by_filter(collection, limit=max(1, self.count(collection)) + 1)
+
     def has_vector_index(self, collection: str) -> bool:
         return self._store.has_vector_index(collection)
+
+    def table_bytes(self, collection: str) -> int:
+        return self._store.table_bytes(collection)
 
     def check_names(self, *collections: str) -> list[str]:
         return self._store.check_names(*collections)

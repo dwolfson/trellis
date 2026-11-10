@@ -5645,6 +5645,8 @@ class ProjectRegistry:
         # A repository's first index for chat, queued by a person's yes (first_index.py, run by
         # run_queue._handle_first_index). Not a survey step: a refresh cannot make a first index.
         "first_index",
+        # Rebuilding a repository's chat index from scratch, alongside the live one (reindex.py, R1b).
+        "reindex",
     )
 
     #: States that occupy a user's one fairness slot.
@@ -7493,6 +7495,13 @@ class ProjectRegistry:
                 "UPDATE projects SET last_indexed_at = ?, collections = ? WHERE slug = ?",
                 (datetime.utcnow().isoformat(), json.dumps(collections), slug),
             )
+
+    def set_project_collections(self, slug: str, collections: list[str]) -> None:
+        """Set a project's collections list without touching `last_indexed_at`: a rebuild prunes and extends the list
+        around its swap (reindex.py), and only its final step says the project was indexed."""
+        slug = self._normalize_slug(slug)
+        with self._conn() as conn:
+            conn.execute("UPDATE projects SET collections = ? WHERE slug = ?", (json.dumps(collections), slug))
 
     def update_extra_docs_paths(self, slug: str, paths: list[str]) -> None:
         slug = self._normalize_slug(slug)

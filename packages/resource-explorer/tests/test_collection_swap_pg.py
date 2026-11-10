@@ -207,3 +207,10 @@ class TestLockTimeout:
         holder.join()
         assert pg_store.collection_exists(self.REB) and not pg_store.collection_exists(self.PREV)
         _clean(pg_store, self.LIVE, self.REB)
+
+
+def test_table_bytes_is_measured_and_zero_for_a_missing_table(pg_store):
+    _make(pg_store, "tb_repo_docs", rows=("one", "two"))
+    assert pg_store.table_bytes("tb_repo_docs") > 0
+    assert pg_store.table_bytes("tb_nothing_here") == 0
+    _clean(pg_store, "tb_repo_docs")

@@ -166,9 +166,12 @@ class IngestionPipeline:
         local_root: Path | None = None,
         extra_paths: list[tuple[str, Path]] | None = None,
         changed_files: set[str] | None = None,
+        id_collection: str | None = None,
     ) -> int:
         """
         Ingest one collection type. local_root is the extracted repo directory;
+        `id_collection`: the name chunk ids are minted under, when it is not
+        `collection_name` (a rebuild writing aside; vector_store_pg.insert).
         if None (incremental single-collection re-index), downloads on the spot.
         extra_paths is a list of (display_prefix, abs_path) for repo paths outside
         the code subproject; used by doc/example collections only.
@@ -225,6 +228,9 @@ class IngestionPipeline:
         if not chunks:
             return 0
 
+        if id_collection:
+            return self.store.insert(collection_name, [c.text for c in chunks],
+                                     [c.metadata for c in chunks], id_collection=id_collection)
         return self.store.insert(collection_name, [c.text for c in chunks],
                                  [c.metadata for c in chunks])
 

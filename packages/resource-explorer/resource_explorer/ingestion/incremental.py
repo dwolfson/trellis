@@ -19,6 +19,7 @@ class RefreshResult(str, Enum):
     NO_CHANGES = "no_changes"                # latest commit equals the stored one
     NOT_YET_INDEXED = "not_yet_indexed"      # no own collection: nothing to refresh, SHA left alone
     NOTHING_AFFECTED = "nothing_affected"    # changed files touch none of the project's own collection types
+    REBUILDING = "rebuilding"                # a rebuild from scratch is in progress (reindex.py): refresh waits
 
 
 class IncrementalIndexer:
@@ -52,6 +53,14 @@ class IncrementalIndexer:
     def refresh(self, project: Project) -> RefreshResult:
         import tempfile
         from pathlib import Path
+
+        from resource_explorer import reindex
+
+        if reindex.is_rebuilding(self.registry, project.slug):
+            # The rebuild writes these collections' replacements aside and swaps them in; rows a refresh wrote into
+            # the live tables meanwhile would be swapped out and lost. It runs after the rebuild instead.
+            print(f"Rebuild in progress: {project.slug} is refreshed after its rebuild finishes")
+            return RefreshResult.REBUILDING
 
         repo = self.client.get_repo(project.github_url)
         latest_sha = self.client.get_latest_commit_sha(repo)

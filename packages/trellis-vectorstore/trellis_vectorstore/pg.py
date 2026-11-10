@@ -606,6 +606,22 @@ class PgVectorStore(BaseVectorStore):
                                     f"{self.MAX_IDENTIFIER_BYTES}")
         return problems
 
+    def table_bytes(self, collection_name: str) -> int:
+        """The table's size on disk with its indexes and TOAST (`pg_total_relation_size`), or 0 when it does not
+        exist. RE's rebuild shows the sum for a repository's tables as the space a rebuild needs again until its
+        previous index is dropped: measured, since Postgres cannot report its own filesystem's free space."""
+        if not self.collection_exists(collection_name):
+            return 0
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_total_relation_size(%s::regclass)",
+                            (self._qualified(self._table(collection_name)),))
+                row = cur.fetchone()
+                return int(row[0] or 0) if row else 0
+        finally:
+            self._put_conn(conn)
+
     def has_vector_index(self, collection_name: str) -> bool:
         """Whether the collection's table owns an index under the name `create_index` gives it. A table can exist
         without one, and a rename leaves the old index name behind (`swap_collections` renames both), so a rebuild
