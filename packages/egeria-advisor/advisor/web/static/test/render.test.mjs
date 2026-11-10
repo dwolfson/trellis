@@ -220,3 +220,70 @@ test('feedback: a network failure is shown, not swallowed', { skip: SKIP }, asyn
   await settle(); await settle();
   assert.match(fb.textContent, /^Not recorded: Failed to fetch/);
 });
+
+// ── Admin link: shown only when /api/auth/me says is_admin === true; fails closed ─────────────
+
+function adminWindow(fetchImpl) {
+  const w = makeWindow();
+  w.Auth = { getHeaders: () => ({ Authorization: 'Bearer t' }) };
+  w.fetch = fetchImpl;
+  // The real header markup and the real refreshAdminLink, cut from index.html.
+  const link = /<a id="admin-link"[\s\S]*?<\/a>/.exec(INDEX);
+  assert.ok(link, 'admin-link markup not found in index.html');
+  w.document.body.innerHTML = link[0];
+  const seq = /^let _adminCheckSeq = 0;$/m.exec(INDEX);
+  assert.ok(seq, '_adminCheckSeq not found in index.html');
+  w.eval([seq[0].replace('let ', 'var '), cut('refreshAdminLink'), 'window.refreshAdminLink = refreshAdminLink;'].join('\n'));
+  return { w, link: w.document.getElementById('admin-link') };
+}
+const meResponse = (status, body) => async () => ({
+  ok: status >= 200 && status < 300, status,
+  json: async () => { if (body instanceof Error) throw body; return body; },
+});
+
+test('admin link: hidden in the page markup before any check', { skip: SKIP }, () => {
+  const { link } = adminWindow(async () => { throw new Error('not called'); });
+  assert.equal(link.hidden, true);
+  assert.equal(link.getAttribute('href'), '/admin');
+});
+
+test('admin link: shown only for is_admin === true', { skip: SKIP }, async () => {
+  const { w, link } = adminWindow(meResponse(200, { authenticated: true, is_admin: true, user_id: 'erinoverview' }));
+  assert.equal(await w.refreshAdminLink(), true);
+  assert.equal(link.hidden, false);
+});
+
+test('admin link: hidden (fail closed) for every other answer', { skip: SKIP }, async () => {
+  const cases = {
+    'is_admin false': meResponse(200, { authenticated: true, is_admin: false }),
+    'signed out': meResponse(200, { authenticated: false, is_admin: false }),
+    'is_admin missing (pre-S1 server)': meResponse(200, { authenticated: true, user_id: 'x' }),
+    'is_admin "true" (a string)': meResponse(200, { authenticated: true, is_admin: 'true' }),
+    'is_admin 1': meResponse(200, { authenticated: true, is_admin: 1 }),
+    'null body': meResponse(200, null),
+    'unparseable JSON': meResponse(200, new SyntaxError('bad json')),
+    '401': meResponse(401, { detail: 'login_required', is_admin: true }),
+    '500 that says admin': meResponse(500, { is_admin: true }),
+    'network error': async () => { throw new TypeError('Failed to fetch'); },
+  };
+  for (const [name, fetchImpl] of Object.entries(cases)) {
+    const { w, link } = adminWindow(fetchImpl);
+    link.hidden = false;                       // even if it was showing, a bad answer hides it
+    assert.equal(await w.refreshAdminLink(), false, name);
+    assert.equal(link.hidden, true, name);
+  }
+});
+
+test('admin link: a slow earlier "admin" answer cannot override a later sign-out', { skip: SKIP }, async () => {
+  let release;
+  const answers = [
+    () => new Promise((r) => { release = () => r({ ok: true, status: 200, json: async () => ({ is_admin: true }) }); }),
+    async () => ({ ok: true, status: 200, json: async () => ({ authenticated: false, is_admin: false }) }),
+  ];
+  const { w, link } = adminWindow(() => answers.shift()());
+  const first = w.refreshAdminLink();          // signed in as admin, answer delayed
+  await w.refreshAdminLink();                  // then signed out
+  release();
+  await first;
+  assert.equal(link.hidden, true);
+});

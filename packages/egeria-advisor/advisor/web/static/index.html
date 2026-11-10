@@ -161,6 +161,10 @@
     <span>Enter=send &nbsp; Shift+Enter=newline</span>
     <span>·</span>
     <span id="current-user" class="hidden text-cyan-400 font-medium"></span>
+    <!-- Shown only when /api/auth/me says is_admin === true (refreshAdminLink); hidden otherwise.
+         Cosmetic: the server's admin gate decides access to /admin and /api/admin/*. -->
+    <a id="admin-link" href="/admin" hidden
+      class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-amber-300 transition-colors">Admin</a>
     <button id="logout-btn"
       class="hidden px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
       Sign out
@@ -721,8 +725,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuery(); }
   });
 
+  _watchAdminLink();
+
   // Auth.init fires onReady once the user is authenticated
   Auth.init(() => {
+    refreshAdminLink();
     loadStatus();
     loadReports();
     loadReportDocs();
@@ -2527,6 +2534,43 @@ async function feedbackClick(e) {
   retry.textContent = 'Retry';
   retry.addEventListener('click', () => { fb.replaceChildren(...fb._buttons); });
   fb.appendChild(retry);
+}
+
+// ── Admin link ─────────────────────────────────────────────────────────────────
+// Shown only when the server says this user is an admin. Fails closed: hidden before the answer
+// arrives, and on a non-2xx response, a network error, unparseable JSON, or is_admin missing or not
+// exactly true. Only a cue: the server gates /admin and /api/admin/* itself.
+let _adminCheckSeq = 0;
+async function refreshAdminLink() {
+  const link = document.getElementById('admin-link');
+  if (!link) return false;
+  const seq = ++_adminCheckSeq;            // a later check (sign-out, new sign-in) wins over a slow one
+  link.hidden = true;
+  let isAdmin = false;
+  try {
+    const res = await fetch('/api/auth/me', { headers: Auth.getHeaders() });
+    if (res.ok) {
+      const me = await res.json();
+      isAdmin = !!me && me.is_admin === true;
+    }
+  } catch (err) {
+    console.warn('Admin link hidden: could not read /api/auth/me:', err);
+    isAdmin = false;
+  }
+  if (seq !== _adminCheckSeq) return false;
+  link.hidden = !isAdmin;
+  return isAdmin;
+}
+
+// Re-check whenever the signed-in user changes: auth.js shows/hides #current-user on sign-in,
+// sign-out and a 401, and fires ea:authenticated on sign-in.
+function _watchAdminLink() {
+  document.addEventListener('ea:authenticated', () => { refreshAdminLink(); });
+  const who = document.getElementById('current-user');
+  if (who && typeof MutationObserver === 'function') {
+    new MutationObserver(() => { refreshAdminLink(); })
+      .observe(who, { attributes: true, attributeFilter: ['class'], childList: true, characterData: true, subtree: true });
+  }
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────────
