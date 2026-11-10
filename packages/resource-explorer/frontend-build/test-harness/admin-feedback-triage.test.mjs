@@ -166,3 +166,18 @@ test('a refused clear says why on that entry', async () => {
   assert.equal(text(gone.querySelector('[data-gone-error]')), 'Not cleared: The row still exists');
   assert.equal(gone.querySelector('[data-gone-clear]').disabled, false);
 });
+
+test('a status read that came back full says older resource items may be missing', async () => {
+  const limited = { ...LISTING, filtered: true, resource_limited: true, resource_read: 2000 };
+  const { host, pane } = await setUp([['/api/curate/feedback', { reply: () => ok(limited) }]]);
+  await pane.renderFeedback(host);
+  const line = host.querySelector('[data-resource-limited]');
+  assert.ok(line, 'no limited line');
+  assert.match(text(line), /only the newest 2000 were checked for this status, so older ones with it may be missing/);
+});
+
+test('no limited line when the read was not cut short', async () => {
+  const { host, pane } = await setUp([['/api/curate/feedback', { reply: () => ok({ ...LISTING, resource_limited: false }) }]]);
+  await pane.renderFeedback(host);
+  assert.equal(host.querySelector('[data-resource-limited]'), null);
+});

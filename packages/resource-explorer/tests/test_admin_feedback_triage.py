@@ -81,6 +81,30 @@ class TestTheStatusFilter:
         data = client.get("/api/curate/feedback", headers=admin_headers).json()
         assert data["statuses"] == ["new", "triaged", "known_issue", "actioned", "deferred", "not_an_issue"]
 
+    def test_a_status_read_that_came_back_full_says_older_resource_rows_may_be_missing(
+            self, client, feedback_store, admin_headers, monkeypatch):
+        # The cap is lowered to 2 so three rows overflow it; the real cap is 2000 (#1020 P3).
+        from resource_explorer.registry import ProjectRegistry
+        monkeypatch.setattr("resource_explorer.web.routes.curate.RESOURCE_STATUS_READ_CAP", 2)
+        reg = ProjectRegistry()
+        for i in range(3):
+            reg.add_resource_feedback("repo", f"r{i}", 3, "quality", f"row {i}")
+        full = client.get("/api/curate/feedback?status=new&limit=1", headers=admin_headers).json()
+        assert full["resource_limited"] is True and full["resource_read"] == 2
+
+    def test_a_status_read_that_was_not_cut_short_is_not_limited(self, client, feedback_store, admin_headers,
+                                                                  monkeypatch):
+        monkeypatch.setattr("resource_explorer.web.routes.curate.RESOURCE_STATUS_READ_CAP", 2)
+        _seed(feedback_store)                                    # one resource row: under the cap
+        data = client.get("/api/curate/feedback?status=new&limit=1", headers=admin_headers).json()
+        assert data["resource_limited"] is False and data["resource_read"] == 1
+
+    def test_without_a_status_the_listing_is_never_limited(self, client, feedback_store, admin_headers):
+        # An unfiltered read is ordinary paging by `limit`, not an over-read that can miss matches.
+        _seed(feedback_store)
+        data = client.get("/api/curate/feedback?limit=1", headers=admin_headers).json()
+        assert data["resource_limited"] is False
+
     def test_a_change_the_library_refuses_is_a_400_with_its_words(self, client, feedback_store, admin_headers,
                                                                   monkeypatch):
         # From trellis-feedback 0.3 a status can contradict the item's current cause; the library says so with

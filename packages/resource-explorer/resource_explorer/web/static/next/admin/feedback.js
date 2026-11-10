@@ -404,6 +404,7 @@ async function reload({ saved = null } = {}) {
       ${[...causes, data.undiagnosed || 'undiagnosed'].map((c) => chip(causeWord(c), 'cause', c)).join('')}
       ${filter.cause ? '<span class="text-provenance text-ink-muted">Only rated answers are diagnosed, so a cause filter shows answers only.</span>' : ''}
     </div>` : ''}
+    ${limitedHtml(data)}
     <div class="max-h-[46vh] overflow-auto rounded-sm border border-rule">${body}</div>
     ${goneHtml(data.gone || [])}`;
 
@@ -414,6 +415,14 @@ async function reload({ saved = null } = {}) {
 
 /** Curate feedback rows deleted after they were triaged (Q7): their history is kept, and shown here, until an
  *  admin clears it. Deleting the row on its resource's Curate tab never removes it. */
+/** A status filter reads the newest N Curate rows and filters after (their status is held by reference). When that
+ *  read came back full, older rows with this status may be missing; say so above the list. */
+function limitedHtml(data) {
+  if (!data.resource_limited) return '';
+  return `<p class="mb-s3 max-w-[65ch] text-provenance text-state-warn" data-resource-limited>Resource items: only the
+    newest ${esc(String(data.resource_read))} were checked for this status, so older ones with it may be missing.</p>`;
+}
+
 function goneHtml(gone) {
   if (!gone.length) return '';
   return `<div class="mt-s3" data-gone-list>
