@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import quality_batch as quality_batch_routes
 from resource_explorer.web.routes import publish_table as publish_table_routes
-from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys, open_data as open_data_routes
+from resource_explorer.web.routes import api_reference as api_reference_routes, analytics as analytics_routes, activity, aliases, auth as auth_routes, compile_context as compile_context_routes, analyses, automate, bootstrap as bootstrap_routes, context, catalogue_scope, quality_checks, curate, databases, first_index as first_index_routes, reindex as reindex_routes, db_servers as db_servers_routes, diagrams, discovery, doc_sources, egeria, feedback, investigations, journal, logs as logs_routes, prefect_status, prerequisites as prerequisite_routes, project_context, outbox, projects, query, repair, runs as runs_routes, schedules, stats, webhook, filesystems, survey_definitions, native_surveys, open_data as open_data_routes
 from resource_explorer.web.routes import table_preview as table_preview_routes
 from resource_explorer.web.routes import value_profile as value_profile_routes
 from resource_explorer.web.routes import table_results as table_results_routes
@@ -476,6 +476,7 @@ app.include_router(investigations.router, prefix="/api/investigations", tags=["i
 app.include_router(repair.router, prefix="/api/admin/repair", tags=["repair"])
 app.include_router(logs_routes.router, prefix="/api/logs", tags=["logs"])
 app.include_router(first_index_routes.router, prefix="/api/first-index", tags=["first-index"])
+app.include_router(reindex_routes.router, prefix="/api/reindex", tags=["reindex"])
 app.include_router(runs_routes.router, prefix="/api/runs", tags=["runs"])
 # Design §17.1 — "answering this needs X first; run it?" The plan is
 # read-only; the run is the user's consent, and goes through the same

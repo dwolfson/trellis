@@ -78,14 +78,18 @@ class RagIngestionSurveyor(BaseSurveyor):
         slug = self.project.slug
         ingested, error = False, ""
         try:
-            from resource_explorer.ingestion.incremental import IncrementalIndexer
+            from resource_explorer.ingestion.incremental import IncrementalIndexer, RefreshResult
             from resource_explorer.query_cache import QueryCache
 
-            IncrementalIndexer().refresh(self.project)
-            # The on-demand route does this too, and skipping it would leave
-            # chat answering from cache built against the pre-refresh index.
-            QueryCache().invalidate_project(slug)
-            ingested = True
+            result = IncrementalIndexer().refresh(self.project)
+            if result is RefreshResult.REBUILDING:
+                # Not ingested: a rebuild from scratch owns these collections until it swaps (reindex.py).
+                error = "a rebuild of this repository's chat index is in progress; it is refreshed after the rebuild"
+            else:
+                # The on-demand route does this too, and skipping it would leave
+                # chat answering from cache built against the pre-refresh index.
+                QueryCache().invalidate_project(slug)
+                ingested = True
         except Exception as exc:
             # Best-effort, exactly as repo_git_statistics is: a GitHub or
             # embedding hiccup must not fail the survey. The counts below still

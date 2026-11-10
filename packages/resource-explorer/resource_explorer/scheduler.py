@@ -419,12 +419,35 @@ def _as_schedule_creator(sched: dict):
         current_caller.reset(reset)
 
 
+def _defer_while_rebuilding(due: list[dict], registry) -> list[dict]:
+    """Leave a repository's schedules due while its chat index is being rebuilt (reindex.py; the architect's Q6 point
+    4): the rebuild re-runs the same survey writers from its own download, and the two would write the same tables at
+    once. A deferred schedule is not run and not advanced, so it runs on the first tick after the rebuild ends."""
+    try:
+        from resource_explorer import reindex
+    except Exception:  # noqa: BLE001 -- a broken import must not stop every other schedule
+        return due
+    keep, held = [], set()
+    for sched in due:
+        slug = sched.get("entity_slug", "")
+        if sched.get("entity_type") == "repo" and (slug in held or reindex.is_rebuilding(registry, slug)):
+            held.add(slug)
+            continue
+        keep.append(sched)
+    for slug in sorted(held):
+        log.info("Scheduler: %s's schedules wait while its chat index is rebuilt", slug)
+    return keep
+
+
 def _run_due() -> None:
     from resource_explorer.activity_logger import log_survey
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
     due = registry.get_due_schedules()
+    if not due:
+        return
+    due = _defer_while_rebuilding(due, registry)
     if not due:
         return
     log.info("Scheduler: %d analysis(es) due", len(due))
@@ -705,6 +728,10 @@ def _run_repo_survey(slug: str, analysis_id: str, registry) -> tuple[str, str, l
             QueryCache().invalidate_project(slug)
         except Exception as exc:
             return (project.display_name, project.github_url, [str(exc)])
+        if result is RefreshResult.REBUILDING:
+            return (project.display_name, project.github_url, [
+                ("Not refreshed: a rebuild of this repository's chat index is in progress. The schedule "
+                 "runs again after it.")])
         if result is RefreshResult.NOT_YET_INDEXED:
             # Not a success: nothing was refreshed because there is nothing of the repository's own
             # to refresh. Saying so on the schedule is what keeps a recurring run from reading as

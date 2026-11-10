@@ -293,6 +293,15 @@ def reconcile_runs(
         )
         registry.finish_run(row["id"], "failed", error=error)
         log.info("reconciled stale run %s (%s): %s", row["id"], row.get("kind"), error)
+        if row.get("kind") == "reindex":
+            # A rebuild that died part-way is finished forward or rolled back by the phase it recorded, so it never
+            # leaves a list naming a missing table, or an added type never queried (BRIEF-REINDEX-FROM-SCRATCH.md).
+            try:
+                from resource_explorer import reindex
+
+                log.info("reconciled rebuild %s: %s", row["id"], reindex.recover(registry, row))
+            except Exception:
+                log.exception("could not recover rebuild %s; its run row says how far it got", row["id"])
 
     return {
         "resolved": len(resolved),

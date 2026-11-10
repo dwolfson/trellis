@@ -228,6 +228,9 @@ def queue(registry, slug: str, *, requested_by: str, batch_id: str = "", batch_t
         raise FirstIndexRefused(f"{p.display_name or slug} already has an index of its own; a refresh updates it.")
     if active_run_for(registry, slug) is not None:
         raise FirstIndexRefused(f"{p.display_name or slug} is already waiting to be indexed, or is being indexed.")
+    from resource_explorer import reindex
+    if reindex.is_rebuilding(registry, slug):
+        raise FirstIndexRefused(f"{p.display_name or slug} has a rebuild in progress.")
     m = measured(registry, slug)
     position = 1
     if batch_id:

@@ -324,6 +324,37 @@ def _ingest_web_docs(project, docs_url: str, registry) -> None:
     console.print(f"[green]Inserted {count} chunks into {collection_name}.[/green]")
 
 
+def _queue_rebuild(registry, slugs, all_projects: bool, yes: bool) -> None:
+    """`refresh --rebuild`: queue one rebuild (reindex.py). One repository, never --all: rebuilds run one at a time."""
+    from rich.prompt import Confirm
+
+    from resource_explorer import reindex
+    from resource_explorer.registry import current_user_id
+
+    if all_projects or not slugs or len(slugs) != 1:
+        console.print("[red]--rebuild takes exactly one repository slug, and not --all: rebuilds run one at a time.[/red]")
+        raise typer.Exit(1)
+    slug = slugs[0]
+    who = (current_user_id() or "").strip()
+    if not who:
+        console.print("[red]A rebuild records who asked for it. Sign in first: resource-explorer login[/red]")
+        raise typer.Exit(1)
+    console.print(f"Rebuild [bold]{slug}[/bold]'s chat index from scratch: a fresh download and embed, built "
+                  "alongside the live index (chat keeps answering from it), then swapped. The previous index is "
+                  f"kept {reindex.KEEP_PREVIOUS_DAYS} days for undo. Survey results are updated too, and an undo "
+                  "does not revert them.")
+    if not yes and not Confirm.ask("Queue the rebuild?", default=False):
+        console.print("Not queued.")
+        return
+    try:
+        out = reindex.queue(registry, slug, requested_by=who)
+    except reindex.ReindexRefused as exc:
+        console.print(f"[red]Not queued:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    held = " It is the first rebuild, so it is held for an admin to accept before it swaps." if out["held"] else ""
+    console.print(f"[green]Queued[/green] as run {out['run_id']}; a worker runs it.{held}")
+
+
 @app.command()
 def refresh(
     slugs: Optional[list[str]] = typer.Argument(
@@ -344,6 +375,12 @@ def refresh(
         False, "--symbols",
         help="Extract (or re-extract) code symbols from source files.",
     ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild",
+        help="Rebuild ONE repository's chat index from scratch, alongside the live one, then swap "
+             "(BRIEF-REINDEX-FROM-SCRATCH.md). Queued for a worker; asks first unless --yes.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="With --rebuild: do not ask for confirmation"),
 ):
     """Incrementally re-index one or more projects and refresh GitHub statistics.
 
@@ -359,6 +396,9 @@ def refresh(
     from resource_explorer.registry import ProjectRegistry
 
     registry = ProjectRegistry()
+    if rebuild:
+        _queue_rebuild(registry, slugs, all_projects, yes)
+        return
     targets = _resolve_slugs(registry, slugs, all_projects, top_level)
     if not targets:
         raise typer.Exit(1)

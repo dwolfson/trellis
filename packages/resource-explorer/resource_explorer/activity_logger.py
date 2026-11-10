@@ -402,6 +402,18 @@ def log_first_index(registry: "ProjectRegistry", slug: str, name: str, status: s
     return entry_id
 
 
+def log_reindex(registry: ProjectRegistry, slug: str, name: str, status: str, summary: str,
+                entry_id: str = "") -> str:
+    """One row per rebuild of a repository's chat index (reindex.py), and one per undo. The run queue closes a
+    rebuild's row with its terminal words; an undo writes its own, finished row."""
+    entry_id = entry_id or str(uuid.uuid4())
+    registry.write_activity(ActivityEntry(
+        id=entry_id, ts=_now(), operation="reindex", intent="automate", entity_type="repo",
+        entity_slug=slug, entity_name=name, entity_location="", status=status, summary=summary,
+    ))
+    return entry_id
+
+
 def log_first_index_batch(registry: "ProjectRegistry", batch_id: str, who: str, total: int, queued: int,
                           path: str) -> str:
     """The ONE activity row of a batch of first-index yeses, keyed by the batch id and rewritten as yeses come in
