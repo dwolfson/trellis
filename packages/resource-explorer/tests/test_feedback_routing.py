@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from resource_explorer.feedback_routing import _zone_restriction as REAL_ZONE_RESTRICTION
 from resource_explorer.web.app import app
 
 
@@ -21,6 +22,14 @@ def manifest(**kw) -> dict:
 
 ABSENT = manifest(gaps=[{"key": "cve_scan", "state": "never_run", "reason": "has not run"}],
                   packed=[{"key": "deps", "rung": "FULL"}])
+
+
+@pytest.fixture(autouse=True)
+def no_zone_restriction(monkeypatch):
+    """The Egeria zone half of private_context (2b) reads Egeria; no test here may. A shared, unzoned resource unless a
+    test says otherwise."""
+    from resource_explorer import feedback_routing
+    monkeypatch.setattr(feedback_routing, "_zone_restriction", lambda entity_type, slug, registry: "")
 
 
 @pytest.fixture
@@ -127,7 +136,7 @@ class TestWhatRoutesNothing:
         assert out.json()["route"]["state"] == "skipped"
         assert reg.list_feedback_routes([item_id]) == {} and reg.list_gaps("r1") == []
 
-    @pytest.mark.parametrize("cause", ["unclear_question", "stale"])
+    @pytest.mark.parametrize("cause", ["stale"])
     def test_later_steps_are_said_and_not_claimed(self, client, reg, feedback_store, admin_headers, cause):
         _compile(reg, "c1", ABSENT)
         item_id = _answer(feedback_store)
@@ -306,9 +315,16 @@ class TestRaisingAnRfaForADiagnosedGap:
             rows = c.execute("SELECT detail, annotations_json FROM activity_log WHERE id = ?", (rfa_id,)).fetchall()
         return " ".join(str(r["detail"]) + str(r["annotations_json"]) for r in rows)
 
-    def test_a_catalog_gap_names_the_question_catalog(self, client, reg, feedback_store, admin_headers):
+    def test_a_routed_catalog_gap_already_has_its_rfa(self, client, reg, feedback_store, admin_headers):
+        # Since 2b, routing raises a catalog gap's RFA and stamps it on the gap; the manual route refuses a second.
         _compile(reg, "c1", manifest(coverage={"kind": "none", "question": "", "note": ""}))
         gap_id = int(_save(client, admin_headers, _answer(feedback_store), "catalog_gap").json()["route"]["target"])
+        assert client.post(f"/api/projects/r1/gaps/{gap_id}/rfa").status_code == 409
+
+    def test_a_catalog_gap_names_the_question_catalog(self, client, reg, feedback_store, admin_headers):
+        from resource_explorer.gaps import CATALOG_GAP, SOURCE_PERSON
+        gap_id = reg.upsert_gap("r1", "", CATALOG_GAP, "question:Q-9", "nothing answers it",
+                                evidence={"source": SOURCE_PERSON})
         out = client.post(f"/api/projects/r1/gaps/{gap_id}/rfa")
         assert out.status_code == 200, out.text
         detail = self._rfa_detail(reg, out.json()["rfa"])
@@ -402,3 +418,172 @@ class TestReroute:
         assert client.post(f"/api/feedback/{item_id}/routes/reasoning/reroute", headers=admin_headers,
                            json={}).status_code == 400
         assert client.post(url, json={"analysis_id": "deps"}).status_code == 403
+
+
+# ── step 2b: the RFA consumers ──────────────────────────────────────────────────────────────────────────────────
+
+def _rfa(reg, rfa_id):
+    entry = reg.get_activity(rfa_id)
+    assert entry is not None, rfa_id
+    return entry
+
+
+class TestRfaRouting:
+    def test_unclear_question_raises_an_unassigned_rfa_with_the_question_and_the_note(
+            self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store, question="what does 'pkgx' mean?")
+        out = client.patch(f"/api/feedback/{item_id}", headers=admin_headers,
+                           json={"triage_status": "triaged", "cause": "unclear_question", "note": "pkgx is an alias"})
+        route = out.json()["route"]
+        assert route["state"] == "routed" and route["consumer"] == "rfa"
+        entry = _rfa(reg, route["target"])
+        assert (entry["entity_type"], entry["entity_slug"], entry["operation"]) == ("repo", "r1", "rfa")
+        assert "“what does 'pkgx' mean?”" in entry["summary"] and "Curator note: pkgx is an alias" in entry["detail"]
+        assert {"kind": "feedback", "id": item_id} in entry["items"]
+        assert reg.list_gaps("r1") == []                                    # an RFA only
+        assert "peterprofile" not in repr(entry)
+        rows = client.get("/api/activity/rfas").json()
+        [row] = [r for r in rows if r["entry_id"] == route["target"]]
+        assert row["assignee"] == "" and row["rfa_status"] == "open"         # unassigned (Q5)
+
+    def test_a_catalog_gap_raises_a_gap_and_an_rfa_stamped_on_it(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", manifest(coverage={"kind": "none", "question": "", "note": ""}))
+        route = _save(client, admin_headers, _answer(feedback_store), "catalog_gap").json()["route"]
+        gap = reg.get_gap(int(route["target"]))
+        assert gap["gap_kind"] == "catalog_gap" and gap["rfa_activity_id"]
+        assert ", RFA " in route["words"]
+        assert {"kind": "gap", "gap_id": gap["id"]} in _rfa(reg, gap["rfa_activity_id"])["items"]
+
+    def test_with_no_resource_the_rfa_goes_to_the_question_catalog(self, client, reg, feedback_store, admin_headers):
+        item_id = _answer(feedback_store, slug="", compile_id="")
+        route = _save(client, admin_headers, item_id, "catalog_gap").json()["route"]
+        assert route["consumer"] == "rfa"
+        entry = _rfa(reg, route["target"])
+        assert (entry["entity_type"], entry["entity_slug"], entry["entity_name"]) == ("catalog", "questions",
+                                                                                     "Question catalog")
+        rows = client.get("/api/activity/rfas").json()
+        assert any(r["entry_id"] == route["target"] and r["entity_name"] == "Question catalog" for r in rows)
+
+    def test_a_second_answer_on_the_question_joins_the_rfa(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", ABSENT)
+        a, b = _answer(feedback_store), _answer(feedback_store, user="erinoverview")
+        ra = _save(client, admin_headers, a, "unclear_question").json()["route"]
+        rb = _save(client, admin_headers, b, "unclear_question").json()["route"]
+        assert ra["target"] == rb["target"]
+        items = _rfa(reg, ra["target"])["items"]
+        assert {"kind": "feedback", "id": a} in items and {"kind": "feedback", "id": b} in items
+
+    def test_the_rfa_claim_is_taken_once(self, reg):
+        assert reg.claim_feedback_rfa("question:Q-1", "unclear_question", "repo", "r1") is True
+        assert reg.claim_feedback_rfa("question:Q-1", "unclear_question", "repo", "r1") is False
+
+    def test_a_failed_rfa_is_released_so_the_next_save_raises_it(self, client, reg, feedback_store, admin_headers,
+                                                                 monkeypatch):
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store)
+
+        def broken(*a, **kw):
+            raise RuntimeError("activity log unavailable")
+        with monkeypatch.context() as m:
+            m.setattr("resource_explorer.activity_logger.log_rfa", broken)
+            out = _save(client, admin_headers, item_id, "unclear_question")
+        assert out.json()["route"]["state"] == "failed"
+        assert reg.list_feedback_routes([item_id]) == {}
+        _save(client, admin_headers, item_id, "reasoning")
+        assert _save(client, admin_headers, item_id, "unclear_question").json()["route"]["state"] == "routed"
+
+    def test_an_rfa_cause_takes_no_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", ABSENT)
+        bad = _save(client, admin_headers, _answer(feedback_store), "unclear_question", analysis_id="deps")
+        assert bad.status_code == 400
+
+
+class TestTheRfaKeepsAPrivateQuestionInAdmin:
+    def test_a_private_investigation_keeps_the_question_and_the_note_out(self, client, reg, feedback_store,
+                                                                         admin_headers, monkeypatch):
+        from resource_explorer.registry import ProjectRegistry
+        monkeypatch.setattr(ProjectRegistry, "private_owner_for_entity", lambda self, et, slug: "erinoverview")
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store, question="what does Erin's secret project use?")
+        route = client.patch(f"/api/feedback/{item_id}", headers=admin_headers,
+                             json={"triage_status": "triaged", "cause": "unclear_question",
+                                   "note": "the secret project's alias"}).json()["route"]
+        entry = _rfa(reg, route["target"])
+        assert "secret project" not in repr(entry) and item_id in entry["summary"]
+
+    def test_a_restricted_zone_is_private(self, client, reg, feedback_store, admin_headers, monkeypatch):
+        from resource_explorer import feedback_routing
+        monkeypatch.setattr(feedback_routing, "_zone_restriction",
+                            lambda et, slug, r: "the resource is in a restricted zone (security)")
+        _compile(reg, "c1", ABSENT)
+        route = _save(client, admin_headers, _answer(feedback_store, question="what is in the vault?"),
+                      "unclear_question").json()["route"]
+        entry = _rfa(reg, route["target"])
+        assert "vault" not in repr(entry) and "restricted zone (security)" in entry["summary"]
+
+
+class TestTheZoneRead:
+    """`_zone_restriction` itself, with the Egeria reader faked: READ restricted, not restricted, and fail closed."""
+
+    def _with(self, monkeypatch, *, zones=None, control=None, element_error=None):
+        from resource_explorer import zone_access
+
+        class Reader:
+            def __init__(self, **kw):
+                pass
+
+            def element(self, guid):
+                if element_error:
+                    raise element_error
+                return zone_access.ElementFacts(zones=zones or [], owners=None, maintainers=None)
+
+            def control(self, zone):
+                if isinstance(control, Exception):
+                    raise control
+                return (control or {}).get(zone)
+        monkeypatch.setattr(zone_access, "EgeriaAccessReader", Reader)
+
+    def _registry(self, guid="g-1"):
+        class Repo:
+            egeria_asset_guid = guid
+
+        class R:
+            def get(self, slug):
+                return Repo()
+            get_database = get_filesystem = get
+        return R()
+
+    def _call(self, registry):
+        return REAL_ZONE_RESTRICTION("repo", "r1", registry)     # the real one, captured before the autouse stub
+
+    def test_a_zone_restricting_read_is_restricted(self, monkeypatch):
+        self._with(monkeypatch, zones=["security"],
+                   control={"security": {"associatedSecurityList": {"READ": ["security-team"]}}})
+        assert self._call(self._registry()) == "the resource is in a restricted zone (security)"
+
+    def test_a_zone_securing_only_updates_is_not_restricted(self, monkeypatch):
+        self._with(monkeypatch, zones=["data-lake"],
+                   control={"data-lake": {"associatedSecurityList": {"UPDATE_PROPERTIES": ["stewards"]}}})
+        assert self._call(self._registry()) == ""
+
+    def test_an_unpublished_resource_has_no_zones(self, monkeypatch):
+        self._with(monkeypatch, zones=["security"])
+        assert self._call(self._registry(guid="")) == ""
+
+    def test_an_unreadable_element_fails_closed(self, monkeypatch):
+        from resource_explorer.zone_access import AccessUnreadable
+        self._with(monkeypatch, element_error=AccessUnreadable("no answer"))
+        assert "could not be read" in self._call(self._registry())
+
+
+def test_the_rfa_claim_is_taken_once_on_postgres(pg_registry):
+    """One RFA per (question, cause, entity): the `feedback_rfas` key and the insert's row count, on the real dialect."""
+    key = ("question:sha1:abc", "unclear_question", "catalog", "questions")
+    assert pg_registry.claim_feedback_rfa(*key) is True
+    assert pg_registry.claim_feedback_rfa(*key) is False
+    assert pg_registry.get_feedback_rfa(*key) == "pending"
+    pg_registry.set_feedback_rfa(*key, "rfa-1")
+    assert pg_registry.get_feedback_rfa(*key) == "rfa-1"
+    pg_registry.release_feedback_rfa(*key)                  # only a pending claim is released
+    assert pg_registry.get_feedback_rfa(*key) == "rfa-1"

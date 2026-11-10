@@ -1,6 +1,7 @@
 """Route a diagnosis of a rated answer to the one consumer that acts on its cause.
 
-docs/feedback-closed-loop-design.md §3.2 and BRIEF-CLOSED-LOOP-STEP2-ROUTING.md (step 2a: the gap consumers).
+docs/feedback-closed-loop-design.md §3.2 and BRIEF-CLOSED-LOOP-STEP2-ROUTING.md (step 2a: the gap consumers; step 2b:
+the RFA consumers).
 The rules, all decided by the project owner on 2026-11-10:
 
 * **On Save.** A Save that sets or changes the cause routes it, in the same request, after the triage event is
@@ -14,12 +15,15 @@ The rules, all decided by the project owner on 2026-11-10:
 * **The admin picks one charged analysis**, defaulting to the first in role order (`feedback_diagnosis.ROLE_ORDER`).
 * **The gap sentence includes the question as asked; the asker's id never travels** into a gap.
 * **Except in a private context** (Q8's limit; the architect's P1 read-back of 6c050de2): when the answer's resource
-  is in a private investigation, or that cannot be told, the gap names the item reference and the cause only. No
-  question text in the sentence, the evidence or the gap's key. `private_context` is the one test; 2b's RFAs reuse it.
+  is in a private investigation or restricted by its Egeria zones, or that cannot be told, the gap and the RFA name
+  the item reference and the cause only. No question text in a sentence, a summary, the evidence or a key.
+  `private_context` is the one test.
 
-Step 2a builds the gap consumers: `missing_evidence`, `analysis_defect`, and the gap half of `catalog_gap`. The
-RFA half of `catalog_gap`, `unclear_question` (2b) and `stale` (2c) are said to be not routed yet, and are not
-claimed, so a later step can route them.
+Step 2a: the gap consumers (`missing_evidence`, `analysis_defect`, and the gap half of `catalog_gap`).
+Step 2b: the RFA consumers. `catalog_gap` also raises an RFA, attached to its gap (`analysis_gaps.rfa_activity_id`),
+or against the `catalog`/`questions` pseudo-entity when the answer had no resource; `unclear_question` raises an RFA
+only. One RFA per (question, cause, entity), claimed in `feedback_rfas` before it is written; a later answer on the
+same question joins it. RFAs are raised unassigned (Q5). `stale` (2c) is said to be not routed yet, and not claimed.
 """
 from __future__ import annotations
 
@@ -42,8 +46,20 @@ logger = logging.getLogger(__name__)
 #: The causes step 2a routes to a gap, and the gap kind each makes.
 GAP_CAUSES = {"missing_evidence": MISSING_EVIDENCE, "analysis_defect": ANALYSIS_DEFECT, "catalog_gap": CATALOG_GAP}
 
+#: The causes step 2b routes to an RFA ("to the catalog owner", design §3.2).
+RFA_CAUSES = ("catalog_gap", "unclear_question")
+
+#: The entity an RFA is raised against when the answer had no resource in scope (Q4). Not a registered resource:
+#: every RFA reader takes the entity as display text, a slug filter or a dismissal key, and none looks it up.
+CATALOG_ENTITY = ("catalog", "questions", "Question catalog")
+
+_RFA_LABEL = {
+    "catalog_gap": "Nothing in the question catalog answers this question",
+    "unclear_question": "A question could be read another way, or used a name the catalog does not know",
+}
+
 #: Routed by a later step of the brief, and not claimed until then.
-LATER = {"unclear_question": "2b (RFAs)", "stale": "2c (Automate)"}
+LATER = {"stale": "2c (Automate)"}
 
 #: Never routed in step 2 (Q6) or never routed at all.
 UNROUTED = {
@@ -63,14 +79,14 @@ _CAUSE_WORDS = {
 def private_context(item: dict, registry: Any) -> str:
     """Why this answer's question must not travel beyond Admin, or "" when it may.
 
-    Today's test is local and unscoped: the answer's resource is in a creator-only investigation
-    (`registry.private_owner_for_entity`, the same read born-private publishing uses, which sees investigations the
-    caller cannot). It fails CLOSED: a registry that cannot answer counts as private. An answer with no resource in
-    scope has no private context to inherit.
+    Two tests, both failing CLOSED (could not tell counts as private):
 
-    Not covered, and said here so it is not assumed: a resource whose Egeria zones restrict it outside any private
-    investigation. Knowing that needs an Egeria read on every Save; the RFA drawer's viewer filter (Backlog) is the
-    fuller answer for both.
+    * the answer's resource is in a creator-only investigation (`registry.private_owner_for_entity`, the same read
+      born-private publishing uses, which sees investigations the caller cannot);
+    * the resource's Egeria element is in a zone whose security control restricts READ (`_zone_restriction`; required
+      in 2b by the architect's read-back, since RFAs reach resources that zones do restrict). One read per Save.
+
+    An answer with no resource in scope has no private context to inherit.
     """
     slug = (item.get("slug") or "").strip()
     if not slug:
@@ -82,7 +98,42 @@ def private_context(item: dict, registry: Any) -> str:
         owner = resolve_private_owner(registry, entity_type, slug)
     except PrivateOwnerUnknown:
         return "whether the resource is in a private investigation could not be read"
-    return "the resource is in a private investigation" if owner else ""
+    if owner:
+        return "the resource is in a private investigation"
+    return _zone_restriction(entity_type, slug, registry)
+
+
+def _resource_guid(entity_type: str, slug: str, registry: Any) -> str:
+    """The resource's own Egeria element GUID, or "" when it has none (never published)."""
+    getter = {"repo": registry.get, "database": registry.get_database,
+              "filesystem": registry.get_filesystem}.get(entity_type)
+    entity = getter(slug) if getter else None
+    return (getattr(entity, "egeria_asset_guid", "") or "").strip() if entity else ""
+
+
+def _zone_restriction(entity_type: str, slug: str, registry: Any) -> str:
+    """Why the resource's Egeria zones restrict who may read it, or "" when they do not.
+
+    Restricted: any zone of the element has a security control that gives READ its own list
+    (`zone_access.security_list_for`). A resource never published to Egeria has no zones there, so nothing restricts
+    it. Fails CLOSED: an element or a control that cannot be read counts as restricted.
+    """
+    try:
+        guid = _resource_guid(entity_type, slug, registry)
+    except Exception as exc:  # noqa: BLE001 -- fail closed: the registry could not say which element it is
+        return f"the resource's Egeria zones could not be read ({type(exc).__name__})"
+    if not guid:
+        return ""
+    from resource_explorer import zone_access
+
+    try:
+        reader = zone_access.EgeriaAccessReader(cache_elements=True)
+        zones = list(reader.element(guid).zones or [])
+        restricted = [z for z in zones
+                      if zone_access.security_list_for(reader.control(z), zone_access.READ_OPERATION) is not None]
+    except Exception as exc:  # noqa: BLE001 -- fail closed: AccessUnreadable or anything else, could not tell
+        return f"the resource's Egeria zones could not be read ({type(exc).__name__})"
+    return f"the resource is in a restricted zone ({', '.join(restricted)})" if restricted else ""
 
 
 def opaque_question_key(question: str, question_id: str = "") -> str:
@@ -112,6 +163,8 @@ class Plan:
     none_reason: str = ""
     #: Set when the cause is routed by no step, or by a later one; nothing is claimed or recorded.
     words: str = ""
+    #: Raise (or join) the question's RFA (step 2b).
+    rfa: bool = False
     charge: list[dict] = field(default_factory=list)
 
 
@@ -127,19 +180,22 @@ def plan(item: dict, cause: str, *, analysis_id: str = "", registry: Any) -> Pla
         return Plan(cause=cause, words=f"Not routed: {cause.replace('_', ' ')} {UNROUTED[cause]}.")
     if cause in LATER:
         return Plan(cause=cause, words=f"Not routed yet: {cause.replace('_', ' ')} is routed by step {LATER[cause]}.")
-    if cause not in GAP_CAUSES:
+    if cause not in GAP_CAUSES and cause not in RFA_CAUSES:
         return Plan(cause=cause, words=f"Not routed: no consumer is named for {cause!r}.")
 
-    p = Plan(cause=cause, gap_kind=GAP_CAUSES[cause], compile_id=(item.get("compile_id") or "").strip())
+    p = Plan(cause=cause, gap_kind=GAP_CAUSES.get(cause, ""), rfa=cause in RFA_CAUSES,
+             compile_id=(item.get("compile_id") or "").strip())
     picked = (analysis_id or "").strip()
+    if cause in RFA_CAUSES:
+        if picked:
+            raise RouteRefused(f"A {cause.replace('_', ' ')} is charged to no analysis.")
+        if not (item.get("slug") or "").strip():
+            p.gap_kind = ""                       # no resource: no gap, the RFA goes to the question catalog
+        return p
     if not (item.get("slug") or "").strip():
         p.none_reason = "no resource in scope, so there is no gap to raise"
         if picked:
             raise RouteRefused("This answer had no resource in scope, so no analysis can be charged.")
-        return p
-    if cause == "catalog_gap":
-        if picked:
-            raise RouteRefused("A catalog gap is charged to no analysis.")
         return p
 
     from resource_explorer.feedback_diagnosis import diagnosis
@@ -173,7 +229,11 @@ def _gap_words(route: dict, registry: Any) -> str:
             return f"Routed: gap #{target} ({cause.replace('_', ' ')}), no longer stored."
         on = f" on {gap['analysis_id']}" if gap.get("analysis_id") else ""
         state = ", resolved" if gap.get("resolved_at") else ""
-        return f"Routed: gap #{target}{on} ({cause.replace('_', ' ')}){state}."
+        rfa = f", RFA {gap['rfa_activity_id'][:8]} raised" if gap.get("rfa_activity_id") else ""
+        return f"Routed: gap #{target}{on} ({cause.replace('_', ' ')}){rfa}{state}."
+    if consumer == "rfa":
+        why = f" ({route['reason']})" if route.get("reason") else ""
+        return f"Routed: RFA {target[:8]} ({cause.replace('_', ' ')}){why}."
     if consumer == "none":
         return f"Not routed ({cause.replace('_', ' ')}): {route.get('reason') or 'no reason recorded'}."
     if consumer == "pending":
@@ -202,19 +262,91 @@ def execute(p: Plan | None, item: dict, *, actor: str, registry: Any) -> dict | 
     if p.none_reason:
         registry.finish_feedback_route(item_id, p.cause, "none", reason=p.none_reason)
         return {**describe(registry.get_feedback_route(item_id, p.cause), registry), "state": "not_routed"}
+    gap_id, gap_reason, rfa_id = 0, "", ""
     try:
-        gap_id = _raise_gap(p, item, actor=actor, registry=registry)
-    except ValueError as exc:
-        # upsert_gap refuses a slug the projects table does not hold: today, every resource that is not a repository.
-        registry.finish_feedback_route(item_id, p.cause, "none", reason=f"no gap could be raised: {exc}")
-        return {**describe(registry.get_feedback_route(item_id, p.cause), registry), "state": "not_routed"}
+        if p.gap_kind:
+            try:
+                gap_id = _raise_gap(p, item, actor=actor, registry=registry)
+            except ValueError as exc:
+                # upsert_gap refuses a slug the projects table does not hold: today, every resource that is not a
+                # repository. A catalog gap's RFA still goes; a gap-only cause is not routed.
+                gap_reason = f"no gap could be raised: {exc}"
+        if p.rfa:
+            rfa_id = _raise_rfa(p, item, gap_id=gap_id, registry=registry)
     except Exception as exc:  # a passing failure: release the claim so the next Save tries again
         logger.exception("routing %s of feedback %s failed", p.cause, item_id)
         registry.release_feedback_route(item_id, p.cause)
         return {"cause": p.cause, "state": "failed",
                 "words": f"Not routed this time ({p.cause.replace('_', ' ')}): {exc}. Save again to retry."}
-    registry.finish_feedback_route(item_id, p.cause, "gap", target=str(gap_id))
+    if gap_id:
+        registry.finish_feedback_route(item_id, p.cause, "gap", target=str(gap_id))
+    elif rfa_id:
+        registry.finish_feedback_route(item_id, p.cause, "rfa", target=rfa_id, reason=gap_reason)
+    else:
+        registry.finish_feedback_route(item_id, p.cause, "none", reason=gap_reason or "nothing to route")
+        return {**describe(registry.get_feedback_route(item_id, p.cause), registry), "state": "not_routed"}
     return {**describe(registry.get_feedback_route(item_id, p.cause), registry), "state": "routed"}
+
+
+def _raise_rfa(p: Plan, item: dict, *, gap_id: int, registry: Any) -> str:
+    """Raise the question's RFA, or add this item to it when it exists. Returns the RFA's activity id.
+
+    One per (question, cause, entity): claimed in `feedback_rfas` first, so two Saves on one question cannot raise two.
+    The summary carries the question as asked (Q8) unless the context is private, when it names the item and cause
+    only and leaves the curator note out too. Raised unassigned (Q5). A catalog gap's RFA is also stamped on its gap,
+    so the gap→RFA route sees it was raised.
+    """
+    from resource_explorer.activity_logger import log_rfa
+
+    slug = (item.get("slug") or "").strip()
+    if slug:
+        entity_type = (item.get("entity_type") or "").strip() or "repo"
+        entity_slug, entity_name = slug, slug
+    else:
+        entity_type, entity_slug, entity_name = CATALOG_ENTITY
+    question = (item.get("query_text") or "").strip()
+    question_id = ((item.get("extra") or {}).get("question_id") or "").strip()
+    private = private_context(item, registry)
+    key = opaque_question_key(question, question_id) if private else question_check_name(question, question_id)
+    pointer = {"kind": "feedback", "id": item["id"]}
+
+    if not registry.claim_feedback_rfa(key, p.cause, entity_type, entity_slug):
+        rfa_id = registry.get_feedback_rfa(key, p.cause, entity_type, entity_slug)
+        if rfa_id and rfa_id != "pending":
+            registry.add_activity_item(rfa_id, pointer)
+            if gap_id:
+                _stamp_gap(registry, gap_id, rfa_id)
+        return rfa_id or "pending"
+    try:
+        label = _RFA_LABEL[p.cause]
+        if private:
+            summary = f"{label}: feedback item {item['id']} (the question is kept in Admin; {private})"
+        else:
+            summary = f"{label}: “{question}”"
+        detail = [f"An admin diagnosed a rated answer as {p.cause.replace('_', ' ')}."]
+        if p.compile_id:
+            detail.append(f"The answer was built from compile {p.compile_id}.")
+        note = ((item.get("triage") or {}).get("note") or "").strip()
+        if p.cause == "unclear_question" and note and not private:
+            detail.append(f"Curator note: {note}")
+        detail.append("Raised for whoever keeps the question catalog; it is not assigned to anyone yet.")
+        items = [pointer] + ([{"kind": "gap", "gap_id": gap_id}] if gap_id else [])
+        rfa_id = log_rfa(registry, entity_type, entity_slug, entity_name, "open", summary,
+                         detail=" ".join(detail), analysis_name="Question catalog", items=items)
+    except Exception:
+        registry.release_feedback_rfa(key, p.cause, entity_type, entity_slug)
+        raise
+    registry.set_feedback_rfa(key, p.cause, entity_type, entity_slug, rfa_id)
+    if gap_id:
+        _stamp_gap(registry, gap_id, rfa_id)
+    return rfa_id
+
+
+def _stamp_gap(registry: Any, gap_id: int, rfa_id: str) -> None:
+    """Record the RFA on its gap, unless the gap already has one (the gap→RFA route never raises a second)."""
+    gap = registry.get_gap(gap_id)
+    if gap is not None and not gap.get("rfa_activity_id"):
+        registry.mark_gap_rfa(gap_id, rfa_id)
 
 
 def _raise_gap(p: Plan, item: dict, *, actor: str, registry: Any) -> int:
