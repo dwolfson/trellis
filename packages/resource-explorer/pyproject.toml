@@ -193,7 +193,9 @@ dependencies = [
     # Raised to 6.2.31 (2026-11-10, B1 of the EA catch-up brief): 6.2.30 fixed a data-loss bug, where a blank Zone
     # Membership on a Dr.Egeria Update called clear_zone_membership and wiped the element's zones; 6.2.29-6.2.31 also
     # changed report-spec seeding, Dashboard Sheet wording and Ownership, and added semantic_grounding fields.
-    "pyegeria>=6.2.31",
+    # Raised to 6.2.32 (2026-11-10, B2): the rendered Dr.Egeria templates ship in the wheel (md_processing.templates);
+    # Egeria Advisor reads them from there so its templates match the installed Dr.Egeria executor.
+    "pyegeria>=6.2.32",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's
