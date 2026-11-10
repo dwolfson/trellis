@@ -137,10 +137,9 @@ def ever_completed(registry) -> bool:
 
 # ── queue ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def queue(registry, slug: str, *, requested_by: str, store=None) -> dict:
-    """Queue one admin's yes to rebuild `slug`. Returns {run_id, held}; raises ReindexRefused otherwise."""
-    if not (requested_by or "").strip():
-        raise ReindexRefused("A rebuild needs a signed-in admin's yes; none is recorded for this request.", 401)
+def _checked(registry, slug: str, store) -> tuple[Any, list[str], int | None]:
+    """The checks a rebuild must pass, shared by the ask and the queue. Returns (project, its own collections, the
+    measured bytes they take, or None when unmeasured); raises ReindexRefused with the sentence otherwise."""
     p = registry.get(slug)
     if p is None:
         raise ReindexRefused(f"Project '{slug}' not found.", 404)
@@ -160,17 +159,47 @@ def queue(registry, slug: str, *, requested_by: str, store=None) -> dict:
         until = _target(kept).get("previous_until", "")
         raise ReindexRefused(f"{name}'s previous index from its last rebuild is kept until {until[:10]} for undo; "
                              "undo it or discard it before rebuilding again.")
-    store = store or _store()
-    problems = store.check_names(*[n for c in own_collections(slug, p.collections) for n in (aside(c), previous(c))])
+    mine = own_collections(slug, p.collections)
+    problems = store.check_names(*[n for c in mine for n in (aside(c), previous(c))])
     if problems:
         raise ReindexRefused("; ".join(problems), 400)
-    held = not ever_completed(registry)
     # Measured, not estimated: Postgres cannot report its filesystem's free space (the architect's read-back), so the
     # ask states the space a rebuild needs again until its previous index is dropped.
     try:
-        needs = sum(store.table_bytes(c) for c in own_collections(slug, p.collections))
+        needs = sum(store.table_bytes(c) for c in mine)
     except Exception:  # noqa: BLE001 -- an unmeasured size is said to be unknown, not zero
         needs = None
+    return p, mine, needs
+
+
+def ask(registry, slug: str, *, store=None) -> dict:
+    """What the ask shows before an admin says yes (BRIEF-REINDEX-FROM-SCRATCH.md §6): the collections and their
+    chunk counts, the measured space, whether this is the held first rebuild, and what an undo does not revert. When a
+    rebuild would be refused, `refused` carries the sentence and nothing is offered."""
+    store = store or _store()
+    try:
+        p, mine, needs = _checked(registry, slug, store)
+    except ReindexRefused as exc:
+        return {"slug": slug, "refused": str(exc)}
+    counts = []
+    for c in mine:
+        try:
+            counts.append({"collection": c, "chunks": store.count(c) if store.collection_exists(c) else 0})
+        except Exception:  # noqa: BLE001 -- a count that cannot be read is said to be unknown
+            counts.append({"collection": c, "chunks": None})
+    return {"slug": slug, "name": p.display_name or slug, "collections": counts, "needs_bytes": needs,
+            "needs_words": needs_words(needs), "first": not ever_completed(registry),
+            "keep_days": KEEP_PREVIOUS_DAYS, "survey_words": UNDO_NOT_REVERTED, "refused": ""}
+
+
+def queue(registry, slug: str, *, requested_by: str, store=None) -> dict:
+    """Queue one admin's yes to rebuild `slug`. Returns {run_id, held}; raises ReindexRefused otherwise."""
+    if not (requested_by or "").strip():
+        raise ReindexRefused("A rebuild needs a signed-in admin's yes; none is recorded for this request.", 401)
+    store = store or _store()
+    p, _, needs = _checked(registry, slug, store)
+    name = p.display_name or slug
+    held = not ever_completed(registry)
     from resource_explorer.activity_logger import log_reindex
 
     activity_id = log_reindex(registry, slug, name, "running", f"Rebuild of {name}'s chat index: queued by "
@@ -779,6 +808,11 @@ def progress(registry, slug: str) -> dict:
                     "outcomes": t.get("outcomes") or [], "counts": t.get("counts") or {},
                     "survey": t.get("survey") or [], "previous_until": t.get("previous_until", ""),
                     "needs_words": needs_words(t.get("needs_bytes")) if "needs_bytes" in t else "",
+                    "undo_available": (t.get("phase") == "done" and not t.get("undone") and not t.get("discarded")
+                                       and not t.get("discarding")
+                                       and t.get("previous_until", "") >= _now().isoformat()),
+                    "previous_tables": [previous(n) for n in (t.get("kept") or []) + (t.get("dropped") or [])]
+                    if t.get("phase") == "done" and not t.get("undone") and not t.get("discarded") else [],
                     "drop_error": t.get("drop_error", ""),
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

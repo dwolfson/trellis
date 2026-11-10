@@ -122,6 +122,10 @@ already holds:
 
 **Admins only** (Q3): every entry point below refuses anyone else, as Admin → Feedback does.
 
+**As built (R2, #1041), a deviation:** `/next` has no Analysis card grid (analyses are question rows), so the door
+is in the **repository header**, beside the first-index cue, for an indexed repository, not on the "Refresh &
+Re-ingest" card. The architect accepted it at the read-back of 9fb4980b.
+
 - **Analysis**, on the "Refresh & Re-ingest" card: "Rebuild from scratch…", which opens the ask.
 - **CLI:** `resource-explorer refresh <slug> --rebuild`, which asks on the terminal unless `--yes` is given.
 - **API:** `POST /api/reindex/queue {slug}`, `GET /api/reindex/progress`, `POST /api/reindex/{run_id}/accept` (for the
