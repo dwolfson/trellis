@@ -587,3 +587,18 @@ def test_the_rfa_claim_is_taken_once_on_postgres(pg_registry):
     assert pg_registry.get_feedback_rfa(*key) == "rfa-1"
     pg_registry.release_feedback_rfa(*key)                  # only a pending claim is released
     assert pg_registry.get_feedback_rfa(*key) == "rfa-1"
+
+
+def test_joins_at_the_same_moment_both_land_on_postgres(pg_registry):
+    """The architect's read-back of 4b522bc5: a later answer joining an RFA is a locked read-modify-write on Postgres,
+    so many joins at once each keep their pointer."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from resource_explorer.activity_logger import log_rfa
+
+    rfa_id = log_rfa(pg_registry, "catalog", "questions", "Question catalog", "open", "an unclear question")
+    pointers = [{"kind": "feedback", "id": f"item-{n}"} for n in range(12)]
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        assert all(pool.map(lambda p: pg_registry.add_activity_item(rfa_id, p), pointers))
+    items = pg_registry.get_activity(rfa_id)["items"]
+    assert all(p in items for p in pointers), f"lost: {[p for p in pointers if p not in items]}"

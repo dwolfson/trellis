@@ -5478,9 +5478,15 @@ class ProjectRegistry:
 
     def add_activity_item(self, entry_id: str, item: dict) -> bool:
         """Append one structured pointer to an activity entry's `items` (an RFA that another answer joins). Returns
-        False when the entry is gone. An item already there is not added twice."""
+        False when the entry is gone. An item already there is not added twice.
+
+        One transaction, and on Postgres the row is locked (`SELECT ... FOR UPDATE`, as `record_compile` does), so two
+        answers joining the same RFA at once both land: a pointer that silently vanished would be an absence nobody
+        could see (the architect's read-back of 4b522bc5). SQLite has no row lock; there, two joins at the same instant
+        can still race, which only a test or a one-box dev registry would meet."""
         with self._conn() as conn:
-            row = conn.execute("SELECT items_json FROM activity_log WHERE id = ?", (entry_id,)).fetchone()
+            row = conn.execute("SELECT items_json FROM activity_log WHERE id = ?"
+                               + (" FOR UPDATE" if conn.is_postgres else ""), (entry_id,)).fetchone()
             if not row:
                 return False
             items = json.loads(row["items_json"] or "[]")
