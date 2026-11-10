@@ -159,6 +159,9 @@ app.include_router(_plans_router)
 from advisor.web.reports import router as _reports_router
 app.include_router(_reports_router)
 
+from advisor.web.dashboards import router as _dashboards_router
+app.include_router(_dashboards_router)
+
 
 @app.on_event("startup")
 async def _startup():

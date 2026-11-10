@@ -1,0 +1,371 @@
+"""EA Dashboards, read (brief B5): list and show Egeria-held sheets as the signed-in user.
+
+No live Egeria: an in-memory Egeria (pyegeria's own dashboard test fake, vendored as
+_dashboard_fake_egeria.py) written to with pyegeria's Dr.Egeria sheet writer, and read through
+pyegeria's REAL resolver. Each viewer has their own fake, chosen by the token their client carries,
+so a cache shared across viewers would show up as one viewer seeing the other's answer.
+
+The mixed-visibility sheet mirrors the live proof sheet "scratch-restricted-demo": a public sheet with
+a Report zoned to peterprofile. erinoverview must see [report, restricted]; peterprofile [report, report].
+"""
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+
+import pytest
+
+from advisor import egeria_dashboards as ed
+from advisor import egeria_spec_sync as ess
+
+_HERE = pathlib.Path(__file__).parent
+_spec = importlib.util.spec_from_file_location("ea_dashboard_fake_egeria", _HERE / "_dashboard_fake_egeria.py")
+fake_egeria = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fake_egeria)
+
+ERIN_TOKEN = "token-erinoverview"
+PETER_TOKEN = "token-peterprofile"
+DEMO = "scratch-restricted-demo"
+
+
+class ViewerEgeria(fake_egeria.FakeEgeria):
+    """The fake as one viewer sees it: GUIDs in `hidden` are in a zone they cannot see. Relationship
+    reads and listings drop them silently; an explicit read by GUID is refused with Egeria's 403-020."""
+
+    def __init__(self, user_id: str):
+        super().__init__()
+        self.user_id = user_id
+        self.hidden: set = set()
+        self.reads = 0
+        self.fail: Exception | None = None
+
+    def _visible(self, items):
+        if not isinstance(items, list):
+            return items
+        kept = [e for e in items if (e.get("elementHeader") or {}).get("guid") not in self.hidden]
+        return kept or "No elements found"
+
+    async def _async_get_element_by_guid_(self, guid, **kwargs):
+        self.reads += 1
+        if self.fail:
+            raise self.fail
+        if guid in self.hidden:
+            raise RuntimeError(f"OPEN-METADATA-SECURITY-403-020 User {self.user_id} is not authorized to issue "
+                               f"an operation read on Report element {guid}")
+        return await super()._async_get_element_by_guid_(guid)
+
+    async def _async_get_element_by_unique_name(self, name, property_name=None, **kwargs):
+        self.reads += 1
+        if self.fail:
+            raise self.fail
+        guid = self.by_qn(name)
+        if guid in self.hidden:                 # a lookup by name drops a hidden element, as a search does
+            return "No elements found"
+        return await super()._async_get_element_by_unique_name(name, property_name, **kwargs)
+
+    async def _async_get_related_elements(self, *a, **k):
+        return self._visible(await super()._async_get_related_elements(*a, **k))
+
+    async def _async_get_elements_by_property_value(self, *a, **k):
+        self.reads += 1
+        if self.fail:
+            raise self.fail
+        return self._visible(await super()._async_get_elements_by_property_value(*a, **k))
+
+    async def _async_get_elements(self, *a, **k):
+        self.reads += 1
+        if self.fail:
+            raise self.fail
+        return self._visible(await super()._async_get_elements(*a, **k))
+
+    async def _async_get_placement_reports(self, dashboard_guid, placement_qualified_names, **kwargs):
+        saved = self.relationships
+        self.relationships = [r for r in saved if not (r["type"] == "DataSetContent" and r["end2"] in self.hidden)]
+        try:
+            return await super()._async_get_placement_reports(dashboard_guid, placement_qualified_names)
+        finally:
+            self.relationships = saved
+
+
+async def _write(fake, sheet):
+    from md_processing.v2.dashboard_sheet import DashboardSheetEgeriaWriter
+    await DashboardSheetEgeriaWriter(fake).write_sheet(sheet)
+
+
+def _demo_sheet():
+    from pyegeria.view._output_dashboard_sheet_models import DashboardSheet, Placement
+    return DashboardSheet(name=DEMO, heading="Restricted placement demo", description="B4 proof sheet", placements=[
+        Placement(ref="Public Collections", span="2", emphasis="panel"),
+        Placement(ref="Peter Only", span="1", emphasis="kpi"),
+        Placement(ref="Read me", content="**Notes** for the sheet", span="full", emphasis="panel"),
+    ])
+
+
+def _report(fake, name, spec):
+    return fake.add_entity("Report", f"DeployedReport::{name}", name, description=f"{name} description",
+                           additionalProperties={"reportSpec": spec, "outputFormat": "DICT",
+                                                 "search_string": "Coco"})
+
+
+def _viewer(user_id, *, hide_peter_only: bool):
+    import asyncio
+    fake = ViewerEgeria(user_id)
+    fake_egeria.seed_perspectives(fake)
+    pub = _report(fake, "Public Collections", "Collections")
+    peter = _report(fake, "Peter Only", "Collections")
+    asyncio.run(_write(fake, _demo_sheet()))
+    if hide_peter_only:
+        fake.hidden.add(peter)          # zoned to peterprofile; erinoverview cannot see it
+    fake.guids = {"pub": pub, "peter": peter}
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def _isolated(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYEGERIA_REPORT_SPEC_CACHE_DIR", str(tmp_path / "cache"))
+    ed._reset_for_tests()
+    yield
+    ed._reset_for_tests()
+
+
+@pytest.fixture
+def viewers(monkeypatch):
+    fakes = {ERIN_TOKEN: _viewer("erinoverview", hide_peter_only=True),
+             PETER_TOKEN: _viewer("peterprofile", hide_peter_only=False)}
+
+    def factory(conn):
+        assert conn["user_pwd"] == ""                    # never a password, only the viewer's token
+        return fakes[conn["token"]]
+    monkeypatch.setattr(ed, "_build_client", factory)
+    return fakes
+
+
+def creds(token, user):
+    return {"user_id": user, "password": "", "token": token}
+
+
+ERIN = creds(ERIN_TOKEN, "erinoverview")
+PETER = creds(PETER_TOKEN, "peterprofile")
+
+
+# ── identity ───────────────────────────────────────────────────────────────────
+
+def test_no_token_means_sign_in_never_a_service_user():
+    with pytest.raises(ed.SignInRequired):
+        ed.list_sheets({"user_id": "garygeeke", "password": "secret", "token": ""})
+    with pytest.raises(ed.SignInRequired):
+        ed.show_sheet(None, DEMO)
+
+
+def test_cache_key_is_the_presented_credential_not_the_user_id():
+    conn = {"token": "abc", "platform_url": "https://p", "view_server": "v", "user_id": "erin"}
+    key = ed.credential_identity(conn)
+    assert "abc" not in key and "erin" not in key
+    assert key != ed.credential_identity({**conn, "token": "abd"})
+    assert key == ed.credential_identity({**conn, "user_id": "someone-else"})   # claims do not matter
+
+
+# ── list: three different answers ──────────────────────────────────────────────
+
+def test_list_is_per_viewer(viewers):
+    viewers[PETER_TOKEN].hidden.add(viewers[PETER_TOKEN].by_qn(f"Dashboard::{DEMO}"))
+    erin = ed.list_sheets(ERIN)
+    assert erin["state"] == "ok" and [s["name"] for s in erin["sheets"]] == [DEMO]
+    assert erin["sheets"][0]["placement_count"] == 3
+    peter = ed.list_sheets(PETER)
+    assert peter["state"] == "no_sheets" and peter["sheets"] == []
+    assert "no Dashboard Sheets that peterprofile can see" in peter["message"]
+
+
+def test_list_read_failure_is_not_no_sheets_and_is_not_cached(viewers):
+    viewers[ERIN_TOKEN].fail = ConnectionError("Egeria is starting")
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "read_failed" and "Could not read" in out["message"]
+    assert "Egeria is starting" in out["message"]
+    viewers[ERIN_TOKEN].fail = None
+    assert ed.list_sheets(ERIN)["state"] == "ok"        # the failure was not cached
+
+
+def test_refused_token_is_sign_in_again(viewers):
+    import httpx
+    from pyegeria.core._exceptions import PyegeriaUnauthorizedException
+    viewers[ERIN_TOKEN].fail = PyegeriaUnauthorizedException(
+        httpx.Response(401, request=httpx.Request("POST", "http://x")), {"caller method": "t"}, {"userid": "e"})
+    with pytest.raises(ed.TokenRefused):
+        ed.list_sheets(ERIN)
+    with pytest.raises(ed.TokenRefused):
+        ed.show_sheet(ERIN, DEMO)
+
+
+# ── show: restricted placements, order, span, emphasis, sources ────────────────
+
+def test_erin_sees_report_and_restricted_peter_sees_two_reports(viewers):
+    erin = ed.show_sheet(ERIN, DEMO)
+    assert erin["state"] == "ok"
+    kinds = [(p["position"], p["kind"]) for p in erin["sheet"]["placements"]]
+    assert kinds == [(1, "report"), (2, "restricted"), (3, "text")]
+    restricted = erin["sheet"]["placements"][1]
+    assert restricted["restricted"] is True and restricted["reason"] == "not visible to you"
+    assert restricted["runnable"] is False and restricted["restricted_element"] == "Report"
+    assert restricted["report"] is None and restricted["spec"] is None   # nothing about it leaks
+
+    peter = ed.show_sheet(PETER, DEMO)
+    assert [p["kind"] for p in peter["sheet"]["placements"]] == ["report", "report", "text"]
+    assert peter["sheet"]["placements"][1]["runnable"] is True
+
+
+def test_viewers_never_share_a_cache_entry(viewers):
+    ed.show_sheet(PETER, DEMO)                                   # peter's answer is cached first
+    erin = ed.show_sheet(ERIN, DEMO)
+    assert erin["cached"] is False
+    assert erin["sheet"]["placements"][1]["kind"] == "restricted"
+    again = ed.show_sheet(ERIN, DEMO)
+    assert again["cached"] is True and again["sheet"]["placements"][1]["kind"] == "restricted"
+
+
+def test_span_emphasis_text_and_builtin_source(viewers):
+    pl = ed.show_sheet(PETER, DEMO)["sheet"]["placements"]
+    assert (pl[0]["span"], pl[0]["emphasis"], pl[0]["title"]) == ("2", "panel", "Public Collections")
+    assert (pl[1]["span"], pl[1]["emphasis"]) == ("1", "kpi")
+    assert pl[0]["spec"] == "Collections" and pl[0]["source"] == "builtin"
+    assert (pl[2]["kind"], pl[2]["content"], pl[2]["span"]) == ("text", "**Notes** for the sheet", "full")
+    assert pl[2]["source"] is None and pl[2]["runnable"] is False
+
+
+def test_unknown_sheet_is_not_visible_not_empty(viewers):
+    out = ed.show_sheet(ERIN, "no-such-sheet")
+    assert out["state"] == "not_visible" and out["sheet"] is None
+    assert "no Dashboard Sheet named 'no-such-sheet' that erinoverview can see" in out["message"]
+
+
+def test_hidden_sheet_reads_as_not_visible(viewers):
+    viewers[ERIN_TOKEN].hidden.add(viewers[ERIN_TOKEN].by_qn(f"Dashboard::{DEMO}"))
+    assert ed.show_sheet(ERIN, DEMO)["state"] == "not_visible"
+    assert ed.show_sheet(PETER, DEMO)["state"] == "ok"
+
+
+def test_show_read_failure_says_could_not_read(viewers, monkeypatch):
+    def boom(*a, **k):
+        raise ConnectionError("platform down")
+    monkeypatch.setattr("pyegeria.view.dashboard_resolver.resolve_dashboard_sheet", boom)
+    out = ed.show_sheet(ERIN, DEMO)
+    assert out["state"] == "read_failed" and "Could not read Dashboard Sheet" in out["message"]
+
+
+def test_egeria_and_user_sources(viewers):
+    """A placement whose spec is held in Egeria shows "egeria"; one EA registered shows "user"."""
+    from pyegeria.view.base_report_formats import get_report_registry
+    from advisor.report_spec_parser import register_report_spec
+    _ss = importlib.util.spec_from_file_location("ea_spec_sync_tests", _HERE / "test_egeria_spec_sync.py")
+    spec_tests = importlib.util.module_from_spec(_ss)
+    _ss.loader.exec_module(spec_tests)
+    SpecEgeria, _spec_el = spec_tests.FakeEgeria, spec_tests._spec_el
+    held = "EA Dashboard Held Spec"
+    ess._reset_for_tests()
+    from pyegeria.view import egeria_spec_cache
+    egeria_spec_cache._invalidate_tier()
+    ess.sync_now(client_factory=lambda: SpecEgeria(members=[_spec_el(held, "e0000000-0000-0000-0000-00000000000e")]))
+    register_report_spec("ea-dashboard-user-spec", get_report_registry()["Collections"].model_copy())
+    try:
+        peter = viewers[PETER_TOKEN]
+        peter.entities[peter.guids["pub"]]["props"]["additionalProperties"]["reportSpec"] = held
+        peter.entities[peter.guids["peter"]]["props"]["additionalProperties"]["reportSpec"] = "ea-dashboard-user-spec"
+        pl = ed.show_sheet(PETER, DEMO, refresh=True)["sheet"]["placements"]
+        assert (pl[0]["spec"], pl[0]["source"]) == (held, "egeria")
+        assert (pl[1]["spec"], pl[1]["source"]) == ("ea-dashboard-user-spec", "user")
+    finally:
+        from pyegeria.view import base_report_formats as brf
+        brf._RUNTIME_REPORT_FORMATS.pop("ea-dashboard-user-spec", None)
+        getattr(brf, "report_specs", {}).pop("ea-dashboard-user-spec", None)
+        ess._reset_for_tests()
+        egeria_spec_cache._invalidate_tier()
+
+
+# ── run: EA's report execution, as the viewer ──────────────────────────────────
+
+class FakePipeline:
+    def __init__(self):
+        self.calls = []
+
+    def _read_pyegeria_connection(self, egeria_credentials=None):
+        return {"view_server": "fake-view", "platform_url": "https://fake:9443",
+                "user_id": egeria_credentials["user_id"], "user_pwd": "", "token": egeria_credentials["token"]}
+
+    def _execute_report(self, query, report_name, **kw):
+        self.calls.append((report_name, kw))
+        return {"response": f"| ran {report_name} |"}
+
+
+def test_run_report_placement_as_the_viewer(viewers):
+    pipe = FakePipeline()
+    out = ed.run_placement(PETER, DEMO, 2, pipeline=pipe)
+    assert out["state"] == "ok" and out["response"] == "| ran Collections |"
+    name, kw = pipe.calls[0]
+    assert kw["egeria_credentials"] is PETER                      # the viewer's own credentials
+    assert kw["search_string"] == "Coco" and kw["output_type"] == "TABLE"
+
+
+def test_restricted_text_and_absent_placements_never_run(viewers):
+    pipe = FakePipeline()
+    out = ed.run_placement(ERIN, DEMO, 2, pipeline=pipe)
+    assert out["state"] == "refused" and out["restricted"] is True and "not visible to you" in out["message"]
+    assert ed.run_placement(ERIN, DEMO, 3, pipeline=pipe)["state"] == "refused"
+    assert ed.run_placement(ERIN, DEMO, 9, pipeline=pipe)["state"] == "refused"
+    assert ed.run_placement(ERIN, "no-such-sheet", 1, pipeline=pipe)["state"] == "not_visible"
+    assert pipe.calls == []
+
+
+def test_spec_sync_invalidates_resolved_sheets(viewers):
+    ed.show_sheet(ERIN, DEMO)
+    assert ed.show_sheet(ERIN, DEMO)["cached"] is True
+    ess._after_sync()
+    assert ed.show_sheet(ERIN, DEMO)["cached"] is False
+
+
+# ── end to end through the HTTP routes ─────────────────────────────────────────
+
+@pytest.fixture
+def http(viewers, monkeypatch):
+    from fastapi.testclient import TestClient
+    from advisor import auth
+    from advisor.web.app import app
+    monkeypatch.setattr(auth, "_auth_enabled", lambda: True)
+    monkeypatch.setattr("advisor.report_pipeline.ReportPipeline._read_pyegeria_connection",
+                        lambda self, egeria_credentials=None: {
+                            "view_server": "fake-view", "platform_url": "https://fake:9443",
+                            "user_id": egeria_credentials["user_id"], "user_pwd": "",
+                            "token": egeria_credentials["token"]})
+    client = TestClient(app, raise_server_exceptions=False)
+
+    def as_user(user, token):
+        jwt = auth.create_access_token(user_id=user, egeria_token=token)
+        return {"Authorization": f"Bearer {jwt}"}
+    return client, as_user
+
+
+def test_http_list_show_and_run(http, monkeypatch):
+    client, as_user = http
+    erin, peter = as_user("erinoverview", ERIN_TOKEN), as_user("peterprofile", PETER_TOKEN)
+
+    listed = client.get("/api/dashboards", headers=erin)
+    assert listed.status_code == 200 and listed.json()["sheets"][0]["name"] == DEMO
+
+    shown = client.get(f"/api/dashboards/{DEMO}", headers=erin).json()
+    assert [p["kind"] for p in shown["sheet"]["placements"]] == ["report", "restricted", "text"]
+    shown = client.get(f"/api/dashboards/{DEMO}", headers=peter).json()
+    assert [p["kind"] for p in shown["sheet"]["placements"]] == ["report", "report", "text"]
+
+    missing = client.get("/api/dashboards/nope", headers=erin).json()
+    assert missing["state"] == "not_visible"
+
+    pipe = FakePipeline()
+    monkeypatch.setattr("advisor.report_pipeline.get_report_pipeline", lambda: pipe)
+    refused = client.post(f"/api/dashboards/{DEMO}/placements/2/run", headers=erin, json={}).json()
+    assert refused["state"] == "refused" and refused["restricted"] is True
+    ran = client.post(f"/api/dashboards/{DEMO}/placements/2/run", headers=peter, json={}).json()
+    assert ran["state"] == "ok" and pipe.calls[0][1]["egeria_credentials"]["user_id"] == "peterprofile"
+
+
+def test_http_requires_sign_in(http):
+    client, _ = http
+    assert client.get("/api/dashboards").status_code == 401

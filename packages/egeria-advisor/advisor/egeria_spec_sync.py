@@ -226,12 +226,18 @@ def sync_now(*, client_factory: Optional[Callable[[], Any]] = None) -> Dict[str,
 
 
 def _after_sync() -> None:
-    """The registry changed: question search must re-read it."""
+    """The registry changed: question search and resolved dashboard sheets (their spec sources) must
+    re-read it."""
     try:
         from advisor.report_pipeline import _question_index
         _question_index.invalidate()
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"question index not invalidated after sync: {exc}")
+    try:
+        from advisor import egeria_dashboards
+        egeria_dashboards.invalidate()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"dashboard cache not invalidated after sync: {exc}")
 
 
 def start_background_sync(*, backoff: tuple = STARTUP_BACKOFF_S,
