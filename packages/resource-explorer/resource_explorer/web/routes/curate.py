@@ -359,7 +359,8 @@ def _without_contact_fields(row: dict) -> dict:
 @router.get("/feedback")
 def list_all_feedback(
     request: Request,
-    limit: int = 200, entity_type: str = "", category: str = "", source: str = "", status: str = ""
+    limit: int = 200, entity_type: str = "", category: str = "", source: str = "", status: str = "",
+    cause: str = "",
 ) -> dict:
     """Every feedback item in one place, for Admin — from BOTH stores.
 
@@ -396,8 +397,9 @@ def list_all_feedback(
     fact worth stating plainly.
     """
     _require_admin(request)
+    from trellis_feedback import CAUSE_CHAIN, CAUSES, STATUSES, UNDIAGNOSED
+
     from resource_explorer.feedback_store import VALID_TRIAGE_STATUSES
-    from trellis_feedback import STATUSES
 
     # `status`: a triage status (trellis-feedback's six). Page and answer items have one; Curate's
     # resource_feedback rows have none yet (§6 step 3 part D), so a status filter leaves them out rather than
@@ -406,8 +408,14 @@ def list_all_feedback(
     if status and status not in VALID_TRIAGE_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {list(STATUSES)}, got {status!r}")
 
+    # `cause`: a diagnosis (closed-loop design §2), or "undiagnosed". Only rated answers carry one, so a cause
+    # filter shows answers alone.
+    cause = (cause or "").strip()
+    if cause and cause not in CAUSES and cause != UNDIAGNOSED:
+        raise HTTPException(status_code=400, detail=f"cause must be one of {[*CAUSES, UNDIAGNOSED]}, got {cause!r}")
+
     reg = _registry()
-    resource_rows = [] if status else reg.list_all_resource_feedback(
+    resource_rows = [] if (status or cause) else reg.list_all_resource_feedback(
         limit=limit, entity_type=entity_type, category=category)
     resource_counts = reg.count_all_resource_feedback()
 
@@ -415,14 +423,14 @@ def list_all_feedback(
     # entity_type has no meaning for page-level feedback — it was never
     # recorded against a resource at all. A filter on it must exclude every
     # page row, not silently ignore the filter and show them regardless.
-    page_rows = [] if entity_type else page_store.list(
+    page_rows = [] if (entity_type or cause) else page_store.list(
         triage_status=status or None, category=category or None, limit=limit)
     page_stats = page_store.stats()
     # Ratings of answers (chat votes and Questions-checklist verdicts, kind `answer` in trellis-feedback). They
     # have a resource type when one was in scope, so that filter applies; they have no category, so a category
     # filter excludes them, as entity_type excludes page rows.
     answer_rows = page_store.list(triage_status=status or None, category=category or None, limit=limit,
-                                  kind="answer")
+                                  kind="answer", cause=cause or None)
     if entity_type:
         answer_rows = [r for r in answer_rows if r.get("entity_type") == entity_type]
 
@@ -445,9 +453,11 @@ def list_all_feedback(
             "page": {"total": page_stats["total"]},
             "answer": {"total": page_store.count(kind="answer")},
         },
-        "filtered": bool(entity_type or category or source or status),
+        "filtered": bool(entity_type or category or source or status or cause),
         #: The triage vocabulary, in order, so the page's status control is not a second copy of it.
         "statuses": list(STATUSES),
+        #: The cause vocabulary (closed-loop design §2.1), in order; `cause_chain` is the precedence chain.
+        "causes": list(CAUSES), "cause_chain": list(CAUSE_CHAIN), "undiagnosed": UNDIAGNOSED,
     }
 
 
