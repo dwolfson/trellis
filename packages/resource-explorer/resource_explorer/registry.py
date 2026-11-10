@@ -11,7 +11,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
@@ -5246,6 +5246,7 @@ class ProjectRegistry:
         self._migrate_open_data_tables()
         self._migrate_investigation_visibility()
         self._migrate_file_systems_key_tail()
+        self._migrate_feedback_routes_table()
 
     #: Artifacts slice 1 (DESIGN-ARTIFACTS-VIEW-AND-DOC-LINKS.md §3; owner's go 2026-10-15; DDL record
     #: docs/ddl-artifact-columns.md). file_role: core | test | generated | vendored | docs from
@@ -5400,6 +5401,97 @@ class ProjectRegistry:
             conn.execute(
                 f"UPDATE investigations SET visibility = ? WHERE project_classification IN ({placeholders})",
                 (self.VISIBILITY_CREATOR_ONLY, *self._VISIBILITY_BACKFILL_KINDS))
+
+    #: Closed-loop step 2 (BRIEF-CLOSED-LOOP-STEP2-ROUTING.md §5; DDL record docs/ddl-feedback-routes.md): where each
+    #: diagnosis of a rated answer was routed. One row per (item, cause); the key is what makes Save idempotent.
+    FEEDBACK_ROUTES_DDL = (
+        "CREATE TABLE IF NOT EXISTS feedback_routes ("
+        " item_id TEXT NOT NULL,"
+        " cause TEXT NOT NULL,"
+        " consumer TEXT NOT NULL DEFAULT '',"
+        " target TEXT NOT NULL DEFAULT '',"
+        " reason TEXT NOT NULL DEFAULT '',"
+        " routed_at TEXT NOT NULL,"
+        " routed_by TEXT NOT NULL DEFAULT '',"
+        " PRIMARY KEY (item_id, cause))"
+    )
+
+    def _migrate_feedback_routes_table(self) -> None:
+        """Closed-loop step 2a (docs/ddl-feedback-routes.md): one new table, `CREATE TABLE IF NOT EXISTS` in its own
+        short transaction. Nothing existing is altered."""
+        with self._conn() as conn:
+            conn.execute(self.FEEDBACK_ROUTES_DDL)
+
+    def claim_feedback_route(self, item_id: str, cause: str, routed_by: str = "") -> bool:
+        """Claim the route of one diagnosis before routing it. True when this call made the row; False when the
+        (item, cause) was routed already, by an earlier Save or by a Save running at the same moment. The insert
+        is the lock: a second Save cannot pass this point for the same pair."""
+        # Microseconds, so routes saved within one second still list in the order they were made.
+        now = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._conn() as conn:
+            made = conn.execute(
+                "INSERT INTO feedback_routes (item_id, cause, consumer, routed_at, routed_by) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (item_id, cause) DO NOTHING",
+                (item_id, cause, "pending", now, routed_by)).rowcount
+        return bool(made)
+
+    def finish_feedback_route(self, item_id: str, cause: str, consumer: str, target: str = "",
+                              reason: str = "") -> None:
+        """Record what a claimed route did: the consumer (`gap`, `rfa`, `automate`, `none`), its target id, and,
+        when nothing was routed, why."""
+        with self._conn() as conn:
+            conn.execute("UPDATE feedback_routes SET consumer = ?, target = ?, reason = ? "
+                         "WHERE item_id = ? AND cause = ?", (consumer, target, reason, item_id, cause))
+
+    def release_feedback_route(self, item_id: str, cause: str) -> None:
+        """Drop a claimed route that failed for a passing reason (a registry error), so the next Save tries again.
+        A route that could not be made for a lasting reason is finished as `none` instead, and stays."""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM feedback_routes WHERE item_id = ? AND cause = ? AND consumer = 'pending'",
+                         (item_id, cause))
+
+    def drop_feedback_route(self, item_id: str, cause: str) -> int:
+        """Remove one finished route so it can be routed again: an admin's explicit re-route (the architect's P2 on
+        6c050de2). Never called by a Save, which leaves a finished route standing."""
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM feedback_routes WHERE item_id = ? AND cause = ? AND consumer <> 'pending'",
+                                (item_id, cause)).rowcount or 0
+
+    def get_feedback_route(self, item_id: str, cause: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT item_id, cause, consumer, target, reason, routed_at, routed_by "
+                               "FROM feedback_routes WHERE item_id = ? AND cause = ?", (item_id, cause)).fetchone()
+        return dict(row) if row else None
+
+    def list_feedback_routes(self, item_ids: list[str]) -> dict[str, list[dict]]:
+        """Every route of each item, oldest first: {item_id: [route, ...]}. Items with none are absent."""
+        ids = [i for i in dict.fromkeys(item_ids) if i]
+        if not ids:
+            return {}
+        out: dict[str, list[dict]] = {}
+        with self._conn() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                rows = conn.execute(
+                    "SELECT item_id, cause, consumer, target, reason, routed_at, routed_by FROM feedback_routes "
+                    f"WHERE item_id IN ({', '.join('?' * len(chunk))}) ORDER BY routed_at, cause", tuple(chunk)
+                ).fetchall()
+                for r in rows:
+                    out.setdefault(r["item_id"], []).append(dict(r))
+        return out
+
+    def delete_feedback_routes(self, item_id: str) -> int:
+        """Forget every route of one item, for when the item itself is deleted (the architect's A2). The gaps and
+        RFAs a route made are left: they are work in their own right, and they say "feedback item deleted"."""
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM feedback_routes WHERE item_id = ?", (item_id,)).rowcount or 0
+
+    def set_gap_evidence(self, gap_id: int, evidence: dict) -> None:
+        """Replace one gap's evidence WITHOUT counting a sighting. `upsert_gap` bumps `last_seen_at`, which is the
+        count a curator acts on; linking a gap to another one is not a new sighting of it."""
+        with self._conn() as conn:
+            conn.execute("UPDATE analysis_gaps SET evidence_json = ? WHERE id = ?",
+                         (json.dumps(evidence) if evidence else None, gap_id))
 
     def _migrate_file_systems_key_tail(self) -> None:
         """W42 (docs/ddl-file-systems-key-tail.md): `file_systems.access_key_id` keeps only the key id's last four
