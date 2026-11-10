@@ -131,6 +131,12 @@ class ReportSpecAgent:
 
         # A signed-in caller carries an Egeria bearer token and no password
         # (since 2026-09-04); only the service-account fallback has a password.
+        # Neither (expired/token-less session, anonymous): refuse with "sign in";
+        # exec_report_spec would otherwise mint on pyegeria's configured password
+        # under this user id.
+        from advisor.egeria_signin import SIGN_IN_TO_RUN_REPORTS, lacks_credential
+        if conn and lacks_credential(conn.get("token"), conn.get("user_pwd")):
+            return self._error_result(doc_id, SIGN_IN_TO_RUN_REPORTS)
         if not _conn_is_complete(conn):
             return self._error_result(
                 doc_id,

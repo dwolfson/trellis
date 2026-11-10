@@ -386,6 +386,13 @@ async def discover_draft_schema_internal(
         logger.error(f"Failed to read Egeria connection info: {exc}")
         return []
 
+    from advisor.egeria_signin import SIGN_IN_TO_RUN_REPORTS, lacks_credential
+    if conn and lacks_credential(conn.get("token"), conn.get("user_pwd")):
+        # Never reach apply_token with neither: it would mint on pyegeria's
+        # configured password under this user id.
+        logger.info(f"Schema discovery refused for {conn.get('user_id')!r}: {SIGN_IN_TO_RUN_REPORTS}")
+        raise HTTPException(status_code=401, detail=SIGN_IN_TO_RUN_REPORTS)
+
     from advisor.report_pipeline import _conn_is_complete
     if not _conn_is_complete(conn):
         logger.warning("Egeria connection is not fully configured; skipping schema discovery")
