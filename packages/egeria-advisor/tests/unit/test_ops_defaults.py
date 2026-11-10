@@ -127,6 +127,40 @@ def test_settings_construction_stops_on_a_refused_root(monkeypatch, repo):
         AdvisorSettings()
 
 
+def test_explicit_cache_dir_inside_a_checkout_is_refused(monkeypatch, repo, tmp_path):
+    monkeypatch.setenv("ADVISOR_DATA_PATH", str(tmp_path / "advisor-data"))
+    monkeypatch.setenv("ADVISOR_CACHE_DIR", str(repo / "data" / "cache"))
+    with pytest.raises(AdvisorDataRootError) as exc:
+        AdvisorSettings()
+    assert str(exc.value).startswith(
+        f"ADVISOR_CACHE_DIR ({repo / 'data' / 'cache'}) is inside a git checkout; set it to a "
+        "directory outside any repository, e.g. ~/egeria-advisor-data/cache")
+
+
+def test_relative_cache_dir_from_inside_a_checkout_is_refused(monkeypatch, repo, tmp_path):
+    # laz's .env shape: ADVISOR_CACHE_DIR=./data/cache, run from the package dir.
+    (repo / "pkg").mkdir()
+    monkeypatch.chdir(repo / "pkg")
+    monkeypatch.setenv("ADVISOR_DATA_PATH", str(tmp_path / "advisor-data"))
+    monkeypatch.setenv("ADVISOR_CACHE_DIR", "./data/cache")
+    with pytest.raises(AdvisorDataRootError):
+        AdvisorSettings()
+
+
+def test_explicit_cache_dir_outside_any_checkout_is_accepted(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADVISOR_DATA_PATH", str(tmp_path / "advisor-data"))
+    monkeypatch.setenv("ADVISOR_CACHE_DIR", str(tmp_path / "cache"))
+    assert AdvisorSettings().advisor_cache_dir == tmp_path / "cache"
+
+
+def test_cache_dir_tilde_is_expanded(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADVISOR_DATA_PATH", str(tmp_path / "advisor-data"))
+    monkeypatch.setenv("ADVISOR_CACHE_DIR", "~/egeria-advisor-data/cache")
+    if enclosing_git_checkout(Path.home()) is not None:
+        pytest.skip("this machine's home directory is itself a git checkout")
+    assert AdvisorSettings().advisor_cache_dir == Path.home() / "egeria-advisor-data" / "cache"
+
+
 def test_module_settings_reraises_the_refusal_instead_of_defaulting():
     # The module-level `settings = AdvisorSettings()` falls back to defaults on
     # other errors; the refusal must not be swallowed that way.

@@ -432,8 +432,10 @@ These defaults changed on 2026-11-10 (EA Phase 1, Q4).
   it resolves inside a git checkout, with `ADVISOR_DATA_PATH (<path>) is inside a git checkout;
   set it to a directory outside any repository, e.g. ~/egeria-advisor-data`. To move an existing
   install: stop Advisor, `mv <old>/data ~/egeria-advisor-data` (or wherever you choose), set
-  `ADVISOR_DATA_PATH` to it, and start again. `ADVISOR_CACHE_DIR` is not checked; if it is
-  relative (`./data/cache`), point it outside the checkout too.
+  `ADVISOR_DATA_PATH` to it, and start again. An explicit `ADVISOR_CACHE_DIR` gets the same
+  refusal: a relative `./data/cache` run from the package directory is inside the checkout, so
+  point it outside too (e.g. `~/egeria-advisor-data/cache`), or unset it to use
+  `<data root>/cache`.
 - **Offline model loading.** When the embedding model (`embeddings.model` in `advisor.yaml`) is
   already in the Hugging Face cache (`HF_HUB_CACHE`, else `$HF_HOME/hub`, else
   `~/.cache/huggingface/hub`), Advisor sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`

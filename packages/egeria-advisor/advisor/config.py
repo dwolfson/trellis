@@ -16,7 +16,7 @@ load_dotenv()
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 from loguru import logger
@@ -87,14 +87,24 @@ def resolve_advisor_data_root() -> Path:
     """
     env_val = os.environ.get("ADVISOR_DATA_PATH", "").strip()
     root = Path(env_val).expanduser() if env_val else DEFAULT_ADVISOR_DATA_ROOT
-    checkout = enclosing_git_checkout(root)
+    return refuse_inside_git_checkout(root, "ADVISOR_DATA_PATH", "~/egeria-advisor-data")
+
+
+def refuse_inside_git_checkout(path: Path, env_var: str, example: str) -> Path:
+    """Return ``path``, or raise AdvisorDataRootError if it is inside a git checkout.
+
+    Used for every directory Advisor writes runtime state to: the data root
+    (ADVISOR_DATA_PATH) and the cache (ADVISOR_CACHE_DIR, which may be set on
+    its own, e.g. a relative ``./data/cache``).
+    """
+    checkout = enclosing_git_checkout(path)
     if checkout is not None:
         raise AdvisorDataRootError(
-            f"ADVISOR_DATA_PATH ({root}) is inside a git checkout; set it to a directory "
-            f"outside any repository, e.g. ~/egeria-advisor-data "
+            f"{env_var} ({path}) is inside a git checkout; set it to a directory "
+            f"outside any repository, e.g. {example} "
             f"(the checkout is {checkout})."
         )
-    return root
+    return path
 
 
 def ensure_writable_dir(path: Path, env_var: str) -> Path:
@@ -511,6 +521,16 @@ class AdvisorSettings(BaseSettings):
         default_factory=lambda: resolve_advisor_data_root() / "cache",
         alias="ADVISOR_CACHE_DIR"
     )
+
+    @field_validator("advisor_cache_dir")
+    @classmethod
+    def _cache_dir_outside_git(cls, value: Path) -> Path:
+        # An explicit ADVISOR_CACHE_DIR gets the same refusal as the data root
+        # (the default is under the data root, which is already checked).
+        # AdvisorDataRootError is a RuntimeError, so pydantic lets it through
+        # unwrapped and the module-level settings re-raise it.
+        return refuse_inside_git_checkout(Path(value).expanduser(), "ADVISOR_CACHE_DIR",
+                                          "~/egeria-advisor-data/cache")
     # Read by resolve_log_level() (the web process's loguru sink and uvicorn's
     # level). Was defined here but never read until 2026-11-10.
     advisor_log_level: str = Field(default="INFO", alias="ADVISOR_LOG_LEVEL")
@@ -785,6 +805,7 @@ __all__ = [
     "DEFAULT_ADVISOR_DATA_ROOT",
     "AdvisorDataRootError",
     "enclosing_git_checkout",
+    "refuse_inside_git_checkout",
     "resolve_log_level",
     "uvicorn_log_level",
     "configure_logging",
