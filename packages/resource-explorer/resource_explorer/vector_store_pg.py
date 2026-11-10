@@ -39,6 +39,59 @@ from trellis_vectorstore.pg import PgVectorStore as _SharedPgVectorStore
 from resource_explorer.config import get_config
 
 
+def _chunk_file(metadata: dict | None) -> str:
+    """The file a chunk came from, for its id: `file_path` (code, docs, API specs, notebooks, a website's page URL,
+    a file system's narrative), else `source_url`, else "" (release notes, which are per GitHub release)."""
+    m = metadata or {}
+    return str(m.get("file_path") or m.get("source_url") or "")
+
+
+def chunk_ids(collection: str, texts: list[str], metadatas: list[dict]) -> list[str]:
+    """Deterministic chunk ids, minted per FILE (BRIEF-REINDEX-FROM-SCRATCH.md, R0, the project owner's Q8).
+
+    `sha256("<collection>:<file>:<index in file>:<text>")[:32]`. Until R0 the index was the chunk's position in the
+    insert batch: a first index numbered a whole collection from 0 and a refresh numbered only its changed files from
+    0, so one added chunk shifted every later id, and two refreshes could give different files' chunks the same id
+    (identical text at the same batch index), which `ON CONFLICT (id)` resolved by overwriting one with the other.
+    Per file, an unchanged file keeps its ids through a refresh or a rebuild, and two files can never share one.
+
+    Every caller inserts a file's chunks in one call (pipeline, website, narrative docs, add-docs), so the index in
+    file is complete. Rows written before R0 keep their old ids until their file is next re-inserted; `chunk_votes`
+    carries a vote across that change. Not Python's hash(): it is randomized per process.
+    """
+    import hashlib
+    seen: dict[str, int] = {}
+    ids: list[str] = []
+    for text, meta in zip(texts, metadatas):
+        f = _chunk_file(meta)
+        n = seen.get(f, 0)
+        seen[f] = n + 1
+        ids.append(hashlib.sha256(f"{collection}:{f}:{n}:{text}".encode()).hexdigest()[:32])
+    return ids
+
+
+#: While a vote carrier is recording (`record_inserts`), every inserted chunk's (collection, id, text, file) is appended
+#: here, whichever MultiCollectionStore instance inserted it. A list of recorders, so nested carriers each see all.
+_INSERT_RECORDERS: list[list[tuple[str, str, str, str]]] = []
+_RECORDERS_LOCK = threading.Lock()
+
+
+class record_inserts:  # a context manager, named for what it does
+    """Record what is inserted while open: `with record_inserts() as rows:` gives a list of
+    (collection, id, text, file). Used by `chunk_votes` to find where a voted chunk went after its file was
+    re-inserted, by matching in memory rather than by searching the table."""
+
+    def __enter__(self) -> list[tuple[str, str, str, str]]:
+        self._rows: list[tuple[str, str, str, str]] = []
+        with _RECORDERS_LOCK:
+            _INSERT_RECORDERS.append(self._rows)
+        return self._rows
+
+    def __exit__(self, *exc) -> None:
+        with _RECORDERS_LOCK:
+            _INSERT_RECORDERS.remove(self._rows)
+
+
 class _ReEmbeddingProvider:
     """Satisfies trellis_vectorstore.EmbeddingProvider by wrapping RE's
     existing module-level embed_texts/embed_one functions. The import stays
@@ -212,16 +265,25 @@ class MultiCollectionStore:
             return {}
 
     def insert(self, collection: str, texts: list[str], metadatas: list[dict]) -> int:
-        # Deterministic ids (sha256 of collection+index+text), NOT Python's
-        # built-in hash() — that's randomized per-process (PYTHONHASHSEED),
-        # so re-running ingestion would mint a fresh id for the same chunk
-        # every time and defeat the ON CONFLICT (id) upsert entirely.
-        import hashlib
-        ids = [
-            hashlib.sha256(f"{collection}:{i}:{t}".encode()).hexdigest()[:32]
-            for i, t in enumerate(texts)
-        ]
-        return self._store.insert_data(collection, texts, ids=ids, metadata=metadatas)
+        # Deterministic ids, minted per file (`chunk_ids`).
+        ids = chunk_ids(collection, texts, metadatas)
+        count = self._store.insert_data(collection, texts, ids=ids, metadata=metadatas)
+        if _INSERT_RECORDERS:
+            rows = [(collection, i, t, _chunk_file(m)) for i, t, m in zip(ids, texts, metadatas)]
+            with _RECORDERS_LOCK:
+                for recorder in _INSERT_RECORDERS:
+                    recorder.extend(rows)
+        return count
+
+    def rows_by_ids(self, collection: str, ids: list[str]) -> list[dict]:
+        """The stored rows (id, text, metadata) for these ids; ids not in the collection are absent. One query per id:
+        it is used for the handful of voted chunks only."""
+        out: list[dict] = []
+        for chunk_id in ids:
+            if not re.fullmatch(r"[0-9a-f]{1,64}", chunk_id or ""):
+                continue                         # ids are hex; anything else cannot be one, and is not queried
+            out.extend(self._store.query_by_filter(collection, f'id == "{chunk_id}"', limit=1))
+        return out
 
     def drop_collection(self, collection: str) -> None:
         self._store.delete_collection(collection)

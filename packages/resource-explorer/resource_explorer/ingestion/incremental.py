@@ -6,7 +6,8 @@ from pathlib import PurePath
 
 from resource_explorer.github.client import GitHubClient
 from resource_explorer.ingestion.pipeline import IngestionPipeline
-from resource_explorer.vector_store_pg import MultiCollectionStore
+from resource_explorer import chunk_votes
+from resource_explorer.vector_store_pg import MultiCollectionStore, record_inserts
 from resource_explorer.index_state import has_own_index
 from resource_explorer.registry import Project, ProjectRegistry, ProjectStatus
 
@@ -155,28 +156,36 @@ class IncrementalIndexer:
                 # relative_changed can match — both fall back to the
                 # original collection-level drop+full-rebuild.
                 use_full_rebuild = name == "release_notes" or bool(extra)
-
+                # Chat votes on the chunks about to be replaced are read first and carried to the ids the
+                # re-insert gives them (chunk_votes, R0): a moved chunk keeps its vote instead of losing it.
+                voted = chunk_votes.snapshot(store, collection_name,
+                                             None if use_full_rebuild else relative_changed)
+                with record_inserts() as inserted:
+                    if use_full_rebuild:
+                        store.drop_collection(collection_name)
+                        count = pipeline._ingest_collection(
+                            repo, project.slug, collection_name, ctype,
+                            local_root if name != "release_notes" else None,
+                            extra_paths=extra,
+                        )
+                    else:
+                        # Real row-level delete-then-reinsert: only the changed
+                        # files' chunks are touched, everything else in the
+                        # collection is left alone (migration plan decision D4).
+                        deleted = store.delete_by_metadata(collection_name, "file_path", list(relative_changed))
+                        count = pipeline._ingest_collection(
+                            repo, project.slug, collection_name, ctype, local_root,
+                            changed_files=relative_changed,
+                        )
+                carried = chunk_votes.carry(voted, inserted)
+                votes = f"; {carried.words()}" if voted else ""
                 if use_full_rebuild:
-                    store.drop_collection(collection_name)
-                    count = pipeline._ingest_collection(
-                        repo, project.slug, collection_name, ctype,
-                        local_root if name != "release_notes" else None,
-                        extra_paths=extra,
-                    )
                     if count > 0:
                         surviving.append(collection_name)
-                        print(f"  {collection_name}: {count} chunks (full rebuild)")
+                        print(f"  {collection_name}: {count} chunks (full rebuild){votes}")
                 else:
-                    # Real row-level delete-then-reinsert: only the changed
-                    # files' chunks are touched, everything else in the
-                    # collection is left alone (migration plan decision D4).
-                    deleted = store.delete_by_metadata(collection_name, "file_path", list(relative_changed))
-                    count = pipeline._ingest_collection(
-                        repo, project.slug, collection_name, ctype, local_root,
-                        changed_files=relative_changed,
-                    )
                     surviving.append(collection_name)
-                    print(f"  {collection_name}: -{deleted} +{count} chunks (partial update)")
+                    print(f"  {collection_name}: -{deleted} +{count} chunks (partial update){votes}")
 
             if local_root is not None:
                 file_count, loc = pipeline._count_repo_stats(local_root)
