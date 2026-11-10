@@ -136,7 +136,8 @@ function diagnosisHtml(d) {
     || (() => {
       // Only the causes that were judged may be said to be absent: "signals no stale section" is false comfort when
       // no section declared an as-of date to judge by.
-      const skipped = new Set((d.not_judged || []).map((n) => n.cause));
+      // A cause judged for some sections only (`partial`) is still listed; its Not judged line names the rest.
+      const skipped = new Set((d.not_judged || []).filter((n) => !n.partial).map((n) => n.cause));
       const judged = ['catalog_gap', 'missing_evidence', 'stale', 'over_compressed'].filter((c) => !skipped.has(c));
       return `<div>Nothing suggested: the manifest signals none of ${esc(judged.map(causeWord).join(', '))}. The cause is a reading of the answer.</div>`;
     })();
