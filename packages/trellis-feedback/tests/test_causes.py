@@ -103,6 +103,39 @@ class TestDiagnosis:
             store.triage(item.id, status, cause=cause, secondary_cause=secondary)
         assert _events(store) == 0
 
+    def test_a_status_only_change_must_agree_with_the_inherited_cause(self, store):
+        # 0.3 read-back P2, case 1: a pipeline cause cannot stand under a not_an_issue status.
+        item, _ = store.submit(answer())
+        store.triage(item.id, "triaged", cause="analysis_defect")
+        with pytest.raises(FeedbackError, match="re-diagnose"):
+            store.triage(item.id, "not_an_issue")
+        assert store.state(item.id).status == "triaged"
+        store.triage(item.id, "not_an_issue", cause="not_an_issue")      # re-diagnosing with it is fine
+        assert store.cause_counts()["analysis_defect"] == 0
+
+    def test_an_item_closed_as_not_an_issue_cannot_be_reopened_without_a_rediagnosis(self, store):
+        # 0.3 read-back P2, case 2.
+        item, _ = store.submit(answer())
+        store.triage(item.id, "not_an_issue", cause="not_an_issue")
+        with pytest.raises(FeedbackError, match="re-diagnose"):
+            store.triage(item.id, "actioned")
+        store.triage(item.id, "actioned", cause="reasoning")
+        assert (store.state(item.id).status, store.state(item.id).cause) == ("actioned", "reasoning")
+
+    def test_a_diagnosis_needs_a_status_other_than_new(self, store):
+        item, _ = store.submit(answer())
+        with pytest.raises(FeedbackError, match="other than 'new'"):
+            store.triage(item.id, "new", cause="stale")
+        store.triage(item.id, "triaged", cause="stale")
+        store.triage(item.id, "new", note="reopened")                      # reopening keeps the diagnosis
+        assert store.state(item.id).cause == "stale"
+
+    def test_a_helpful_vote_can_be_diagnosed(self, store):
+        # Deliberate: a thumbs-up on a wrong answer is still a wrong answer.
+        item, _ = store.submit(answer(vote=1))
+        store.triage(item.id, "triaged", cause="analysis_defect")
+        assert store.cause_counts(vote=1)["analysis_defect"] == 1
+
     def test_not_an_issue_closes_the_item(self, store):
         item, _ = store.submit(answer())
         store.triage(item.id, "not_an_issue", cause="not_an_issue")

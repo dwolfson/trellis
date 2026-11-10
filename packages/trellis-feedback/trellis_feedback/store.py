@@ -490,12 +490,27 @@ class FeedbackStore:
             raise FeedbackError(f"status must be one of {list(STATUSES)}, got {status!r}")
         cause, secondary_cause = (cause or "").strip(), (secondary_cause or "").strip()
         check_cause(status, cause, secondary_cause)
+        if cause and status == "new":
+            raise FeedbackError("a diagnosis is a decision about the item; record it with a status other than 'new'")
         self._check_source(source)
         if cause and source != ITEM_SOURCE:
             raise FeedbackError(f"a cause diagnoses an answer item; {source!r} rows take a status only")
         ref_id = str(ref_id or "").strip()
         if not ref_id:
             raise FeedbackError("ref_id is required")
+        if not cause and source == ITEM_SOURCE:
+            # A status-only change keeps the current diagnosis, so it must agree with it too: marking an item
+            # diagnosed `analysis_defect` as `not_an_issue` would otherwise leave both standing, and the count by
+            # cause would still charge the analysis (0.3 read-back P2). Read outside the write: a re-diagnosis
+            # racing this change can still interleave, as two status changes can.
+            held = self.state(ref_id)
+            if held.cause:
+                try:
+                    check_cause(status, held.cause, held.secondary_cause)
+                except FeedbackError as exc:
+                    raise FeedbackError(
+                        f"status {status!r} contradicts the item's current cause {held.cause!r}: re-diagnose it "
+                        f"with this change ({exc})") from None
         row = {"app": self.app, "source": source, "ref_id": ref_id, "status": status, "note": note or "",
                "actor": actor or "", "created_at": _now(), "cause": cause, "secondary_cause": secondary_cause}
         with self.engine.begin() as conn:
