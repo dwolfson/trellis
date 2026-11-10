@@ -363,6 +363,10 @@ pytest tests/ -v
 pytest --cov=advisor --cov-report=html
 ```
 
+**pyegeria floor bumps.** Every pyegeria floor bump runs `tests/unit/test_pyegeria_contract.py`.
+A new failure there means pyegeria's API moved under EA: fix it, or record it as a strict `xfail`
+with a phase reference.
+
 ## Project Structure
 
 ```
