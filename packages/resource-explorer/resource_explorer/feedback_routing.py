@@ -95,8 +95,9 @@ def private_context(item: dict, registry: Any) -> str:
 
     * the answer's resource is in a creator-only investigation (`registry.private_owner_for_entity`, the same read
       born-private publishing uses, which sees investigations the caller cannot);
-    * the resource's Egeria element is in a zone whose security control restricts READ (`_zone_restriction`; required
-      in 2b by the architect's read-back, since RFAs reach resources that zones do restrict). One read per Save.
+    * the resource's Egeria element is in zones none of which grants READ to `allUsers` (`_zone_restriction`;
+      required in 2b by the architect's read-back, since RFAs reach resources that zones do restrict; made strict
+      2026-11-10 when Egeria b49c5ed0's zone rule was found to make an uncontrolled zone private). One read per Save.
 
     An answer with no resource in scope has no private context to inherit.
     """
@@ -126,9 +127,21 @@ def _resource_guid(entity_type: str, slug: str, registry: Any) -> str:
 def _zone_restriction(entity_type: str, slug: str, registry: Any) -> str:
     """Why the resource's Egeria zones restrict who may read it, or "" when they do not.
 
-    Restricted: any zone of the element has a security control that gives READ its own list
-    (`zone_access.security_list_for`). A resource never published to Egeria has no zones there, so nothing restricts
-    it. Fails CLOSED: an element or a control that cannot be read counts as restricted.
+    Public ONLY when the element has no zones, or one of its zones' READ list (else DEFAULT, as
+    `zone_access.security_list_for` reads it) holds `allUsers`. Anything else is restricted (owner's decision D2,
+    2026-11-10, BRIEF-ZONE-RULE-NO-CONTROL-IS-PRIVATE):
+
+    * a zone with no security access control, or no READ and no DEFAULT list: Egeria b49c5ed0 lets no one but the
+      user it is named after read it ("A zone with no security access control ... grants access to no-one",
+      OpenMetadataAccessSecurityConnector.validateZoneAccess :1156-1161); a personal (userId) zone is one of these;
+    * a zone readable only through roles, groups or an account type: deliberately counted as restricted (the safe
+      side), since who reads the RFA is not known here.
+
+    Not gated by `RE_ZONE_RULE`: on an older platform this is merely stricter than it needs to be. A resource never
+    published to Egeria has no zones there, so nothing restricts it. Fails CLOSED: an element or a control that
+    cannot be read counts as restricted. The reason never names a zone called after the element's owner or a
+    maintainer, nor a zone with no control at all that is not RE's own (`zone_access.withheld_zone_names`: typically a
+    personal zone), since it would tell the RFA's readers whose resource it is.
     """
     try:
         guid = _resource_guid(entity_type, slug, registry)
@@ -140,12 +153,26 @@ def _zone_restriction(entity_type: str, slug: str, registry: Any) -> str:
 
     try:
         reader = zone_access.EgeriaAccessReader(cache_elements=True)
-        zones = list(reader.element(guid).zones or [])
-        restricted = [z for z in zones
-                      if zone_access.security_list_for(reader.control(z), zone_access.READ_OPERATION) is not None]
+        facts = reader.element(guid)
+        zones = [z for z in (facts.zones or []) if z]
+        if not zones:
+            return ""
+        no_control = []
+        for zone in zones:
+            control = reader.control(zone)
+            readers = zone_access.security_list_for(control, zone_access.READ_OPERATION)
+            if not isinstance(control, dict):
+                no_control.append(zone)
+            elif readers is not None and zone_access.ALL_USERS_GROUP in readers:
+                return ""                     # this zone lets every active user read it: one zone is enough
     except Exception as exc:  # noqa: BLE001 -- fail closed: AccessUnreadable or anything else, could not tell
         return f"the resource's Egeria zones could not be read ({type(exc).__name__})"
-    return f"the resource is in a restricted zone ({', '.join(restricted)})" if restricted else ""
+    withheld = set(zone_access.withheld_zone_names(zones, no_control, facts.owners, facts.maintainers))
+    shown = [z for z in zones if z not in withheld]
+    if not shown:
+        return "the resource is in a zone private to its owner"
+    named = ", ".join(shown) + (" and a zone private to its owner" if len(shown) < len(zones) else "")
+    return f"the resource is in a restricted zone ({named})"
 
 
 def opaque_question_key(question: str, question_id: str = "") -> str:
