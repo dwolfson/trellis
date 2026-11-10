@@ -194,6 +194,14 @@ async def _startup():
 
     threading.Thread(target=_warm, daemon=True).start()
 
+    # Report specs held in Egeria: sync EA's consumer folder into the EGERIA tier in the
+    # background, retrying while Egeria starts. Never blocks startup (advisor/egeria_spec_sync.py).
+    try:
+        from advisor.egeria_spec_sync import start_background_sync
+        start_background_sync()
+    except Exception as exc:
+        logger.warning(f"Report spec sync from Egeria not started: {exc}")
+
 
 @app.on_event("shutdown")
 async def _shutdown():
