@@ -5450,6 +5450,13 @@ class ProjectRegistry:
             conn.execute("DELETE FROM feedback_routes WHERE item_id = ? AND cause = ? AND consumer = 'pending'",
                          (item_id, cause))
 
+    def drop_feedback_route(self, item_id: str, cause: str) -> int:
+        """Remove one finished route so it can be routed again: an admin's explicit re-route (the architect's P2 on
+        6c050de2). Never called by a Save, which leaves a finished route standing."""
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM feedback_routes WHERE item_id = ? AND cause = ? AND consumer <> 'pending'",
+                                (item_id, cause)).rowcount or 0
+
     def get_feedback_route(self, item_id: str, cause: str) -> dict | None:
         with self._conn() as conn:
             row = conn.execute("SELECT item_id, cause, consumer, target, reason, routed_at, routed_by "

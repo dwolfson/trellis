@@ -320,3 +320,85 @@ class TestRaisingAnRfaForADiagnosedGap:
         gap_id = int(_save(client, admin_headers, _answer(feedback_store), "missing_evidence").json()["route"]["target"])
         detail = self._rfa_detail(reg, client.post(f"/api/projects/r1/gaps/{gap_id}/rfa").json()["rfa"])
         assert "missing this analysis's result, in the 'cve_scan' analysis" in detail
+
+
+class TestAPrivateContextKeepsTheQuestionInAdmin:
+    """The architect's P1 on 6c050de2: GET /api/projects/{slug}/gaps is not filtered per viewer, so a diagnosis of an
+    answer about a resource in a private investigation names the item and the cause only, never the question."""
+
+    def _private(self, monkeypatch, owner="erinoverview"):
+        from resource_explorer.registry import ProjectRegistry
+        monkeypatch.setattr(ProjectRegistry, "private_owner_for_entity", lambda self, et, slug: owner)
+
+    def test_the_gap_carries_no_question_text_anywhere(self, client, reg, feedback_store, admin_headers,
+                                                       monkeypatch):
+        self._private(monkeypatch)
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store, question="what does Erin's secret project use?")
+        gap = reg.get_gap(int(_save(client, admin_headers, item_id, "missing_evidence").json()["route"]["target"]))
+        assert "secret project" not in repr(gap) and "question" not in gap["evidence"]
+        assert gap["check_name"].startswith("question:sha1:") and item_id in gap["sentence"]
+        assert gap["evidence"]["private_context"] == "the resource is in a private investigation"
+
+    def test_a_catalog_id_keys_the_private_gap_without_text(self, client, reg, feedback_store, admin_headers,
+                                                            monkeypatch):
+        self._private(monkeypatch)
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store, extra={"question_id": "Q-0042"})
+        gap = reg.get_gap(int(_save(client, admin_headers, item_id, "missing_evidence").json()["route"]["target"]))
+        assert gap["check_name"] == "question:Q-0042"
+
+    def test_unreadable_privacy_fails_closed(self, client, reg, feedback_store, admin_headers, monkeypatch):
+        from resource_explorer.registry import ProjectRegistry
+
+        def unreadable(self, et, slug):
+            raise RuntimeError("registry down")
+        monkeypatch.setattr(ProjectRegistry, "private_owner_for_entity", unreadable)
+        _compile(reg, "c1", ABSENT)
+        gap = reg.get_gap(int(_save(client, admin_headers, _answer(feedback_store), "missing_evidence")
+                              .json()["route"]["target"]))
+        assert "what does it use?" not in repr(gap) and "could not be read" in gap["evidence"]["private_context"]
+
+    def test_a_shared_resource_keeps_the_question(self, client, reg, feedback_store, admin_headers, monkeypatch):
+        self._private(monkeypatch, owner="")
+        _compile(reg, "c1", ABSENT)
+        gap = reg.get_gap(int(_save(client, admin_headers, _answer(feedback_store), "missing_evidence")
+                              .json()["route"]["target"]))
+        assert gap["evidence"]["question"] == "what does it use?" and "private_context" not in gap["evidence"]
+
+    def test_the_opaque_key_is_stable_and_textless(self):
+        from resource_explorer.feedback_routing import opaque_question_key
+        assert opaque_question_key("what?") == opaque_question_key(" what? ")
+        assert "what" not in opaque_question_key("what?")
+        assert opaque_question_key("what?", "Q-1") == "question:Q-1"
+
+
+class TestReroute:
+    """The architect's P2: a Save keyed on (item, cause) cannot move a default charge, so re-routing is its own,
+    explicit action."""
+
+    def test_reroute_moves_the_item_to_another_charged_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store)
+        first = _save(client, admin_headers, item_id, "missing_evidence").json()["route"]
+        out = client.post(f"/api/feedback/{item_id}/routes/missing_evidence/reroute", headers=admin_headers,
+                          json={"analysis_id": "deps"})
+        assert out.status_code == 200, out.text
+        moved = out.json()
+        assert moved["state"] == "routed" and moved["rerouted_from"] == first["target"]
+        assert reg.get_gap(int(moved["target"]))["analysis_id"] == "deps"
+        old = reg.get_gap(int(first["target"]))
+        assert old["resolved_at"] is None and old["evidence"]["feedback_items"] == []
+        assert old["evidence"]["rerouted_items"] == [item_id]
+
+    def test_reroute_refuses_what_it_cannot_do(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", ABSENT)
+        item_id = _answer(feedback_store)
+        url = f"/api/feedback/{item_id}/routes/missing_evidence/reroute"
+        assert client.post(url, headers=admin_headers, json={"analysis_id": "deps"}).status_code == 400  # no route yet
+        _save(client, admin_headers, item_id, "missing_evidence")
+        bad = client.post(url, headers=admin_headers, json={"analysis_id": "stars"})
+        assert bad.status_code == 400 and "charge set" in bad.json()["detail"]
+        assert client.post(f"/api/feedback/{item_id}/routes/reasoning/reroute", headers=admin_headers,
+                           json={}).status_code == 400
+        assert client.post(url, json={"analysis_id": "deps"}).status_code == 403

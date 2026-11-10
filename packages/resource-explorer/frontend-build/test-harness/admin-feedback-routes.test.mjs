@@ -73,8 +73,9 @@ async function openEvidence(host) {
 test('each answer row lists where its diagnoses were routed', async () => {
   const { host, pane } = await setUp(BASE);
   await pane.renderFeedback(host);
-  assert.equal(text(host.querySelector('[data-triage="a1"] [data-route="missing_evidence"]')),
-    'Routed: gap #12 on cve_scan (missing evidence).');
+  const line = host.querySelector('[data-triage="a1"] [data-route="missing_evidence"]');
+  assert.equal(text(line), 'Routed: gap #12 on cve_scan (missing evidence). Re-route');
+  assert.ok(line.querySelector('[data-reroute="missing_evidence"]'), 'a gap route can be re-routed');
 });
 
 test('the evidence panel offers the charged analyses, and Save sends the one picked with the cause', async () => {
@@ -118,4 +119,44 @@ test('a route that is not stored is said once after Save', async () => {
     'Not routed yet: stale is routed by step 2c (Automate).');
   await pane.renderFeedback(host);
   assert.equal(host.querySelector('[data-triage="a1"] [data-route-note]'), null);
+});
+
+test('picking a charged cause says which analysis it will charge before Save', async () => {
+  const listing = { ...LISTING, feedback: [{ ...LISTING.feedback[0], routes: [],
+    triage: { ...LISTING.feedback[0].triage, cause: 'reasoning' } }] };
+  const { host, pane } = await setUp([['/api/curate/feedback', { reply: () => ok(listing) }], ...BASE.slice(1)]);
+  await pane.renderFeedback(host);
+  const cell = host.querySelector('[data-triage="a1"]');
+  const cause = cell.querySelector('[data-triage-cause]');
+  cause.value = 'missing_evidence';
+  cause.dispatchEvent(new host.ownerDocument.defaultView.Event('change'));
+  await settle();
+  assert.equal(text(cell.querySelector('[data-route-default]')),
+    'Will charge: cve_scan (default); pick another in the evidence panel.');
+  const picker = cell.querySelector('[data-route-analysis]');
+  picker.value = 'deps';
+  picker.dispatchEvent(new host.ownerDocument.defaultView.Event('change'));
+  await settle();
+  assert.equal(text(cell.querySelector('[data-route-default]')), 'Will charge: deps.');
+  cause.value = 'reasoning';
+  cause.dispatchEvent(new host.ownerDocument.defaultView.Event('change'));
+  await settle();
+  assert.equal(text(cell.querySelector('[data-route-default]')), '');
+});
+
+test('Re-route posts the analysis picked in the evidence panel', async () => {
+  const { host, pane, calls } = await setUp([...BASE,
+    ['/api/feedback/a1/routes/missing_evidence/reroute', { method: 'POST', reply: () => ok({ state: 'routed' }) }]]);
+  await pane.renderFeedback(host);
+  const cell = host.querySelector('[data-triage="a1"]');
+  cell.querySelector('[data-reroute="missing_evidence"]').click();
+  await settle();
+  assert.match(text(cell.querySelector('[data-triage-error]')), /Pick the analysis in the evidence panel/);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, 0);
+  cell.querySelector('[data-route-analysis]').value = 'deps';
+  cell.querySelector('[data-reroute="missing_evidence"]').click();
+  await settle();
+  const post = calls.filter((c) => c.method === 'POST').at(-1);
+  assert.equal(post.url, '/api/feedback/a1/routes/missing_evidence/reroute');
+  assert.deepEqual(post.body, { analysis_id: 'deps' });
 });

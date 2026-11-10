@@ -207,13 +207,19 @@ async function causeSummaryHtml() {
 /** The triage cell of a page or answer item: its status and who set it, a status control with a note, and its
  *  history on demand. Every change is a new event in trellis-feedback (append-only): the note belongs to that
  *  change and nothing earlier is overwritten. */
+/** The causes whose gap is charged to one analysis the admin picks (closed-loop step 2a, Q2). */
+const CHARGED_CAUSES = new Set(['missing_evidence', 'analysis_defect']);
+
 /** What the last Save said about a route that is not stored (a cause no consumer takes yet, or a failure to retry),
  *  by item id; shown once on the next render. */
 const routeNotes = new Map();
 
 /** Where each diagnosis was routed (closed-loop step 2a), and any note from the last Save. */
 function routesHtml(r) {
-  const lines = (r.routes || []).map((x) => `<div data-route="${esc(x.cause)}" class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted">${esc(x.words)}</div>`);
+  const lines = (r.routes || []).map((x) => `<div data-route="${esc(x.cause)}" class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted">${esc(x.words)}${
+    CHARGED_CAUSES.has(x.cause) && (x.consumer === 'gap' || x.consumer === 'none')
+      ? ` <button type="button" data-reroute="${esc(x.cause)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink-muted hover:text-ink">Re-route</button>`
+      : ''}</div>`);
   const note = routeNotes.get(String(r.id));
   if (note) {
     routeNotes.delete(String(r.id));
@@ -242,7 +248,7 @@ function triageHtml(r, statuses, causes = [], chain = []) {
         class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-caveat text-accent-ink">Save</button>
     </div>
     ${r.source === 'answer' && causes.length ? causeHtml(r, causes, chain) : ''}
-    ${r.source === 'answer' ? routesHtml(r) : ''}
+    ${r.source === 'answer' ? `<div data-route-default class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted"></div>${routesHtml(r)}` : ''}
     <div data-triage-error class="text-provenance text-state-warn"></div>
     ${t.events ? `<details data-triage-history class="mt-[2px]"><summary class="cursor-pointer text-provenance text-ink-muted">history (${esc(String(t.events))})</summary><div data-history-body class="text-provenance text-ink-muted">Loading…</div></details>` : ''}
   </div>`;
@@ -570,24 +576,95 @@ function bindTriage() {
   });
 }
 
+/** Load the evidence panel once, whoever asks first (opening it, picking a charged cause, or Re-route). */
+async function loadDiagnosis(cell, id) {
+  const box = cell.querySelector('[data-diagnosis]');
+  if (!box) return null;
+  if (!box._diagnosis) {
+    box._diagnosis = (async () => {
+      const body = box.querySelector('[data-diagnosis-body]');
+      try {
+        const res = await fetch(`/api/feedback/${encodeURIComponent(id)}/diagnosis`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const d = await res.json();
+        box.dataset.loaded = '1';
+        body.innerHTML = diagnosisHtml(d);
+        body.querySelectorAll('[data-use-cause]').forEach((b) => b.addEventListener('click', () => {
+          cell.querySelector('[data-triage-cause]').value = b.dataset.useCause;
+          showDefault(cell, id);
+        }));
+        body.querySelector('[data-route-analysis]')?.addEventListener('change', () => showDefault(cell, id));
+        return d;
+      } catch (err) {
+        body.textContent = `Could not load the evidence: ${err.message}`;
+        box._diagnosis = null;
+        return null;
+      }
+    })();
+  }
+  return box._diagnosis;
+}
+
+/** Before Save, say which analysis a missing-evidence or analysis-defect diagnosis will charge (the architect's P2:
+ *  a Save cannot move a route afterwards, so the default must not be silent). */
+async function showDefault(cell, id) {
+  const line = cell.querySelector('[data-route-default]');
+  const cause = cell.querySelector('[data-triage-cause]')?.value || '';
+  if (!line) return;
+  if (!CHARGED_CAUSES.has(cause) || cause === cell.querySelector('[data-triage-cause]').dataset.current) {
+    line.textContent = '';
+    return;
+  }
+  const d = await loadDiagnosis(cell, id);
+  const charge = (d && d.charge_set) || [];
+  const picked = cell.querySelector('[data-route-analysis]');
+  if (!charge.length) {
+    line.textContent = 'Will charge: no analysis (nothing is charged), so no gap is raised.';
+  } else if (picked && picked.value !== charge[0].analysis_id) {
+    line.textContent = `Will charge: ${picked.value}.`;
+  } else {
+    line.textContent = `Will charge: ${charge[0].analysis_id} (default)${charge.length > 1 ? '; pick another in the evidence panel' : ''}.`;
+  }
+}
+
 function bindDiagnosis(cell, id) {
-  cell.querySelector('[data-diagnosis]')?.addEventListener('toggle', async (e) => {
-    const box = e.currentTarget;
-    if (!box.open || box.dataset.loaded) return;
-    const body = box.querySelector('[data-diagnosis-body]');
-    try {
-      const res = await fetch(`/api/feedback/${encodeURIComponent(id)}/diagnosis`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      box.dataset.loaded = '1';
-      body.innerHTML = diagnosisHtml(await res.json());
-    } catch (err) {
-      body.textContent = `Could not load the evidence: ${err.message}`;
+  cell.querySelector('[data-diagnosis]')?.addEventListener('toggle', (e) => {
+    if (e.currentTarget.open) loadDiagnosis(cell, id);
+  });
+  cell.querySelector('[data-triage-cause]')?.addEventListener('change', () => showDefault(cell, id));
+  cell.querySelectorAll('[data-reroute]').forEach((b) => b.addEventListener('click', async () => {
+    const error = cell.querySelector('[data-triage-error]');
+    const box = cell.querySelector('[data-diagnosis]');
+    const d = await loadDiagnosis(cell, id);
+    const picker = cell.querySelector('[data-route-analysis]');
+    if (!d || !picker) {
+      error.textContent = d ? 'Only one analysis is charged, so there is nowhere else to route it.'
+        : 'Could not load the evidence to pick an analysis from.';
       return;
     }
-    body.querySelectorAll('[data-use-cause]').forEach((b) => b.addEventListener('click', () => {
-      cell.querySelector('[data-triage-cause]').value = b.dataset.useCause;
-    }));
-  });
+    if (box && !box.open) {
+      box.open = true;
+      error.textContent = 'Pick the analysis in the evidence panel, then press Re-route again.';
+      return;
+    }
+    b.disabled = true;
+    try {
+      const res = await fetch(`/api/feedback/${encodeURIComponent(id)}/routes/${encodeURIComponent(b.dataset.reroute)}/reroute`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ analysis_id: picker.value }),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+        throw new Error(detail);
+      }
+    } catch (err) {
+      error.textContent = `Not re-routed: ${err.message}`;
+      b.disabled = false;
+      return;
+    }
+    reload({ saved: id });
+  }));
 }
 
 function bindFilters() {

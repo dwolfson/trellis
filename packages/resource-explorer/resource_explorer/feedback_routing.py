@@ -13,6 +13,9 @@ The rules, all decided by the project owner on 2026-11-10:
   (a registry error) is released, so the next Save tries again.
 * **The admin picks one charged analysis**, defaulting to the first in role order (`feedback_diagnosis.ROLE_ORDER`).
 * **The gap sentence includes the question as asked; the asker's id never travels** into a gap.
+* **Except in a private context** (Q8's limit; the architect's P1 read-back of 6c050de2): when the answer's resource
+  is in a private investigation, or that cannot be told, the gap names the item reference and the cause only. No
+  question text in the sentence, the evidence or the gap's key. `private_context` is the one test; 2b's RFAs reuse it.
 
 Step 2a builds the gap consumers: `missing_evidence`, `analysis_defect`, and the gap half of `catalog_gap`. The
 RFA half of `catalog_gap`, `unclear_question` (2b) and `stale` (2c) are said to be not routed yet, and are not
@@ -20,6 +23,7 @@ claimed, so a later step can route them.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -54,6 +58,41 @@ _CAUSE_WORDS = {
     ANALYSIS_DEFECT: "gave a wrong result for it",
     CATALOG_GAP: "nothing in the catalog answers it",
 }
+
+
+def private_context(item: dict, registry: Any) -> str:
+    """Why this answer's question must not travel beyond Admin, or "" when it may.
+
+    Today's test is local and unscoped: the answer's resource is in a creator-only investigation
+    (`registry.private_owner_for_entity`, the same read born-private publishing uses, which sees investigations the
+    caller cannot). It fails CLOSED: a registry that cannot answer counts as private. An answer with no resource in
+    scope has no private context to inherit.
+
+    Not covered, and said here so it is not assumed: a resource whose Egeria zones restrict it outside any private
+    investigation. Knowing that needs an Egeria read on every Save; the RFA drawer's viewer filter (Backlog) is the
+    fuller answer for both.
+    """
+    slug = (item.get("slug") or "").strip()
+    if not slug:
+        return ""
+    from resource_explorer.private_publish import PrivateOwnerUnknown, resolve_private_owner
+
+    entity_type = (item.get("entity_type") or "").strip() or "repo"
+    try:
+        owner = resolve_private_owner(registry, entity_type, slug)
+    except PrivateOwnerUnknown:
+        return "whether the resource is in a private investigation could not be read"
+    return "the resource is in a private investigation" if owner else ""
+
+
+def opaque_question_key(question: str, question_id: str = "") -> str:
+    """A gap's `check_name` that carries no question text: the catalog id when there is one, else a short hash. The
+    same question still keys one gap; reading the key tells nothing about what was asked."""
+    qid = (question_id or "").strip()
+    if qid:
+        return question_check_name("", qid)
+    digest = hashlib.sha1((question or "").strip().encode("utf-8")).hexdigest()[:12]
+    return f"question:sha1:{digest}"
 
 
 class RouteRefused(ValueError):
@@ -185,7 +224,8 @@ def _raise_gap(p: Plan, item: dict, *, actor: str, registry: Any) -> int:
     slug = item["slug"].strip()
     question = (item.get("query_text") or "").strip()
     question_id = ((item.get("extra") or {}).get("question_id") or "").strip()
-    key = question_check_name(question, question_id)
+    private = private_context(item, registry)
+    key = opaque_question_key(question, question_id) if private else question_check_name(question, question_id)
     existing = next((g for g in registry.list_gaps(slug)
                      if g["gap_kind"] == p.gap_kind and g["check_name"] == key
                      and (g.get("analysis_id") or "") == p.analysis_id), None)
@@ -194,21 +234,30 @@ def _raise_gap(p: Plan, item: dict, *, actor: str, registry: Any) -> int:
     compiles = [c for c in evidence.get("compile_ids") or [] if c and c != p.compile_id] + (
         [p.compile_id] if p.compile_id else [])
     evidence.update({
-        "source": SOURCE_PERSON, "cause": p.cause, "question": question, "feedback_items": items,
+        "source": SOURCE_PERSON, "cause": p.cause, "feedback_items": items,
         "compile_ids": compiles, "diagnosed_by": actor,
     })
+    if private:
+        evidence.pop("question", None)
+        evidence["private_context"] = private
+    else:
+        evidence["question"] = question
     if question_id:
         evidence["question_id"] = question_id
     if p.role:
         evidence["role"] = p.role
     disagreement = next((g for g in registry.list_gaps(slug)
                          if g["gap_kind"] == DISAGREEMENT
-                         and g["check_name"] in (key, question_check_name(question))), None)
+                         and g["check_name"] in (key, question_check_name(question, question_id),
+                                                 question_check_name(question))), None)
     if disagreement:
         evidence["disagreement_gap"] = disagreement["id"]
     on = p.analysis_id or "the catalog"
-    sentence = (f"An admin diagnosed the answer to “{question}”: "
-                + (f"{on} {_CAUSE_WORDS[p.gap_kind]}." if p.analysis_id else f"{_CAUSE_WORDS[p.gap_kind]}."))
+    what = f"{on} {_CAUSE_WORDS[p.gap_kind]}." if p.analysis_id else f"{_CAUSE_WORDS[p.gap_kind]}."
+    if private:
+        sentence = f"An admin diagnosed feedback item {item['id']} ({private}; the question is kept in Admin): {what}"
+    else:
+        sentence = f"An admin diagnosed the answer to “{question}”: {what}"
     gap_id = registry.upsert_gap(slug, p.analysis_id, p.gap_kind, key, sentence, evidence=evidence)
     if disagreement:
         linked = dict(disagreement.get("evidence") or {})
@@ -216,6 +265,36 @@ def _raise_gap(p: Plan, item: dict, *, actor: str, registry: Any) -> int:
         if linked.get("diagnosed_as") != diagnosed:
             registry.set_gap_evidence(disagreement["id"], {**linked, "diagnosed_as": diagnosed})
     return gap_id
+
+
+def reroute(item: dict, cause: str, *, analysis_id: str, actor: str, registry: Any) -> dict:
+    """An admin's explicit re-route: route this item's `cause` again, on `analysis_id` (the architect's P2: a Save
+    keyed on (item, cause) cannot move a default charge, so moving it is its own action).
+
+    Only a finished gap route, or one recorded as not routed, can be re-routed. The earlier gap stays open, since
+    other items may hold it, but no longer lists this item: its evidence moves the id to `rerouted_items`. Raises
+    RouteRefused for a route that does not exist, is still in flight, or an analysis outside the charge set.
+    """
+    cause = (cause or "").strip()
+    if cause not in GAP_CAUSES:
+        raise RouteRefused(f"{cause!r} is not routed to a gap, so it cannot be re-routed.")
+    existing = registry.get_feedback_route(item["id"], cause)
+    if existing is None:
+        raise RouteRefused(f"This item has no {cause.replace('_', ' ')} route to move; save the diagnosis first.")
+    if existing["consumer"] not in ("gap", "none"):
+        raise RouteRefused("That route is still being made; try again in a moment.")
+    p = plan(item, cause, analysis_id=analysis_id, registry=registry)          # validates the pick
+    old = existing.get("target") or ""
+    if existing["consumer"] == "gap" and old.isdigit():
+        gap = registry.get_gap(int(old))
+        if gap is not None:
+            ev = dict(gap.get("evidence") or {})
+            ev["feedback_items"] = [i for i in ev.get("feedback_items") or [] if i != item["id"]]
+            ev["rerouted_items"] = [i for i in ev.get("rerouted_items") or [] if i != item["id"]] + [item["id"]]
+            registry.set_gap_evidence(int(old), ev)
+    registry.drop_feedback_route(item["id"], cause)
+    out = execute(p, item, actor=actor, registry=registry) or {}
+    return {**out, "rerouted_from": old}
 
 
 def mark_deleted_items(gaps: list[dict], exists) -> None:

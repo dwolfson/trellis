@@ -249,6 +249,30 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
     return updated
 
 
+class Reroute(BaseModel):
+    analysis_id: str = ""
+
+
+@router.post("/{feedback_id}/routes/{cause}/reroute")
+async def reroute_feedback(feedback_id: str, cause: str, payload: Reroute, request: Request) -> dict:
+    """Move one diagnosis's gap to another charged analysis (closed-loop step 2a; the architect's P2). A Save never
+    moves a route; this is the explicit action that does. Admin only."""
+    _require_admin(request)
+    from resource_explorer import feedback_routing
+    from resource_explorer.registry import ProjectRegistry
+
+    found = FeedbackStore().get(feedback_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Feedback record not found")
+    if found.get("kind") != "answer":
+        raise HTTPException(status_code=400, detail="Only a rated answer is routed")
+    try:
+        return feedback_routing.reroute(found, cause, analysis_id=payload.analysis_id, actor=_actor(request),
+                                        registry=ProjectRegistry())
+    except feedback_routing.RouteRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/{feedback_id}")
 async def get_feedback(feedback_id: str, request: Request) -> dict:
     """One item with its current state and every triage event, oldest first."""
