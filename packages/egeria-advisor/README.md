@@ -116,9 +116,14 @@ User Query  [+ perspective + intent_override]
 A browser-based chat interface is the primary way to interact with Egeria Advisor.
 
 ```bash
-# Start the web server (default: http://localhost:8880)
-uvicorn advisor.web.app:app --reload --port 8880
+# Start the web server (default: http://localhost:8880), one process, no auto-reload
+egeria-advisor-web --port 8880
+# or, loading .env first:
+scripts/run_web.sh
 ```
+
+See [Operating the web server](#operating-the-web-server) for the log level, the data
+directory, offline model loading and HTTPS.
 
 ### Layout
 
@@ -358,6 +363,10 @@ pytest tests/ -v
 pytest --cov=advisor --cov-report=html
 ```
 
+**pyegeria floor bumps.** Every pyegeria floor bump runs `tests/unit/test_pyegeria_contract.py`.
+A new failure there means pyegeria's API moved under EA: fix it, or record it as a strict `xfail`
+with a phase reference.
+
 ## Project Structure
 
 ```
@@ -407,6 +416,39 @@ Primary config: `config/advisor.yaml`. Key sections:
 - **Service accounts**: `RE_DAEMON_USER_ID` and `TRELLIS_SERVICE_ACCOUNTS` (comma-separated) list Egeria user ids no human may sign in as; EA answers HTTP 403 "this is a service account; sign in as yourself" before any Egeria call (case-insensitive, trimmed; unset refuses nobody).
 
 Settings are managed via Pydantic models in `advisor/config.py`.
+
+## Operating the web server
+
+These defaults changed on 2026-11-10 (EA Phase 1, Q4).
+
+- **Log level.** `ADVISOR_LOG_LEVEL` (default `INFO`; also `TRACE`, `DEBUG`, `WARNING`, `ERROR`,
+  `CRITICAL`) sets the server's loguru level and the matching uvicorn level. `egeria-advisor-web
+  --log-level DEBUG` overrides it for one run. An unknown name falls back to `INFO` with a warning
+  naming it. The query CLI (`egeria-advisor "..."`) is quiet unless `--debug`, but errors still
+  reach stderr.
+- **Data directory outside git.** `ADVISOR_DATA_PATH` holds Advisor's writable state (feedback
+  logs, the embedding cache unless `ADVISOR_CACHE_DIR` says otherwise, cloned repos, index state).
+  Unset, it is `~/egeria-advisor-data` (it used to be `./data`). Advisor **refuses to start** if
+  it resolves inside a git checkout, with `ADVISOR_DATA_PATH (<path>) is inside a git checkout;
+  set it to a directory outside any repository, e.g. ~/egeria-advisor-data`. To move an existing
+  install: stop Advisor, `mv <old>/data ~/egeria-advisor-data` (or wherever you choose), set
+  `ADVISOR_DATA_PATH` to it, and start again. An explicit `ADVISOR_CACHE_DIR` gets the same
+  refusal: a relative `./data/cache` run from the package directory is inside the checkout, so
+  point it outside too (e.g. `~/egeria-advisor-data/cache`), or unset it to use
+  `<data root>/cache`.
+- **Offline model loading.** When the embedding model (`embeddings.model` in `advisor.yaml`) is
+  already in the Hugging Face cache (`HF_HUB_CACHE`, else `$HF_HOME/hub`, else
+  `~/.cache/huggingface/hub`), Advisor sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`
+  (unless you set them yourself) and logs "embedding model loaded from cache (offline)". There is
+  no Hugging Face Hub call at startup. When it is not cached, Advisor logs one warning naming the
+  download, and the first start fetches it.
+- **No auto-reload.** `egeria-advisor-web` runs with `--no-reload` by default. `--reload` is a
+  development convenience: it runs the app in a child process that restarts on every edit under
+  `advisor/`, and `--log-level` does not reach that child.
+- **One process.** `scripts/run_web.sh` starts one process: HTTP on `ADVISOR_HTTP_PORT` (8880) by
+  default, or HTTPS only on `ADVISOR_HTTPS_PORT` (8881) with `--https`. For both schemes, put a TLS
+  proxy in front of the HTTP process. `--both` keeps the old two-process mode, but the two
+  processes do not share running jobs, and each runs its own startup sync and MCP warm-up.
 
 ## Monitoring & Observability
 

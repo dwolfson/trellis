@@ -181,11 +181,12 @@ def ask(
     """
     # Configure logging level based on debug flag
     if not debug:
-        # Disable all loguru logs when not in debug mode
-        logger.remove()  # Remove all handlers
-        # Redirect stderr to suppress library warnings (like amdgpu.ids)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 2)  # Redirect stderr (fd 2) to /dev/null
+        # Quiet by default, but never silent about failures: loguru keeps an
+        # ERROR-level sink on stderr. (Until 2026-11-10 this also pointed fd 2
+        # at /dev/null to hide library chatter such as amdgpu.ids, which hid
+        # every error and traceback along with it.)
+        from advisor.config import configure_logging
+        configure_logging("ERROR")
     
     # Disable colors if requested
     if no_color:
@@ -517,13 +518,30 @@ def logout_command() -> None:
 @click.command("web")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
 @click.option("--port", default=8880, show_default=True, help="Bind port")
-@click.option("--reload/--no-reload", default=True, show_default=True,
-              help="Auto-reload the server on code changes (dev mode)")
-def web_command(host: str, port: int, reload: bool):
+@click.option("--reload/--no-reload", default=False, show_default=True,
+              help="Auto-reload the server on code changes. A dev convenience only: "
+                   "the reloader runs the app in a child process that restarts on "
+                   "every edit under advisor/, and it does not apply --log-level there.")
+@click.option("--log-level", "log_level", default=None,
+              help="Log level for the server (TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL). "
+                   "Default: ADVISOR_LOG_LEVEL, else INFO.")
+@click.option("--ssl-certfile", default=None, help="Serve HTTPS with this certificate (with --ssl-keyfile).")
+@click.option("--ssl-keyfile", default=None, help="Private key for --ssl-certfile.")
+def web_command(host: str, port: int, reload: bool, log_level: Optional[str],
+                ssl_certfile: Optional[str], ssl_keyfile: Optional[str]):
     """Launch the browser-based web UI."""
     import uvicorn
+    from advisor.config import configure_logging, resolve_log_level, uvicorn_log_level
+
+    level = resolve_log_level(log_level)
+    configure_logging(level)
+    scheme = "https" if ssl_certfile and ssl_keyfile else "http"
     mode = "auto-reload on" if reload else "auto-reload off"
-    console.print(f"[cyan]Starting Egeria Advisor web UI at http://{host}:{port} ({mode})[/cyan]")
+    console.print(f"[cyan]Starting Egeria Advisor web UI at {scheme}://{host}:{port} "
+                  f"({mode}, log level {level})[/cyan]")
+    kwargs = {}
+    if scheme == "https":
+        kwargs = {"ssl_certfile": ssl_certfile, "ssl_keyfile": ssl_keyfile}
     uvicorn.run(
         "advisor.web.app:app",
         host=host,
@@ -531,7 +549,8 @@ def web_command(host: str, port: int, reload: bool):
         reload=reload,
         # Watch the advisor package so edits to Python and static assets restart the server.
         reload_dirs=["advisor"] if reload else None,
-        log_level="warning",
+        log_level=uvicorn_log_level(level),
+        **kwargs,
     )
 
 

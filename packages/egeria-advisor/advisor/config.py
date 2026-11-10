@@ -16,10 +16,38 @@ load_dotenv()
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import yaml
 from loguru import logger
+
+
+#: Where Advisor keeps its writable state when ADVISOR_DATA_PATH is unset.
+#: Outside any repository on purpose; see resolve_advisor_data_root().
+DEFAULT_ADVISOR_DATA_ROOT = Path.home() / "egeria-advisor-data"
+
+
+class AdvisorDataRootError(RuntimeError):
+    """The configured data root is unusable (today: it is inside a git checkout)."""
+
+
+def enclosing_git_checkout(path: Path) -> Optional[Path]:
+    """The git work tree containing ``path``, or None.
+
+    Walks ``path`` (which need not exist yet) and its ancestors for a ``.git``
+    entry. Both a directory (an ordinary clone) and a file (a linked worktree
+    or a submodule) count. Relative paths are taken against the cwd, so
+    ``./data`` from inside a checkout is caught.
+    """
+    candidate = Path(os.path.abspath(Path(path).expanduser()))
+    try:
+        candidate = candidate.resolve(strict=False)
+    except OSError:
+        pass
+    for parent in (candidate, *candidate.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
 
 
 def resolve_advisor_data_root() -> Path:
@@ -38,8 +66,19 @@ def resolve_advisor_data_root() -> Path:
     Priority: ``ADVISOR_DATA_PATH`` env var if explicitly set (checked via
     ``os.environ`` directly, matching ``resolve_mlflow_tracking_uri()``'s
     established idiom, so an unset var never masquerades as a setting), else
-    ``"./data"`` — the unchanged default for a native checkout, where the
-    process cwd is normally the package root and writable.
+    ``~/egeria-advisor-data`` (``DEFAULT_ADVISOR_DATA_ROOT``). Until
+    2026-11-10 the default was ``./data``, which for a native checkout put
+    feedback logs, the embedding cache and cloned repos inside the trellis
+    git work tree.
+
+    **Refused inside a git checkout.** The root (explicit or default) must not
+    sit inside a git work tree: Advisor's state is runtime data, and inside a
+    checkout it is one ``git clean``/``reset``/branch switch away from being
+    lost, or one ``git add`` away from being committed. Any ancestor holding a
+    ``.git`` (a directory, or the file a linked worktree has) counts. The
+    error names the path and the fix rather than quietly falling back, so a
+    deployment that still points into a checkout stops at startup instead of
+    writing there.
 
     A container's non-root user typically can't write to its image cwd
     (e.g. ``/app``), which is exactly the "Permission denied: 'data'" startup
@@ -47,9 +86,25 @@ def resolve_advisor_data_root() -> Path:
     volume (e.g. ``/tmp/advisor-data``) to route every write here instead.
     """
     env_val = os.environ.get("ADVISOR_DATA_PATH", "").strip()
-    if env_val:
-        return Path(env_val).expanduser()
-    return Path("./data")
+    root = Path(env_val).expanduser() if env_val else DEFAULT_ADVISOR_DATA_ROOT
+    return refuse_inside_git_checkout(root, "ADVISOR_DATA_PATH", "~/egeria-advisor-data")
+
+
+def refuse_inside_git_checkout(path: Path, env_var: str, example: str) -> Path:
+    """Return ``path``, or raise AdvisorDataRootError if it is inside a git checkout.
+
+    Used for every directory Advisor writes runtime state to: the data root
+    (ADVISOR_DATA_PATH) and the cache (ADVISOR_CACHE_DIR, which may be set on
+    its own, e.g. a relative ``./data/cache``).
+    """
+    checkout = enclosing_git_checkout(path)
+    if checkout is not None:
+        raise AdvisorDataRootError(
+            f"{env_var} ({path}) is inside a git checkout; set it to a directory "
+            f"outside any repository, e.g. {example} "
+            f"(the checkout is {checkout})."
+        )
+    return path
 
 
 def ensure_writable_dir(path: Path, env_var: str) -> Path:
@@ -466,6 +521,18 @@ class AdvisorSettings(BaseSettings):
         default_factory=lambda: resolve_advisor_data_root() / "cache",
         alias="ADVISOR_CACHE_DIR"
     )
+
+    @field_validator("advisor_cache_dir")
+    @classmethod
+    def _cache_dir_outside_git(cls, value: Path) -> Path:
+        # An explicit ADVISOR_CACHE_DIR gets the same refusal as the data root
+        # (the default is under the data root, which is already checked).
+        # AdvisorDataRootError is a RuntimeError, so pydantic lets it through
+        # unwrapped and the module-level settings re-raise it.
+        return refuse_inside_git_checkout(Path(value).expanduser(), "ADVISOR_CACHE_DIR",
+                                          "~/egeria-advisor-data/cache")
+    # Read by resolve_log_level() (the web process's loguru sink and uvicorn's
+    # level). Was defined here but never read until 2026-11-10.
     advisor_log_level: str = Field(default="INFO", alias="ADVISOR_LOG_LEVEL")
 
 
@@ -676,10 +743,58 @@ def get_full_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 try:
     settings = AdvisorSettings()
     logger.info("Settings loaded successfully")
+except AdvisorDataRootError:
+    # Not a parse problem to paper over with defaults: the defaults resolve
+    # the same data root and would fail the same way. Stop, with the reason.
+    raise
 except Exception as e:
     logger.warning(f"Could not load settings from environment: {e}")
     logger.info("Using default settings")
     settings = AdvisorSettings()
+
+
+
+#: loguru's level names, which are also what ADVISOR_LOG_LEVEL accepts.
+_LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
+#: uvicorn has no TRACE/SUCCESS; map them to its nearest level.
+_UVICORN_LEVEL = {"TRACE": "trace", "DEBUG": "debug", "INFO": "info", "SUCCESS": "info",
+                  "WARNING": "warning", "ERROR": "error", "CRITICAL": "critical"}
+
+
+def resolve_log_level(value: Optional[str] = None) -> str:
+    """The web process's log level: ``value``, else ADVISOR_LOG_LEVEL, else INFO.
+
+    Upper-cased; ``WARN`` is accepted as ``WARNING``. An unknown name is not
+    silently swapped: it falls back to INFO with a warning naming the bad
+    value, so a typo is visible rather than a quiet change of verbosity.
+    """
+    raw = value
+    if raw is None:
+        raw = os.environ.get("ADVISOR_LOG_LEVEL") or getattr(settings, "advisor_log_level", None) or "INFO"
+    level = str(raw).strip().upper()
+    if level == "WARN":
+        level = "WARNING"
+    if level not in _LOG_LEVELS:
+        logger.warning(f"ADVISOR_LOG_LEVEL={raw!r} is not a log level ({', '.join(_LOG_LEVELS)}); using INFO")
+        return "INFO"
+    return level
+
+
+def configure_logging(level: str, sink=None) -> int:
+    """Replace loguru's handlers with one sink (stderr by default) at ``level``.
+
+    Returns the new handler id. The web command calls this once at startup so
+    ADVISOR_LOG_LEVEL decides what the server logs (loguru's own default is
+    DEBUG, which is what the server logged before 2026-11-10).
+    """
+    import sys as _sys
+    logger.remove()
+    return logger.add(sink if sink is not None else _sys.stderr, level=level)
+
+
+def uvicorn_log_level(level: str) -> str:
+    """uvicorn's name for a level resolve_log_level() returned."""
+    return _UVICORN_LEVEL.get(level, "info")
 
 
 __all__ = [
@@ -687,6 +802,13 @@ __all__ = [
     "load_config",
     "get_full_config",
     "resolve_advisor_data_root",
+    "DEFAULT_ADVISOR_DATA_ROOT",
+    "AdvisorDataRootError",
+    "enclosing_git_checkout",
+    "refuse_inside_git_checkout",
+    "resolve_log_level",
+    "uvicorn_log_level",
+    "configure_logging",
     "ensure_writable_dir",
     "DEFAULT_MODEL_TIER",
     "TIER_PRESETS",
