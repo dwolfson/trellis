@@ -71,6 +71,10 @@ def refreshed(stored: dict, fresh: dict, seen_at: str) -> dict | None:
     A repeat compile has the same text, so it is the same compile id; only the age of its evidence can move. The
     packed entries take the fresh dates, and the change is appended to `as_of_seen`. The first time, the original
     dates go in first with an empty `seen_at`, so answers given before any repeat keep theirs.
+
+    A section whose date the fresh compile lost (a fact read that failed, say) keeps its stored date: nothing newer
+    is known, and dropping a date is not news about the evidence. Its key is left out of the new history entry, so
+    a reader at a later moment falls through to the stored date.
     """
     before, after = packed_as_ofs(stored), packed_as_ofs(fresh)
     if not after or before == after:
