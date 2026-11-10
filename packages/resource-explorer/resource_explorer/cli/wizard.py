@@ -107,7 +107,7 @@ class OnboardingWizard:
                 from resource_explorer.vector_store_pg import MultiCollectionStore, record_inserts
                 store = MultiCollectionStore()
                 voted = {c: chunk_votes.snapshot(store, c) for c in project.collections}
-                with record_inserts() as inserted:
+                with record_inserts(set(project.collections)) as inserted:
                     for c in project.collections:
                         store.drop_collection(c)
                     self._trigger_ingestion(

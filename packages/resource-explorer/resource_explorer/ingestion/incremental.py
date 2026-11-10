@@ -160,7 +160,7 @@ class IncrementalIndexer:
                 # re-insert gives them (chunk_votes, R0): a moved chunk keeps its vote instead of losing it.
                 voted = chunk_votes.snapshot(store, collection_name,
                                              None if use_full_rebuild else relative_changed)
-                with record_inserts() as inserted:
+                with record_inserts({collection_name}) as inserted:
                     if use_full_rebuild:
                         store.drop_collection(collection_name)
                         count = pipeline._ingest_collection(

@@ -71,6 +71,23 @@ class TestTheInsertRecorder:
         assert rows == [(C, ids[0], "a", "a.md"), (C, ids[1], "b", "b.md")]
         assert fake.insert_data.call_args_list[0].kwargs["ids"] == ids
 
+    def test_only_the_named_collections_are_recorded(self):
+        # The architect's R0-1: a long refresh must not buffer every concurrent insert from other repositories.
+        fake = MagicMock()
+        fake.insert_data.return_value = 1
+        store = _store_with(fake)
+        with record_inserts({C}) as rows:
+            store.insert("other_repo_code", ["x"], [meta("x.py")])
+            store.insert(C, ["a"], [meta("a.md")])
+        assert [r[0] for r in rows] == [C]
+
+    def test_legacy_decimal_ids_are_still_queried(self):
+        # 17 of laz's 25 voted ids are decimal, from the Python-hash era; digits are hex digits.
+        fake = MagicMock()
+        fake.query_by_filter.return_value = []
+        _store_with(fake).rows_by_ids(C, ["468220413029671663"])
+        assert fake.query_by_filter.call_count == 1
+
     def test_rows_by_ids_queries_only_hex_ids(self):
         fake = MagicMock()
         fake.query_by_filter.return_value = [{"id": "abc", "text": "t", "metadata": {}}]
@@ -97,46 +114,70 @@ def voted(chunk_id, text, file):
     return chunk_votes.Voted(ref=f"{C}:{chunk_id}", collection=C, chunk_id=chunk_id, text=text, file=file)
 
 
+def snap(*v, already=()):
+    return chunk_votes.Snapshot(collection=C, voted=list(v), already_orphaned=list(already))
+
+
+class TestAlreadyOrphaned:
+    """The architect's R0-2: a voted ref whose row is already gone (2 of laz's 25 votes today), or whose id cannot be
+    one, is counted and reported, not silently left out."""
+
+    def test_a_voted_ref_with_no_row_is_listed(self):
+        m = FakeMetrics({f"{C}:a1": 1, f"{C}:gone": 1, f"{C}:not-hex!": 1})
+        store = MagicMock()
+        store.rows_by_ids.return_value = [{"id": "a1", "text": "t", "metadata": meta("a.md")}]
+        got = chunk_votes.snapshot(store, C, None, metrics=m)
+        assert got.already_orphaned == [f"{C}:gone", f"{C}:not-hex!"]
+
+    def test_the_report_says_how_many(self):
+        r = chunk_votes.carry(snap(already=[f"{C}:gone"]), [], metrics=FakeMetrics({}))
+        assert r.already_orphaned == [f"{C}:gone"]
+        assert "1 already orphaned before this re-insert" in r.words()
+
+    def test_a_snapshot_with_only_orphans_is_still_reported(self):
+        assert bool(snap(already=[f"{C}:gone"])) is True
+
+
 class TestCarry:
     def test_the_same_id_coming_back_is_kept(self):
         m = FakeMetrics({f"{C}:a1": 1})
-        r = chunk_votes.carry([voted("a1", "t", "a.md")], [(C, "a1", "t", "a.md")], metrics=m)
+        r = chunk_votes.carry(snap(voted("a1", "t", "a.md")), [(C, "a1", "t", "a.md")], metrics=m)
         assert r.kept == [f"{C}:a1"] and m.votes == {f"{C}:a1": 1}
 
     def test_a_moved_chunk_takes_its_vote_to_the_new_id(self):
         m = FakeMetrics({f"{C}:old": 3})
-        r = chunk_votes.carry([voted("old", "t", "a.md")], [(C, "new", "t", "a.md"), (C, "z", "other", "a.md")],
+        r = chunk_votes.carry(snap(voted("old", "t", "a.md")), [(C, "new", "t", "a.md"), (C, "z", "other", "a.md")],
                               metrics=m)
         assert r.moved == {f"{C}:old": f"{C}:new"} and m.votes == {f"{C}:new": 3}
 
     def test_ties_are_narrowed_to_the_same_file(self):
         m = FakeMetrics({f"{C}:old": 1})
-        r = chunk_votes.carry([voted("old", "## License", "a.md")],
+        r = chunk_votes.carry(snap(voted("old", "## License", "a.md")),
                               [(C, "n1", "## License", "a.md"), (C, "n2", "## License", "b.md")], metrics=m)
         assert r.moved == {f"{C}:old": f"{C}:n1"}
 
     def test_still_tied_is_ambiguous_and_left_where_it_is(self):
         m = FakeMetrics({f"{C}:old": 1})
-        r = chunk_votes.carry([voted("old", "same", "a.md")],
+        r = chunk_votes.carry(snap(voted("old", "same", "a.md")),
                               [(C, "n1", "same", "a.md"), (C, "n2", "same", "a.md")], metrics=m)
         assert r.ambiguous == {f"{C}:old": 2} and m.votes == {f"{C}:old": 1}
 
     def test_text_that_is_gone_is_orphaned_and_kept(self):
         m = FakeMetrics({f"{C}:old": 1})
-        r = chunk_votes.carry([voted("old", "gone", "a.md")], [(C, "n1", "new text", "a.md")], metrics=m)
+        r = chunk_votes.carry(snap(voted("old", "gone", "a.md")), [(C, "n1", "new text", "a.md")], metrics=m)
         assert r.orphaned == [f"{C}:old"] and m.votes == {f"{C}:old": 1}
         assert "1 orphaned" in r.words()
 
     def test_another_collection_s_inserts_are_not_candidates(self):
         m = FakeMetrics({f"{C}:old": 1})
-        r = chunk_votes.carry([voted("old", "t", "a.md")], [("elsewhere", "n1", "t", "a.md")], metrics=m)
+        r = chunk_votes.carry(snap(voted("old", "t", "a.md")), [("elsewhere", "n1", "t", "a.md")], metrics=m)
         assert r.orphaned == [f"{C}:old"]
 
     def test_a_failing_carry_is_reported_not_raised(self):
         class Broken(FakeMetrics):
             def move_chunk_votes(self, old, new):
                 raise RuntimeError("metrics down")
-        r = chunk_votes.carry([voted("old", "t", "a.md")], [(C, "new", "t", "a.md")], metrics=Broken({}))
+        r = chunk_votes.carry(snap(voted("old", "t", "a.md")), [(C, "new", "t", "a.md")], metrics=Broken({}))
         assert "metrics down" in r.error and "not carried" in r.words()
 
 
@@ -146,20 +187,22 @@ class TestSnapshot:
         store = MagicMock()
         store.rows_by_ids.return_value = [{"id": "a1", "text": "ta", "metadata": meta("a.md")},
                                           {"id": "b1", "text": "tb", "metadata": meta("b.md")}]
-        snap = chunk_votes.snapshot(store, C, {"a.md"}, metrics=m)
+        got = chunk_votes.snapshot(store, C, {"a.md"}, metrics=m)
         assert sorted(store.rows_by_ids.call_args.args[1]) == ["a1", "b1"]
-        assert [(v.chunk_id, v.text, v.file) for v in snap] == [("a1", "ta", "a.md")]
+        assert [(v.chunk_id, v.text, v.file) for v in got.voted] == [("a1", "ta", "a.md")]
+        assert got.already_orphaned == []
 
     def test_no_votes_reads_nothing(self):
         store = MagicMock()
-        assert chunk_votes.snapshot(store, C, None, metrics=FakeMetrics({})) == []
+        got = chunk_votes.snapshot(store, C, None, metrics=FakeMetrics({}))
+        assert not got and got.voted == []
         store.rows_by_ids.assert_not_called()
 
     def test_an_unreadable_snapshot_is_empty_so_the_replace_still_runs(self):
         class Broken(FakeMetrics):
             def chunk_vote_refs(self, collection):
                 raise RuntimeError("metrics down")
-        assert chunk_votes.snapshot(MagicMock(), C, None, metrics=Broken({})) == []
+        assert not chunk_votes.snapshot(MagicMock(), C, None, metrics=Broken({}))
 
 
 class TestMetricsVoteMoves:
@@ -212,17 +255,17 @@ class TestTheRefreshCarriesVotes:
         indexer.client.download_zipball.return_value = tmp_path
         seen = {}
 
-        def snap(store, collection, files):
+        def fake_snapshot(store, collection, files):
             seen["files"] = files
-            return [voted("x", "t", "README.md")]
+            return snap(voted("x", "t", "README.md"))
 
-        def carry(v, inserted):
-            seen["carried"] = v
+        def fake_carry(s, inserted):
+            seen["carried"] = s.voted
             return chunk_votes.CarryReport(collection=C)
         with patch("resource_explorer.ingestion.incremental.has_own_index", return_value=True), \
              patch("resource_explorer.ingestion.incremental.IngestionPipeline") as P, \
              patch("resource_explorer.ingestion.incremental.MultiCollectionStore"), \
-             patch.object(chunk_votes, "snapshot", snap), patch.object(chunk_votes, "carry", carry):
+             patch.object(chunk_votes, "snapshot", fake_snapshot), patch.object(chunk_votes, "carry", fake_carry):
             P.return_value._ingest_collection.return_value = 1
             P.return_value._count_repo_stats.return_value = (1, 1)
             indexer.refresh(registry.get("repo"))

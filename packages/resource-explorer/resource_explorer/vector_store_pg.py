@@ -70,26 +70,36 @@ def chunk_ids(collection: str, texts: list[str], metadatas: list[dict]) -> list[
     return ids
 
 
-#: While a vote carrier is recording (`record_inserts`), every inserted chunk's (collection, id, text, file) is appended
-#: here, whichever MultiCollectionStore instance inserted it. A list of recorders, so nested carriers each see all.
-_INSERT_RECORDERS: list[list[tuple[str, str, str, str]]] = []
+#: While a vote carrier is recording (`record_inserts`), each inserted chunk's (collection, id, text, file) is appended
+#: to every recorder that asked for its collection, whichever MultiCollectionStore instance inserted it. Module-level,
+#: not a ContextVar: a ContextVar is not inherited by pool threads, so it would record nothing if embedding ever moves
+#: to workers (the architect's read-back of 7af6ea51).
+_INSERT_RECORDERS: list[tuple[frozenset[str] | None, list[tuple[str, str, str, str]]]] = []
 _RECORDERS_LOCK = threading.Lock()
 
 
 class record_inserts:  # a context manager, named for what it does
-    """Record what is inserted while open: `with record_inserts() as rows:` gives a list of
-    (collection, id, text, file). Used by `chunk_votes` to find where a voted chunk went after its file was
-    re-inserted, by matching in memory rather than by searching the table."""
+    """Record what is inserted while open: `with record_inserts({"c1", "c2"}) as rows:` gives a list of
+    (collection, id, text, file) for inserts into those collections only. Used by `chunk_votes` to find where a voted
+    chunk went after its file was re-inserted, by matching in memory rather than by searching the table.
+
+    Name the collections being carried: with none named (None), every concurrent insert from any repository would be
+    buffered, full text and all, for as long as the block runs (the architect's read-back of 7af6ea51). An empty set
+    records nothing."""
+
+    def __init__(self, collections=None) -> None:
+        self._only = None if collections is None else frozenset(collections)
 
     def __enter__(self) -> list[tuple[str, str, str, str]]:
         self._rows: list[tuple[str, str, str, str]] = []
+        self._entry = (self._only, self._rows)
         with _RECORDERS_LOCK:
-            _INSERT_RECORDERS.append(self._rows)
+            _INSERT_RECORDERS.append(self._entry)
         return self._rows
 
     def __exit__(self, *exc) -> None:
         with _RECORDERS_LOCK:
-            _INSERT_RECORDERS.remove(self._rows)
+            _INSERT_RECORDERS.remove(self._entry)
 
 
 class _ReEmbeddingProvider:
@@ -269,10 +279,12 @@ class MultiCollectionStore:
         ids = chunk_ids(collection, texts, metadatas)
         count = self._store.insert_data(collection, texts, ids=ids, metadata=metadatas)
         if _INSERT_RECORDERS:
-            rows = [(collection, i, t, _chunk_file(m)) for i, t, m in zip(ids, texts, metadatas)]
             with _RECORDERS_LOCK:
-                for recorder in _INSERT_RECORDERS:
-                    recorder.extend(rows)
+                wanting = [rows for only, rows in _INSERT_RECORDERS if only is None or collection in only]
+                if wanting:
+                    inserted = [(collection, i, t, _chunk_file(m)) for i, t, m in zip(ids, texts, metadatas)]
+                    for rows in wanting:
+                        rows.extend(inserted)
         return count
 
     def rows_by_ids(self, collection: str, ids: list[str]) -> list[dict]:

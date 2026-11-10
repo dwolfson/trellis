@@ -41,6 +41,19 @@ class Voted:
 
 
 @dataclass
+class Snapshot:
+    """What `snapshot` read: the voted chunks to carry, and the voted refs that already point at nothing (their row is
+    gone, or their id cannot be one) before this re-insert, which the report names rather than leaving out (the
+    architect's read-back of 7af6ea51: absence is an answer). True when either is non-empty."""
+    collection: str
+    voted: list[Voted] = field(default_factory=list)
+    already_orphaned: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.voted or self.already_orphaned)
+
+
+@dataclass
 class CarryReport:
     collection: str
     #: old ref -> new ref, for every vote moved.
@@ -51,6 +64,8 @@ class CarryReport:
     ambiguous: dict[str, int] = field(default_factory=dict)
     #: refs whose text is no longer in what was inserted.
     orphaned: list[str] = field(default_factory=list)
+    #: refs that already pointed at nothing before this re-insert (`Snapshot.already_orphaned`).
+    already_orphaned: list[str] = field(default_factory=list)
     error: str = ""
 
     def words(self) -> str:
@@ -61,6 +76,8 @@ class CarryReport:
             parts.append(f"{len(self.ambiguous)} ambiguous")
         if self.orphaned:
             parts.append(f"{len(self.orphaned)} orphaned")
+        if self.already_orphaned:
+            parts.append(f"{len(self.already_orphaned)} already orphaned before this re-insert")
         return "votes: " + ", ".join(parts)
 
 
@@ -69,36 +86,41 @@ def _metrics():
     return _metrics_collector()
 
 
-def snapshot(store: Any, collection: str, files: Iterable[str] | None = None, *, metrics: Any = None) -> list[Voted]:
+def snapshot(store: Any, collection: str, files: Iterable[str] | None = None, *, metrics: Any = None) -> Snapshot:
     """The voted chunks of `collection`, read before their rows are replaced. `files`: only chunks from these files
-    (a per-file refresh); None for the whole collection (a full rebuild). Never raises: a snapshot that cannot be read
-    is empty, and logged, so the replace still runs."""
+    (a per-file refresh); None for the whole collection (a full rebuild). A voted ref whose row is already gone, or
+    whose id cannot be one, is listed as already orphaned. Never raises: a snapshot that cannot be read is empty, and
+    logged, so the replace still runs."""
+    snap = Snapshot(collection=collection)
     try:
         metrics = metrics or _metrics()
         refs = metrics.chunk_vote_refs(collection)
         if not refs:
-            return []
+            return snap
         ids = {r.split(":", 1)[1]: r for r in refs if ":" in r}
         wanted = set(files) if files is not None else None
-        out: list[Voted] = []
+        found: set[str] = set()
         for row in store.rows_by_ids(collection, list(ids)):
+            found.add(row["id"])
             meta = row.get("metadata") or {}
             file = str(meta.get("file_path") or meta.get("source_url") or "")
             if wanted is not None and file not in wanted:
                 continue
-            out.append(Voted(ref=ids[row["id"]], collection=collection, chunk_id=row["id"],
-                             text=row.get("text") or "", file=file))
-        return out
+            snap.voted.append(Voted(ref=ids[row["id"]], collection=collection, chunk_id=row["id"],
+                                    text=row.get("text") or "", file=file))
+        snap.already_orphaned = sorted(ref for chunk_id, ref in ids.items() if chunk_id not in found)
+        return snap
     except Exception as exc:  # noqa: BLE001 -- the replace must run; the carry reports what it could not do
         logger.warning("chunk votes for %s could not be read before re-insert: %s", collection, exc)
-        return []
+        return snap
 
 
-def carry(voted: list[Voted], inserted: list[tuple[str, str, str, str]], *, metrics: Any = None) -> CarryReport:
+def carry(snap: Snapshot, inserted: list[tuple[str, str, str, str]], *, metrics: Any = None) -> CarryReport:
     """Match each voted chunk to what was inserted, and move its votes. `inserted` is `record_inserts()`'s list of
     (collection, id, text, file)."""
-    collection = voted[0].collection if voted else ""
-    report = CarryReport(collection=collection)
+    collection = snap.collection
+    voted = snap.voted
+    report = CarryReport(collection=collection, already_orphaned=list(snap.already_orphaned))
     if not voted:
         return report
     try:
@@ -127,6 +149,6 @@ def carry(voted: list[Voted], inserted: list[tuple[str, str, str, str]], *, metr
     except Exception as exc:  # noqa: BLE001 -- the ingestion has happened; say what the carry could not do
         logger.warning("chunk votes for %s could not be carried: %s", collection, exc)
         report.error = f"{type(exc).__name__}: {exc}"[:200]
-    if report.moved or report.ambiguous or report.orphaned or report.error:
+    if report.moved or report.ambiguous or report.orphaned or report.already_orphaned or report.error:
         logger.info("chunk votes for %s after re-insert: %s", collection, report.words())
     return report

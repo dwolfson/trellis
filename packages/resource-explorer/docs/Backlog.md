@@ -59,6 +59,13 @@ Fixed in the same pass: `scripts/regen_docs_index.py` filed a status reading "no
 **Fix:** reset or drain that semaphore in a fixture, or assert the cap relative to the slots free at the start of the test.
 **Status:** small; not scheduled.
 
+## Chat votes are not carried when website or narrative-doc chunks are re-inserted (logged 2026-11-10, from the R0 read-back)
+
+**What:** R0 (`chunk_votes`, per-file chunk ids) carries a chat vote to its chunk's new id across a repository refresh and the CLI wizard's re-index. `website_ingestion` (the shared `web_docs_*` collections) and file-system narrative docs (`surveyors/filesystem/narrative_docs.py`) still drop or replace their chunks without the carrier, so a vote on one of their chunks can be left pointing at nothing.
+**Today:** all 25 chunk votes on laz are on repository markdown collections (the coordinator's read, 2026-11-10), so nothing is lost yet.
+**Fix:** wrap those re-inserts in `chunk_votes.snapshot` / `record_inserts({collection})` / `carry`, with R1 (the rebuild) or the site re-crawl brief.
+**Status:** not scheduled.
+
 ## DONE (2026-10-20, fb383152): Repositories added by scouting or the bulk add are never first-indexed for chat; the Analysis `rag_ingestion` step cannot do it (found 2026-10-18)
 
 **Resolved by the first index, asked first** (`resource_explorer/first_index.py`, `web/routes/first_index.py`, `web/static/next/first-index.js`; designed in `docs/design-notes/REPLY-DESIGNER-GROUP-SCHEDULING-AND-FIRST-INDEX-2026-10-19.md` §4 and `REPLY-DESIGNER-FIRST-INDEX-CONSENT-CHOICE-2026-10-20.md`). How it answered the four questions below:
