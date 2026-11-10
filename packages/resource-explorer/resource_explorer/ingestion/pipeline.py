@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -15,6 +14,7 @@ from resource_explorer.ingestion.vendored import is_vendored, is_vendored_abs
 from resource_explorer.vector_store_pg import MultiCollectionStore
 from resource_explorer.registry import ProjectRegistry, ProjectStatus
 from resource_explorer.ingestion.vendored import is_vendored_abs
+from resource_explorer.survey_time import now_utc_iso
 
 log = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ class IngestionPipeline:
             if findings:
                 self.registry.upsert_finding(
                     resource_slug, "ci_quality", findings,
-                    surveyed_at=datetime.utcnow().isoformat(),
+                    surveyed_at=now_utc_iso(),
                 )
                 self.console.print(f"[dim]CI quality: {len(findings)} check(s) evaluated.[/dim]")
         except Exception as exc:
@@ -368,7 +368,7 @@ class IngestionPipeline:
             if findings:
                 self.registry.upsert_finding(
                     resource_slug, "supply_chain", findings,
-                    surveyed_at=datetime.utcnow().isoformat(),
+                    surveyed_at=now_utc_iso(),
                 )
                 self.console.print(
                     f"[dim]Supply chain: {len(findings)} check(s) evaluated.[/dim]")
@@ -388,7 +388,7 @@ class IngestionPipeline:
             if findings:
                 self.registry.upsert_finding(
                     resource_slug, "repo_conventions", findings,
-                    surveyed_at=datetime.utcnow().isoformat(),
+                    surveyed_at=now_utc_iso(),
                 )
                 self.console.print(f"[dim]Repo conventions: {len(findings)} check(s) evaluated.[/dim]")
         except Exception as exc:

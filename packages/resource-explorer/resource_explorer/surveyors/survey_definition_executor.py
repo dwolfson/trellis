@@ -18,11 +18,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Callable
 
 from resource_explorer import credential_handoff, presser_hold
 from resource_explorer.credential_handoff import split_credentials
+from resource_explorer.survey_time import now_utc_iso
 from resource_explorer.surveyors import result_status, step_cost_observer
 from resource_explorer.surveyors.survey_definition_reader import SurveyDefinitionReader
 
@@ -539,7 +539,7 @@ class SurveyDefinitionExecutor:
         to run one step.
         """
         adapter = get_adapter(entity_type)
-        surveyed_at = datetime.utcnow().isoformat()
+        surveyed_at = now_utc_iso()
         if entity_type == "database":
             # Brief D 7f.1: one scan, one snapshot. Every step of this run --
             # prerequisite auto-runs and batch/Prefect paths included, they

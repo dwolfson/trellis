@@ -16,6 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
 from sqlalchemy import create_engine
+from resource_explorer.survey_time import now_utc_iso
 
 log = logging.getLogger(__name__)
 
@@ -8001,7 +8002,7 @@ class ProjectRegistry:
         details: optional per-label breakdown dict (e.g. {"Other": {".toml": 5, ".yaml": 3}})
         """
         slug = self._normalize_slug(slug)
-        surveyed_at = datetime.utcnow().isoformat()
+        surveyed_at = now_utc_iso()
         details = details or {}
         with self._conn() as conn:
             conn.executemany(
@@ -8282,7 +8283,7 @@ class ProjectRegistry:
                 "no such project in the registry (it was never added, or was "
                 "removed since this survey run started)."
             )
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        surveyed_at = surveyed_at or now_utc_iso()
         # `surveyed_at` is the READ KEY, not a label: query_findings returns
         # only the rows at MAX(surveyed_at). A non-timestamp string therefore
         # shadows every real run FOREVER, because any word starting above '2'
@@ -9349,7 +9350,7 @@ class ProjectRegistry:
                 "no such project in the registry (it was never added, or was "
                 "removed since this survey run started)."
             )
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        surveyed_at = surveyed_at or now_utc_iso()
         rows = [
             {
                 "project_slug": slug, "kind": kind, "surveyed_at": surveyed_at,
@@ -13737,7 +13738,7 @@ class ProjectRegistry:
         call's freshly-generated timestamp happened to sort later.
         """
         slug = self._normalize_slug(slug)
-        surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        surveyed_at = surveyed_at or now_utc_iso()
         merged = False
         with self._conn() as conn:
             # One scan, one snapshot (Brief D 7f.1): the steps of a scan share

@@ -30,7 +30,6 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from datetime import datetime
 
 from resource_explorer.surveyors.base_surveyor import BaseSurveyor
 from resource_explorer.step_outcome import StepOutcome, no_signal
@@ -39,6 +38,7 @@ from resource_explorer.surveyors.survey_report import (
     RequestForActionAnnotation,
     ResourceMeasureAnnotation,
 )
+from resource_explorer.survey_time import now_utc_iso
 
 log = logging.getLogger(__name__)
 
@@ -242,7 +242,7 @@ class CveScanSurveyor(BaseSurveyor):
                  osv_url: str = _OSV_BATCH_URL, opener=None,
                  detail_opener=None) -> None:
         super().__init__(project, registry)
-        self._surveyed_at = surveyed_at or datetime.utcnow().isoformat()
+        self._surveyed_at = surveyed_at or now_utc_iso()
         self._osv_url = osv_url
         self._opener = opener
         self._detail_opener = detail_opener
