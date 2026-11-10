@@ -294,7 +294,7 @@ async function refresh() {
     data = await r.json();
   } catch (e) { return; }
 
-  renderSystemHealth(data.system || {});
+  renderSystemHealth(data.system || {}, data.dr_egeria_templates || null);
   renderCollections(data.collections || []);
   renderRepos(data.repos || []);
   await refreshJobs();
@@ -305,7 +305,7 @@ async function refresh() {
 }
 
 // ── System health ──────────────────────────────────────────────────────────
-function renderSystemHealth(sys) {
+function renderSystemHealth(sys, tpl) {
   const el = document.getElementById('sys-health');
   el.innerHTML = '';
   const items = [
@@ -318,6 +318,23 @@ function renderSystemHealth(sys) {
     span.textContent = label;
     el.appendChild(span);
   });
+  // Dr.Egeria templates (B2): green when read from the installed pyegeria,
+  // red when EA has fallen back to a copy that may not match the dispatcher.
+  if (tpl) {
+    const span = document.createElement('span');
+    const ok = !!tpl.matches_executor;
+    span.className = `px-2 py-0.5 rounded text-xs font-medium ${ok ? 'sys-ok' : 'sys-err'}`;
+    span.textContent = ok
+      ? `Dr.Egeria templates: pyegeria ${tpl.pyegeria_version || ''}`.trim()
+      : 'Dr.Egeria templates: fallback copy';
+    span.title = ok
+      ? `From the installed pyegeria (${tpl.source}): ${tpl.root}`
+      : (tpl.root
+          ? `Installed pyegeria ${tpl.pyegeria_version || ''} has no packaged templates, so these copies may not match the Dr.Egeria executor:\n` +
+            Object.entries(tpl.fallback_roots || {}).map(([k, v]) => `${k}: ${v || 'none'}`).join('\n')
+          : 'No Dr.Egeria templates found');
+    el.appendChild(span);
+  }
 }
 
 // ── Collections ────────────────────────────────────────────────────────────

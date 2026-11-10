@@ -129,3 +129,42 @@ def test_real_installed_pyegeria_if_it_ships_templates():
     glossary = idx.get_by_name("Create Glossary", tier="basic")
     text = open(glossary["file_path"], encoding="utf-8").read()
     assert "### Zone Membership" in text
+
+
+class TestAdminStatus:
+    """Brief read-back ask (a): a fallback must be visible on the admin page,
+    not only in the log."""
+
+    def test_status_when_packaged(self, packaged):
+        st = dre_templates.templates_status()
+        assert st["matches_executor"] is True
+        assert st["source"] == "package"
+        assert st["root"] == str(packaged)
+
+    def test_status_when_falling_back_names_each_loader(self, no_accessor, monkeypatch, tmp_path):
+        clone, repo_copy = tmp_path / "clone", tmp_path / "config-copy"
+        monkeypatch.setattr(TemplateIndex, "_legacy_base_paths", lambda self: [clone])
+        monkeypatch.setattr(tools, "_legacy_templates_root", lambda: repo_copy)
+        monkeypatch.setattr(
+            CommandKeywordIndex, "_find_legacy_template_root", lambda self: repo_copy / "basic"
+        )
+        st = dre_templates.templates_status()
+        assert st["matches_executor"] is False
+        assert st["source"] == "fallback"
+        assert st["fallback_roots"] == {
+            "TemplateIndex": str(clone),
+            "agents.tools": str(repo_copy),
+            "CommandKeywordIndex": str(repo_copy / "basic"),
+        }
+        assert st["root"] == str(clone)
+
+    def test_admin_status_route_carries_it(self, packaged, monkeypatch):
+        import asyncio
+        from advisor.web import admin
+        monkeypatch.setattr(admin, "_vector_counts", lambda: {})
+        monkeypatch.setattr(admin, "_last_indexed", lambda: {})
+        monkeypatch.setattr(admin, "_system_health", lambda: {})
+        monkeypatch.setattr(admin, "_repo_status", lambda p: {})
+        out = asyncio.run(admin.admin_status())
+        assert out["dr_egeria_templates"]["matches_executor"] is True
+        assert out["dr_egeria_templates"]["root"] == str(packaged)

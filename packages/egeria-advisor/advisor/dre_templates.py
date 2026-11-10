@@ -82,3 +82,64 @@ def note_fallback(loader: str, path: Optional[Path]) -> None:
         f"falling back to {where}. These templates may not match the installed "
         f"Dr.Egeria dispatcher until trellis' pyegeria floor includes the accessor."
     )
+
+
+def templates_status() -> dict:
+    """What the admin status page shows about Dr.Egeria templates, so a
+    fallback to a copy that may not match the dispatcher is visible, not only
+    logged.
+
+    ``matches_executor`` is True only when the templates come from the
+    installed pyegeria (``source`` "package" or "checkout"). Otherwise
+    ``source`` is "fallback", ``root`` is the first legacy directory in use
+    (or None when there is none at all) and ``fallback_roots`` names each
+    loader's own legacy directory, since they differ (the 2026-08-17 clone,
+    config/dr-egeria-templates, a workspace templates/).
+    """
+    try:
+        from importlib.metadata import version
+        pyeg_version = version("pyegeria")
+    except Exception:
+        pyeg_version = None
+
+    root = installed_templates_root()
+    if root is not None:
+        return {
+            "source": installed_templates_source(),
+            "root": str(root),
+            "matches_executor": True,
+            "pyegeria_version": pyeg_version,
+        }
+    fallback_roots: dict = {}
+
+    def _probe(name, fn):
+        try:
+            p = fn()
+            fallback_roots[name] = str(p) if p is not None else None
+        except Exception:
+            fallback_roots[name] = None
+
+    def _template_index():
+        from advisor.agents.dr_egeria_agent import TemplateIndex
+        paths = TemplateIndex()._legacy_base_paths()
+        return paths[0] if paths else None
+
+    def _tools():
+        from advisor.agents.tools import _legacy_templates_root
+        return _legacy_templates_root()
+
+    def _keyword_index():
+        from advisor.command_keyword_index import CommandKeywordIndex
+        return CommandKeywordIndex()._find_legacy_template_root()
+
+    _probe("TemplateIndex", _template_index)
+    _probe("agents.tools", _tools)
+    _probe("CommandKeywordIndex", _keyword_index)
+    first = next((r for r in fallback_roots.values() if r), None)
+    return {
+        "source": "fallback",
+        "root": first,
+        "matches_executor": False,
+        "pyegeria_version": pyeg_version,
+        "fallback_roots": fallback_roots,
+    }
