@@ -5,9 +5,15 @@ advisor/web/static/test/render.test.mjs, which the last test here runs when node
 - no script, stylesheet or font is loaded from a CDN;
 - marked.parse is called only inside render.js, so every Markdown render goes through DOMPurify;
 - no inline on*="..." handler is built from a ${...} value in the files S2 owns.
+
+The node harness needs node and jsdom. jsdom is found through EA_JSDOM_DIR (a node_modules directory,
+e.g. <trellis>/packages/resource-explorer/frontend-build/node_modules), or that same directory in this
+or the main trellis checkout. Without them test_node_render_harness skips, unless
+EA_RENDER_HARNESS_REQUIRED=1: then a missing node or jsdom, or any skipped harness test, FAILS.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -121,17 +127,33 @@ def test_feedback_click_checks_the_response():
 
 def _jsdom_available() -> bool:
     repo = STATIC.parents[4]
-    import os
     dirs = [os.environ.get("EA_JSDOM_DIR"),
             repo / "packages/resource-explorer/frontend-build/node_modules",
             repo.parent / "trellis/packages/resource-explorer/frontend-build/node_modules"]
     return any(d and (Path(d) / "jsdom" / "package.json").exists() for d in dirs)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.skipif(not _jsdom_available(), reason="jsdom not found (set EA_JSDOM_DIR)")
 def test_node_render_harness():
+    required = os.environ.get("EA_RENDER_HARNESS_REQUIRED") == "1"
+    missing = ("node is not installed" if shutil.which("node") is None
+               else None if _jsdom_available() else "jsdom not found (set EA_JSDOM_DIR)")
+    if missing:
+        if required:
+            pytest.fail(f"EA_RENDER_HARNESS_REQUIRED=1 but {missing}: the security harness did not run")
+        pytest.skip(missing)
     r = subprocess.run(["node", "--test", str(STATIC / "test" / "render.test.mjs")],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
-    assert re.search(r"^# fail 0$", r.stdout, re.M) and re.search(r"^# skipped 0$", r.stdout, re.M)
+    assert re.search(r"^# fail 0$", r.stdout, re.M) and re.search(r"^# skipped 0$", r.stdout, re.M), r.stdout[-2000:]
+    assert re.search(r"^# pass [1-9]\d*$", r.stdout, re.M), r.stdout[-2000:]
+
+
+def test_required_harness_fails_instead_of_skipping(monkeypatch):
+    """EA_RENDER_HARNESS_REQUIRED=1 turns a missing jsdom into a failure, not a skip."""
+    monkeypatch.setitem(globals(), "_jsdom_available", lambda: False)
+    monkeypatch.setenv("EA_RENDER_HARNESS_REQUIRED", "1")
+    with pytest.raises(pytest.fail.Exception, match="security harness did not run"):
+        test_node_render_harness()
+    monkeypatch.delenv("EA_RENDER_HARNESS_REQUIRED")
+    with pytest.raises(pytest.skip.Exception):
+        test_node_render_harness()

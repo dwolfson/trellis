@@ -21,3 +21,13 @@ the CDN (always latest); 12.2.0 is the newest mermaid release at least two weeks
 Markdown is rendered only through `../render.js` (`renderMarkdown`), which runs `marked` and then
 DOMPurify. `tests/unit/test_static_render_safety.py` fails if a page calls `marked.parse` anywhere else
 or loads a script from a CDN.
+
+Running the browser-side harness (`../test/render.test.mjs`, also run by that unit test):
+- `EA_JSDOM_DIR`: a `node_modules` directory holding jsdom, e.g.
+  `<trellis>/packages/resource-explorer/frontend-build/node_modules` (after `npm ci` there). Without
+  it, that directory in this or the main trellis checkout is tried.
+- `EA_RENDER_HARNESS_REQUIRED=1`: a missing node or jsdom, or any skipped harness test, is a failure
+  instead of a skip. The gate sets it.
+
+mermaid is initialised with `securityLevel: 'strict'` (index.html), so diagram labels can't carry HTML
+or click handlers.

@@ -5,9 +5,11 @@
  *  to the page is what gets tested. Only fetch and Auth are stubbed.
  *
  *  Run:  node --test advisor/web/static/test/render.test.mjs
- *  jsdom is not an EA dependency: it is resolved from $EA_JSDOM_DIR (a node_modules directory), or
- *  from RE's frontend-build/node_modules in this or the main trellis checkout. Without it, every test
- *  is skipped with that reason (tests/unit/test_static_render_safety.py reports the skip).
+ *  jsdom is not an EA dependency: it is resolved from $EA_JSDOM_DIR (a node_modules directory, e.g.
+ *  <trellis>/packages/resource-explorer/frontend-build/node_modules after `npm ci` there), or from that
+ *  same directory in this or the main trellis checkout. Without it every test is skipped with that
+ *  reason, UNLESS EA_RENDER_HARNESS_REQUIRED=1: then the missing jsdom is a failure, because a
+ *  security harness that silently skips is not a pass. The gate sets both variables.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -30,7 +32,12 @@ function findJsdom() {
   return null;
 }
 const jsdom = findJsdom();
+const REQUIRED = process.env.EA_RENDER_HARNESS_REQUIRED === '1';
 const SKIP = jsdom ? false : 'jsdom not found (set EA_JSDOM_DIR to a node_modules directory holding jsdom)';
+
+test('the harness can run (jsdom found)', { skip: !REQUIRED && SKIP }, () => {
+  assert.ok(jsdom, `EA_RENDER_HARNESS_REQUIRED=1 but ${SKIP}`);
+});
 
 const read = (rel) => fs.readFileSync(path.join(STATIC, rel), 'utf8');
 const INDEX = read('index.html');
