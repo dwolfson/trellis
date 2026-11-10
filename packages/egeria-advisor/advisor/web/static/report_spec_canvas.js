@@ -511,6 +511,14 @@ const ReportSpecCanvas = (() => {
   }
   `;
 
+  // Attribute paths, types and error text come from Egeria and the server: escape them for both
+  // element text and attribute values, and never build onclick strings from them.
+  function _escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   function _buildSchemaTree(schemaList) {
     const tree = {};
     schemaList.forEach(item => {
@@ -540,9 +548,9 @@ const ReportSpecCanvas = (() => {
       const derivedName = _deriveColumnNameFromPath(path);
       return `
         <div class="flex items-center justify-between py-1 px-2 hover:bg-slate-800/40 rounded transition-colors text-xs text-slate-300">
-          <span class="font-mono text-slate-400">${name} <span class="text-[10px] text-violet-400/80">(${type})</span></span>
+          <span class="font-mono text-slate-400">${_escHtml(name)} <span class="text-[10px] text-violet-400/80">(${_escHtml(type)})</span></span>
           <button class="px-1.5 py-0.5 rounded bg-violet-700/60 hover:bg-violet-600/80 text-[10px] text-white font-semibold transition-colors"
-            onclick="ReportSpecCanvas.addColumnFromExplorer('${path}', '${derivedName}')">＋ Add</button>
+            data-add-path="${_escHtml(path)}" data-add-name="${_escHtml(derivedName)}">＋ Add</button>
         </div>
       `;
     }
@@ -550,7 +558,7 @@ const ReportSpecCanvas = (() => {
     let html = `
       <details class="pl-2 border-l border-slate-800/60 my-0.5" open>
         <summary class="cursor-pointer select-none text-xs font-semibold text-slate-400 hover:text-slate-200 py-0.5 outline-none list-none flex items-center gap-1">
-          <span class="text-slate-500 text-[10px] transition-transform inline-block">▸</span> ${name}
+          <span class="text-slate-500 text-[10px] transition-transform inline-block">▸</span> ${_escHtml(name)}
         </summary>
         <div class="flex flex-col gap-0.5 pl-1.5 mt-0.5">
     `;
@@ -583,16 +591,23 @@ const ReportSpecCanvas = (() => {
             <h3 class="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
               <span class="text-violet-500 text-base">📊</span> Schema Explorer
             </h3>
-            <button onclick="ReportSpecCanvas.closeSchemaExplorer()" class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
+            <button data-explorer-close class="text-slate-500 hover:text-slate-200 text-sm transition-colors">✕</button>
           </div>
           <div class="p-4 overflow-y-auto flex-1 flex flex-col gap-2" id="schema-explorer-content">
             <p class="text-xs text-slate-500">Loading schema attributes from Egeria...</p>
           </div>
           <div class="px-4 py-3 border-t border-slate-800/60 bg-slate-900/30 flex justify-end">
-            <button onclick="ReportSpecCanvas.closeSchemaExplorer()" class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition-colors">Close</button>
+            <button data-explorer-close class="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition-colors">Close</button>
           </div>
         </div>
       `;
+      modal.querySelectorAll('[data-explorer-close]').forEach(b => b.addEventListener('click', closeSchemaExplorer));
+      // One delegated listener for every "+ Add" button the tree renders; the path and name travel in
+      // data-* attributes (escaped above), read back as plain strings.
+      modal.querySelector('#schema-explorer-content').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-add-path]');
+        if (btn) addColumnFromExplorer(btn.dataset.addPath, btn.dataset.addName);
+      });
       document.body.appendChild(modal);
     }
     
@@ -621,7 +636,7 @@ const ReportSpecCanvas = (() => {
           content.innerHTML = `
             <div class="p-3 bg-red-950/20 border border-red-900/40 rounded flex flex-col gap-1.5 text-xs text-red-400">
               <span class="font-semibold">Discovery failed</span>
-              <span>${(schemaList?.[0]?.data_type) || 'No schema attributes returned. Please make sure Egeria has active data and is connected.'}</span>
+              <span>${_escHtml((schemaList?.[0]?.data_type) || 'No schema attributes returned. Please make sure Egeria has active data and is connected.')}</span>
             </div>
           `;
           return;
@@ -650,7 +665,7 @@ const ReportSpecCanvas = (() => {
         content.innerHTML = `
           <div class="p-3 bg-red-950/20 border border-red-900/40 rounded flex flex-col gap-1.5 text-xs text-red-400">
             <span class="font-semibold">API Error</span>
-            <span>Failed to fetch schema metadata from Advisor backend: ${err}</span>
+            <span>Failed to fetch schema metadata from Advisor backend: ${_escHtml(err)}</span>
           </div>
         `;
       });

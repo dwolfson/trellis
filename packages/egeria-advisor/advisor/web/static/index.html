@@ -4,14 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Egeria Advisor</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/vendor/tailwindcss-play.min.js?v=3.4.17"></script>
   <script src="/static/auth.js?v=20260905a"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script src="/static/vendor/marked.min.js?v=18.0.9"></script>
+  <script src="/static/vendor/purify.min.js?v=3.4.17"></script>
+  <script src="/static/render.js?v=20261110a"></script>
+  <script src="/static/vendor/mermaid.min.js?v=12.2.0"></script>
   <script>mermaid.initialize({ startOnLoad: false, theme: 'dark' });</script>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5/build/vega.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5/build/vega-lite.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6/build/vega-embed.min.js"></script>
+  <script src="/static/vendor/vega.min.js?v=5.33.1"></script>
+  <script src="/static/vendor/vega-lite.min.js?v=5.23.0"></script>
+  <script src="/static/vendor/vega-embed.min.js?v=6.29.0"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
   <style>
     body { font-family: 'Inter', system-ui, sans-serif; }
@@ -1338,7 +1340,7 @@ async function loadDrafts() {
         _activeDraftId = null;
         sessionStorage.removeItem('ea_active_draft');
       }
-      await fetch(`/api/drafts/${d.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
+      await fetch(`/api/drafts/${encodeURIComponent(d.draft_id)}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
       loadDrafts();
     };
     row.appendChild(del);
@@ -1506,7 +1508,7 @@ function _dashTile(sheet, p) {
     ? 'border-slate-700 bg-slate-900/40 text-slate-500'
     : panel ? 'border-slate-600 bg-slate-900/70' : 'border-slate-700 bg-slate-900/50');
   if (p.kind === 'text') {
-    tile.innerHTML = `<div class="msg-body prose prose-invert text-sm max-w-none">${marked.parse(preprocessMarkdown(p.content || ''))}</div>`;
+    tile.innerHTML = `<div class="msg-body prose prose-invert text-sm max-w-none">${renderMarkdown(preprocessMarkdown(p.content || ''))}</div>`;
     return tile;
   }
   const title = `<div class="font-semibold text-slate-200 ${panel ? 'text-sm' : ''}">${_esc(p.title)}</div>`;
@@ -1546,7 +1548,7 @@ async function _runDashPlacement(sheet, p, tile, btn) {
     } else if (data.state !== 'ok') {
       out.innerHTML = `<div class="text-amber-400">${_esc(data.message)}</div>`;
     } else {
-      out.innerHTML = `<div class="msg-body prose prose-invert text-xs max-w-none overflow-x-auto">${marked.parse(preprocessMarkdown(data.response || 'No output.'))}</div>`;
+      out.innerHTML = `<div class="msg-body prose prose-invert text-xs max-w-none overflow-x-auto">${renderMarkdown(preprocessMarkdown(data.response || 'No output.'))}</div>`;
       out.querySelectorAll('code.language-mermaid').forEach(el => {
         const c = document.createElement('div');
         c.className = 'mermaid my-2';
@@ -1663,7 +1665,7 @@ async function submitQuery(query, extra = {}) {
             hdr.textContent = 'Assistant';
             streamWrap.appendChild(hdr);
             streamBody = document.createElement('div');
-            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none whitespace-pre-wrap';
+            streamBody.className = 'msg-answer prose prose-invert text-sm text-slate-200 max-w-none whitespace-pre-wrap';
             streamWrap.appendChild(streamBody);
             document.getElementById('messages').appendChild(streamWrap);
           }
@@ -1678,8 +1680,8 @@ async function submitQuery(query, extra = {}) {
           const result = evt.result;
           // Re-render the streamed content as markdown
           if (streamBody && result.response) {
-            streamBody.className = 'prose prose-invert text-sm text-slate-200 max-w-none';
-            streamBody.innerHTML = marked.parse(preprocessMarkdown(result.response));
+            streamBody.className = 'msg-answer prose prose-invert text-sm text-slate-200 max-w-none';
+            streamBody.innerHTML = renderMarkdown(preprocessMarkdown(result.response));
             streamBody.querySelectorAll('code.language-mermaid').forEach(el => {
               const c = document.createElement('div');
               c.className = 'mermaid my-2';
@@ -1864,7 +1866,7 @@ function _applyQueryResult(query, result, wrap) {
     planInfo.className = 'text-slate-300 flex-1';
     planInfo.innerHTML =
       `<span class="text-violet-400 font-semibold">Plan saved</span> — ` +
-      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `<code class="text-violet-300">${_esc(result.doc_id)}.md</code> is in your inbox. ` +
       `Open the editor to review, fill in details, validate, and execute.`;
     planBanner.appendChild(planInfo);
 
@@ -1886,7 +1888,7 @@ function _applyQueryResult(query, result, wrap) {
     reportInfo.className = 'text-slate-300 flex-1';
     reportInfo.innerHTML =
       `<span class="text-violet-400 font-semibold">Report Spec saved</span> — ` +
-      `<code class="text-violet-300">${result.doc_id}.md</code> is in your inbox. ` +
+      `<code class="text-violet-300">${_esc(result.doc_id)}.md</code> is in your inbox. ` +
       `You can edit the columns in the Canvas sidebar or execute it.`;
     reportBanner.appendChild(reportInfo);
 
@@ -2096,7 +2098,7 @@ function _applyQueryResult(query, result, wrap) {
     execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
     execBanner.innerHTML =
       `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
-      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+      `<code class="text-emerald-300">${_esc(result.doc_id)}.md</code> has been moved to your outbox with the outcome appended.`;
     wrap.appendChild(execBanner);
   }
 
@@ -2223,7 +2225,7 @@ function _applyQueryResult(query, result, wrap) {
     execBanner.className = 'mt-2 px-3 py-2 rounded bg-emerald-950/60 border border-emerald-700/50 text-xs';
     execBanner.innerHTML =
       `<span class="text-emerald-400 font-semibold">Executed</span> — ` +
-      `<code class="text-emerald-300">${result.doc_id}.md</code> has been moved to your outbox with the outcome appended.`;
+      `<code class="text-emerald-300">${_esc(result.doc_id)}.md</code> has been moved to your outbox with the outcome appended.`;
     wrap.appendChild(execBanner);
   }
 
@@ -2248,17 +2250,16 @@ function _applyQueryResult(query, result, wrap) {
   // Feedback buttons — use data attributes to avoid JSON/HTML escaping issues
   const fb = document.createElement('div');
   fb.className = 'mt-1.5 flex gap-2 items-center';
+  fb.dataset.feedbackRow = '1';
   const btnUp = document.createElement('button');
   btnUp.className = 'text-xs text-slate-500 hover:text-green-400 transition-colors';
   btnUp.textContent = '👍';
-  const responseText = wrap.querySelector('.msg-body')?.textContent || '';
   btnUp.dataset.q = query;
   btnUp.dataset.qt = qtype;
   btnUp.dataset.vote = '1';
   btnUp.dataset.perspective = selectedPerspective || '';
   btnUp.dataset.routingAgent = routingAgentFromResult;
   btnUp.dataset.intentOverride = selectedIntent || 'auto';
-  btnUp.dataset.responseText = responseText.slice(0, 2000);
   btnUp.addEventListener('click', feedbackClick);
   
   const btnNeutral = document.createElement('button');
@@ -2271,7 +2272,6 @@ function _applyQueryResult(query, result, wrap) {
   btnNeutral.dataset.perspective = selectedPerspective || '';
   btnNeutral.dataset.routingAgent = routingAgentFromResult;
   btnNeutral.dataset.intentOverride = selectedIntent || 'auto';
-  btnNeutral.dataset.responseText = responseText.slice(0, 2000);
   btnNeutral.addEventListener('click', feedbackClick);
   
   const btnDown = document.createElement('button');
@@ -2283,7 +2283,6 @@ function _applyQueryResult(query, result, wrap) {
   btnDown.dataset.perspective = selectedPerspective || '';
   btnDown.dataset.routingAgent = routingAgentFromResult;
   btnDown.dataset.intentOverride = selectedIntent || 'auto';
-  btnDown.dataset.responseText = responseText.slice(0, 2000);
   btnDown.addEventListener('click', feedbackClick);
   
   fb.appendChild(btnUp);
@@ -2307,7 +2306,7 @@ function renderClarification(mdText, candidates) {
   const intro = mdText.split('\n').slice(0, 2).join('\n');
   const body = document.createElement('div');
   body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
-  body.innerHTML = marked.parse(intro);
+  body.innerHTML = renderMarkdown(intro);
   wrap.appendChild(body);
 
   // Candidate buttons
@@ -2356,7 +2355,7 @@ function renderIntentClarification(mdText, labels, intents, originalQuery) {
 
   const body = document.createElement('div');
   body.className = 'prose prose-invert text-sm text-slate-200 max-w-none mb-2';
-  body.innerHTML = marked.parse(mdText);
+  body.innerHTML = renderMarkdown(mdText);
   wrap.appendChild(body);
 
   const btnRow = document.createElement('div');
@@ -2439,8 +2438,8 @@ function appendMessage(role, text, opts = {}) {
   wrap.appendChild(header);
 
   const body = document.createElement('div');
-  body.className = 'msg-body prose prose-invert text-sm text-slate-200 max-w-none';
-  body.innerHTML = marked.parse(preprocessMarkdown(text));
+  body.className = 'msg-body msg-answer prose prose-invert text-sm text-slate-200 max-w-none';
+  body.innerHTML = renderMarkdown(preprocessMarkdown(text));
   wrap.appendChild(body);
   // Render Mermaid diagrams inside this message
   body.querySelectorAll('code.language-mermaid').forEach((el, i) => {
@@ -2467,26 +2466,67 @@ function appendMessage(role, text, opts = {}) {
 }
 
 // ── Feedback ───────────────────────────────────────────────────────────────────
+// The answer's text, read when the button is clicked (the streamed answer is only rendered once the
+// stream completes, so reading it while the buttons are built sent ""). Both answer paths mark their
+// body with .msg-answer.
+function _feedbackAnswerText(fbRow) {
+  const wrap = fbRow && fbRow.parentElement;
+  const ans = wrap && wrap.querySelector('.msg-answer');
+  const text = ans ? (ans.innerText || ans.textContent || '') : '';
+  return text.trim().slice(0, 2000) || null;
+}
+
 async function feedbackClick(e) {
   const btn = e.currentTarget;
+  const fb = btn.closest('[data-feedback-row]') || btn.parentElement;
   const vote = parseInt(btn.dataset.vote, 10);
-  const query = btn.dataset.q;
-  const queryType = btn.dataset.qt;
-  const perspective = btn.dataset.perspective || null;
-  const routingAgent = btn.dataset.routingAgent || null;
-  const intentOverride = btn.dataset.intentOverride || null;
-  const responseText = btn.dataset.responseText || null;
-  await fetch('/api/feedback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-    body: JSON.stringify({ query, query_type: queryType, vote, perspective, routing_agent: routingAgent, intent_override: intentOverride, response_text: responseText }),
-  }).catch(() => {});
-  const fb = btn.parentElement;
-  fb.innerHTML = vote > 0
-    ? '<span class="text-xs text-green-400">👍 Thanks!</span>'
-    : (vote === 0
-        ? '<span class="text-xs text-amber-400">😐 Noted (Partially helpful).</span>'
-        : '<span class="text-xs text-red-400">👎 Noted.</span>');
+  const payload = {
+    query: btn.dataset.q,
+    query_type: btn.dataset.qt,
+    vote,
+    perspective: btn.dataset.perspective || null,
+    routing_agent: btn.dataset.routingAgent || null,
+    intent_override: btn.dataset.intentOverride || null,
+    response_text: _feedbackAnswerText(fb),
+  };
+  // Keep the buttons so a failed send can be retried; acknowledge the click at once.
+  if (!fb._buttons) fb._buttons = [...fb.querySelectorAll('button')];
+  fb.replaceChildren();
+  const status = document.createElement('span');
+  status.className = 'text-xs text-slate-400';
+  status.textContent = 'Sending…';
+  fb.appendChild(status);
+
+  let failure = null;
+  try {
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { const d = await res.json(); detail = d.detail || d.message || d.error || ''; } catch { /* not JSON */ }
+      if (typeof detail !== 'string') detail = JSON.stringify(detail);
+      failure = `HTTP ${res.status}${detail ? ': ' + detail : ''}`;
+    }
+  } catch (err) {
+    failure = (err && err.message) || String(err);
+  }
+
+  if (!failure) {
+    status.className = 'text-xs ' + (vote > 0 ? 'text-green-400' : vote === 0 ? 'text-amber-400' : 'text-red-400');
+    status.textContent = vote > 0 ? '👍 Thanks!' : (vote === 0 ? '😐 Noted (Partially helpful).' : '👎 Noted.');
+    return;
+  }
+  console.warn('Feedback not recorded:', failure);
+  status.className = 'text-xs text-red-400';
+  status.textContent = `Not recorded: ${failure}`;
+  const retry = document.createElement('button');
+  retry.className = 'text-xs text-slate-400 hover:text-slate-200 underline';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => { fb.replaceChildren(...fb._buttons); });
+  fb.appendChild(retry);
 }
 
 // ── Utils ──────────────────────────────────────────────────────────────────────
@@ -2551,7 +2591,7 @@ function initCanvasButtons() {
     btn.disabled = true;
     btn.textContent = '⏳ Validating…';
     try {
-      const r = await fetch(`/api/plans/${docId}/validate`, {
+      const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
       });
@@ -3073,7 +3113,9 @@ function _renderCmdPickerList(searchQ) {
 }
 
 function _esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // Quotes too: some callers put the result inside an attribute value.
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── Custom Specs Helper Functions ────────────────────────────────────────────────
@@ -3142,7 +3184,7 @@ async function loadReportDocs() {
           sessionStorage.removeItem('ea_active_draft');
           ReportSpecCanvas.close();
         }
-        await fetch(`/api/reports/drafts/${item.draft_id}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
+        await fetch(`/api/reports/drafts/${encodeURIComponent(item.draft_id)}`, { method: 'DELETE', headers: Auth.getHeaders() }).catch(() => {});
         loadReportDocs();
       };
       row.appendChild(del);
