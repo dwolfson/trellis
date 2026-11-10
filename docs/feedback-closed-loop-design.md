@@ -1,6 +1,6 @@
 # Closing the loop on answer feedback
 
-Status: **proposal, for project-owner decisions (§8).**
+Status: **accepted; the project owner answered §8 on 2026-11-10.**
 - The architect read back the first version (f33610dd). This revision folds in that read-back's four
   design changes and its smaller points.
 - Step 0, the repair of the existing loop, is built: PR #1015. Nothing else here is built.
@@ -130,6 +130,13 @@ re-compile shows today's evidence, not the evidence behind the answer being judg
     `deferred`;
   - the suggested cause with its rule;
   - a cause menu next to the status menu that part C built.
+- **Who may diagnose (§8 Q2):** an admin, any item; an analysis's owner, the items charged to
+  that analysis.
+  - Owners are declared in `analysis_catalog.yaml` as `owners: [userId, ...]` on the analysis entry.
+  - An item is charged to the analyses its answer's stored manifest drew sections from.
+  - An owner sees the question, the answer and the stored compile, but not who asked. The asker's
+    user id stays admin-only (feedback doc Q3–Q5).
+  - Status changes stay admin-only, as part C built them. An owner records a cause and a note.
 - **Product items:** page-widget reports keep status only. Their cause is a UI or product question,
   outside this loop.
 
@@ -230,6 +237,7 @@ direction, not a measurement.
 | RE `vector_store_pg`, `metrics_collector`, chat routes | **step 0 (#1015):** chat turns write `query_log` with their chunk refs; retrieval reads chunk scores from the writer's URL |
 | `trellis-feedback` (0.3) | `cause` and `secondary_cause` on triage events, with their vocabulary; `TriageState` carries the latest; list and count filter by cause |
 | RE Admin → Feedback | the stored-compile panel, the suggested cause with its rule, the cause menu, and picking irrelevant chunks |
+| RE `analysis_catalog.yaml` | `owners:` per analysis (§8 Q2); the diagnose route allows an owner on items charged to their analysis |
 | RE gaps / RFA / Automate | the consumers in §3.2 |
 | RE replay | a replay-case table in trellis-feedback (keyed to the item), the nightly run and its Admin view |
 | RE `metrics_collector` | §3.4's rebalanced scoring once causes exist |
@@ -239,7 +247,7 @@ direction, not a measurement.
 
 - **Admin time is the real cost.** Each diagnosis is a person reading an answer and its evidence.
   The suggested cause with its rule, and the stored-compile panel, are there to make that a minute,
-  not ten. Volume decides whether that's sustainable (§8 Q6).
+  not ten. The owner expects 20–200 chat votes a week (§8 Q6), so diagnosis is a weekly routine, and the suggestions and the by-cause views are core to step 1, not extras.
 - **A judge model for replay**, only where a case has a "must contain" list. It's pinned and
   nightly; it's the one place an LLM grades an LLM, which is why the deterministic precondition
   checks come first and are reported separately.
@@ -255,8 +263,9 @@ Each step is its own PR, with tests and an architect read-back.
    an end-to-end test on SQLite and Postgres, per-turn refs owned by the route, and a short cache.
    Known and left for step 4: a vote finds its `query_log` row by question hash, so two people
    asking the same text can cross. Step 4 carries the exchange or row id instead.
-1. **Cause on triage:** trellis-feedback 0.3, then RE's cause menu, the suggestion rules and the
-   stored-compile panel. No consumers yet; it starts collecting diagnoses.
+1. **Cause on triage:** trellis-feedback 0.3, then RE's cause menu, the suggestion rules, the
+   stored-compile panel, analysis `owners:` with the owner's diagnose access, and the count by
+   cause (§8 Q2, Q6). No consumers yet; it starts collecting diagnoses.
 2. **Routing:** the gaps and RFA consumers, then Automate's.
 3. **Replay:** the cases, the nightly run, the Admin view, and reopening on regression.
 4. **Rebalanced chunk scoring** (§3.4), once there are enough diagnosed votes to matter.
@@ -273,25 +282,22 @@ Each step is its own PR, with tests and an architect read-back.
   already diagnosed. It's a separate, larger piece of work. An accepted manifest edit could later be
   recorded as a diagnosed item.
 
-## 8. Open questions for the project owner
+## 8. Decisions
 
-The architect agrees with the recommendations on Q3 and Q4.
+**Decision (project owner, 2026-11-10):** the seven questions below were answered in a walk-through
+with the project owner. Five follow the recommendation; Q2 and Q6 add to the design.
 
-1. **The cause vocabulary and its precedence (§2.1–2.2).** Nine causes, with the "earliest stage
-   at fault" rule and an optional secondary cause. Fewer to start? Recommendation: all nine. Each
-   has a different fix or owner, and merging two makes one of them unroutable.
-2. **Who diagnoses?** Admins only, the same as triage (feedback doc Q3)? Or may an analysis's owner
-   diagnose the items charged to their analysis? Recommendation: admins for now.
-3. **"Must contain" for a replay case:** required or optional? Recommendation: optional. Without
-   it, replay reports "evidence fixed" only, which already catches the commonest regressions.
-   The exception is `analysis_defect`, whose deterministic check shows only that the evidence
-   changed; it needs the list.
-4. **Where replay cases live:** as library items, or in their own table? Recommendation: their own
-   table in trellis-feedback, keyed to the item, so EA gets it too.
-5. **A regression: reopen the item, or open a new one** linked to it? Recommendation: reopen
-   (`new`, actor `replay`) after two consecutive judge failures, since it is the same failure come
-   back.
-6. **Volume.** How many chat votes a week do we expect on the production instance? It decides
-   whether diagnosis is a minute a day or a job. Steps 0 and 1 can go ahead regardless.
-7. **EA's collection multipliers.** Leave them as they are (they read EA's own votes, §3.4), or move
-   them onto diagnosed votes when EA adopts the library? Recommendation: decide at EA adoption.
+1. **The cause vocabulary:** all nine causes, with the earliest-stage precedence (§2.2) and the
+   optional secondary cause.
+2. **Who diagnoses:** admins, and an analysis's owners for the items charged to that analysis. This
+   goes beyond the recommendation (admins only). Owners are declared as `owners:` in
+   `analysis_catalog.yaml`. An item is charged by its stored manifest's sections. Owners don't see
+   the asker's id. See §3.1.
+3. **"Must contain" for a replay case:** optional. Expected for `analysis_defect`, whose
+   deterministic check shows only that the evidence changed.
+4. **Where replay cases live:** their own table in trellis-feedback, keyed to the item.
+5. **A regression:** reopen the same item (`new`, actor `replay`) after two consecutive judge
+   failures.
+6. **Volume:** 20–200 chat votes a week expected on production. Diagnosis is a weekly routine, so
+   the manifest suggestions (§2.3) and the by-cause views (§3.5) ship with step 1.
+7. **EA's collection multipliers:** left as they are; decide at EA adoption.
