@@ -21,6 +21,11 @@ from advisor import feedback_collector as fcmod
 
 _REAL_SUBMIT = fcmod.submit_mlflow_feedback      # captured before the autouse fixture stubs it
 
+# Upper bounds for the ordering tests below. They only matter on the FAILURE path (how long a broken
+# build waits before failing); a passing run never waits for them, however loaded the machine.
+MLFLOW_HANG_S = 30
+LOOP_HOLD_S = 15
+
 BODY = {"query": "what is a glossary?", "query_type": "explanation", "vote": 1,
         "perspective": "Data Steward", "routing_agent": "doc_agent",
         "response_text": "A glossary is ...", "intent_override": "explain"}
@@ -153,29 +158,42 @@ def test_cli_wrapper_still_returns_a_bool(tmp_path):
 # ── MLflow: never on the request path ──────────────────────────────────────────
 
 def test_hanging_mlflow_does_not_delay_the_response(http, monkeypatch):
-    """The real background submit, with an MLflow log that hangs for 3 s: the response is quick."""
+    """The real background submit, with an MLflow log that hangs until the test releases it: both
+    responses come back while MLflow is STILL hanging. Ordering, not a wall-clock bound, so a loaded
+    machine cannot fail it; if the request path waited on MLflow, the hang would end (its timeout)
+    before the response, and the assertion on `finished` fails."""
     client, as_user = http
     monkeypatch.setattr(fcmod, "submit_mlflow_feedback", _REAL_SUBMIT)
-    release = threading.Event()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     class Tracker:
         enabled = True
     monkeypatch.setattr("advisor.mlflow_tracking.get_mlflow_tracker", lambda: Tracker())
 
     def hang(self, entry, sentiment_result=None, raise_errors=False):
-        release.wait(3)
+        entered.set()
+        release.wait(MLFLOW_HANG_S)
+        finished.set()
     monkeypatch.setattr(fcmod.FeedbackCollector, "log_feedback_to_mlflow", hang)
     try:
-        t0 = time.monotonic()
         r = client.post("/api/feedback", json=BODY, headers=as_user("erinoverview"))
-        first = time.monotonic() - t0
-        t0 = time.monotonic()
         r2 = client.post("/api/feedback", json={**BODY, "vote": -1}, headers=as_user("erinoverview"))
-        second = time.monotonic() - t0
+        still_hanging = not finished.is_set()
+        assert entered.wait(MLFLOW_HANG_S), "the background MLflow job never ran"
     finally:
         release.set()
+        _drain_mlflow_worker()   # both queued jobs end HERE, while `hang` is still the patched log
     assert r.status_code == 200 and r2.status_code == 200
-    assert first < 1.0 and second < 1.0, (first, second)
+    assert still_hanging, "a response waited for MLflow to finish"
+
+
+def _drain_mlflow_worker():
+    """Wait until every MLflow job already queued on the one background worker has run. Without this,
+    the second vote's job could run after this test's patches were undone, in the NEXT test, and be
+    counted there (seen: test_refused_mlflow_is_logged_once got 4 calls instead of 3)."""
+    executor = fcmod._mlflow_executor
+    if executor is not None:
+        executor.submit(lambda: None).result(MLFLOW_HANG_S)
 
 
 def test_refused_mlflow_is_logged_once_and_never_raises(monkeypatch):
@@ -222,8 +240,10 @@ def test_mlflow_skipped_when_the_probe_disabled_tracking(monkeypatch):
 # ── the event loop stays free while a vote is being written ────────────────────
 
 def test_event_loop_serves_other_requests_while_a_vote_is_written(monkeypatch):
-    """A slow primary write (1 s) runs in a worker thread: a second request on the same loop
-    completes before the vote does. Under the old async route it would have waited behind it."""
+    """While a vote is INSIDE the collector, another request on the same event loop completes, and it
+    is that request finishing that lets the vote go on. Ordering by events, not sleeps or a clock, so
+    a loaded machine cannot fail it. Were the vote run on the event loop (the old async route), the
+    probe could not run until the vote's wait timed out: `released` would be False."""
     import httpx
     from advisor import auth
     from advisor.web.app import app
@@ -231,11 +251,14 @@ def test_event_loop_serves_other_requests_while_a_vote_is_written(monkeypatch):
     headers = {"Authorization": f"Bearer {auth.create_access_token(user_id='erinoverview', egeria_token='tok')}"}
 
     real_vote = fcmod.FeedbackCollector.record_vote
+    vote_entered, probe_done = threading.Event(), threading.Event()
+    released = []
 
-    def slow_vote(self, **kw):
-        time.sleep(1.0)
+    def held_vote(self, **kw):
+        vote_entered.set()
+        released.append(probe_done.wait(LOOP_HOLD_S))
         return real_vote(self, **kw)
-    monkeypatch.setattr(fcmod.FeedbackCollector, "record_vote", slow_vote)
+    monkeypatch.setattr(fcmod.FeedbackCollector, "record_vote", held_vote)
 
     async def go():
         done = []
@@ -249,17 +272,18 @@ def test_event_loop_serves_other_requests_while_a_vote_is_written(monkeypatch):
             async def other():
                 # Any cheap route a signed-in non-admin may call: the probe is "does the loop answer",
                 # not this route. (Not /api/feedback/extended: S1 made that admin-only.)
-                await asyncio.sleep(0.1)
+                await asyncio.to_thread(vote_entered.wait, LOOP_HOLD_S)
                 r = await client.get("/api/auth/me", headers=headers)
                 done.append("other")
+                probe_done.set()
                 return r
             rv, ro = await asyncio.gather(vote(), other())
         return done, rv, ro
 
     done, rv, ro = asyncio.run(go())
     assert rv.status_code == 200 and ro.status_code == 200, (rv.text, ro.text)
+    assert released == [True], "the vote held the event loop: the probe could not run while it was written"
     assert done == ["other", "vote"]
-
 
 
 def test_anonymous_vote_records_no_user_and_skips_query_metrics(_isolated, tmp_path):
