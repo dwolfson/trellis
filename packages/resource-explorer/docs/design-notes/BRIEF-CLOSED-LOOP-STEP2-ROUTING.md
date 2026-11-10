@@ -1,6 +1,7 @@
 # Brief: closed-loop step 2, routing a diagnosis to its consumer
 
-Status: **proposal, awaiting the architect's read-back and the project owner's decisions (§6).**
+Status: **design PASS from the architect's read-back of 32ca01ed (2026-11-10), with three required
+additions (§9). Q1, Q3, Q4 and Q7 decided; Q2, Q5, Q6 and Q8 open (§6).**
 Design: `docs/feedback-closed-loop-design.md` §3.2 (the routing table) and §6 step 2 ("the gaps and RFA
 consumers, then Automate's"). Step 1 (#1019) records a cause on a rated answer and routes nothing.
 
@@ -70,7 +71,8 @@ in scope (a slug-less chat turn) cannot make a gap. For `catalog_gap` the RFA st
 **Interaction with the checklist.** A checklist "disagree" already writes a `disagreement` gap through
 `record_disagreement`. A diagnosis of that same item writes a second gap of the diagnosed kind, under the
 same question key. They are different claims ("a person said it's wrong" vs "an admin found why"), so
-both stay. The diagnosed gap's evidence names the disagreement gap's id.
+both stay. They link both ways: the diagnosed gap's evidence names the disagreement gap's id, and the
+disagreement gap's evidence gains `diagnosed_as: <gap id>` (architect's read-back).
 
 ### RFAs (`catalog_gap`, `unclear_question`)
 
@@ -80,8 +82,9 @@ both stay. The diagnosed gap's evidence names the disagreement gap's id.
   points at both.
 - **Raised against the resource** when there is one, as the gap→RFA route already does
   (`projects.py`, "no 'analysis' RFA entity type exists yet"). With no resource: Q4.
-- **One RFA per question**, keyed in the RFA's items. A second 👎 on the same question finds the open RFA
-  and adds the item to it instead of raising another.
+- **One RFA per question.** A second 👎 on the same question finds the open RFA and adds the item to it
+  instead of raising another. Two Saves at once can race, so the lookup and the write go through a unique
+  key (the route table's, §5) or a select-for-update, not a read-then-write (architect's read-back).
 - **"The catalog owner"** has no representation in RE today: no person or role is named as owning the
   question catalog. The RFA lands in the drawer unassigned (Q5).
 
@@ -115,6 +118,10 @@ later would keep its own.
 
 ## 6. Questions for the project owner
 
+**Decision (project owner, 2026-11-10):** Q1, Q3, Q4 and Q7 as recommended: route on Save; a re-diagnosis
+leaves the earlier route standing; slug-less RFAs go to a `catalog`/`questions` pseudo-entity; Automate
+proposes with an RFA. Q2, Q5, Q6 and Q8 are open.
+
 1. **Route on Save, automatically** (recommended), or only on an explicit "Route" button after Save?
 2. **Several analyses charged:** the admin picks one, defaulting to the first in role order
    (recommended), or one gap per absent analysis?
@@ -128,6 +135,11 @@ later would keep its own.
 6. **Out of step 2:** confirm `over_compressed` waits for the spec-editing loop, and that `reasoning`'s
    "review list" is the by-cause view step 1 already shipped, not a new surface.
 7. **Automate:** propose with an RFA (a, recommended) or a disabled schedule row (b)?
+8. **What an RFA says** (raised at the architect's read-back). The RFA drawer is seen by more people than
+   Admin → Feedback, and answer feedback is admin-only (feedback doc Q3–Q5). A question as asked can name
+   people. Recommended (the architect's lean): the RFA carries the item reference and the cause only, plus
+   the admin's curator note for `unclear_question`; the question itself stays behind the item reference,
+   in Admin. The gap sentence follows the same rule.
 
 ## 7. Phasing inside step 2
 
@@ -146,3 +158,30 @@ Each its own PR, with tests and a read-back:
 - A route that fails (unregistered slug, registry error) leaves the diagnosis saved and says why.
 - Two items on one question and analysis make one gap, whose evidence lists both items.
 - The gap's evidence carries no asker id.
+- `gaps_summary` buckets sum to its total, and `disputed_by_a_person` counts disagreement gaps only (§9 A1).
+- Deleting a feedback item deletes its route rows, and the gaps and RFAs that named it say so (§9 A2).
+- Concurrent Saves on one question make one RFA.
+
+## 9. Required before code (the architect's read-back of 32ca01ed)
+
+- **A1, a real miscount in `gaps_summary`** (`gaps.py`). Its counts are `not_measurable`,
+  `disagreement`, `total` and `disputed_by_a_person`, the last documented as a subset of `disagreement`
+  but counted as every open gap whose source is a person. The new kinds (all source person) would land in
+  `total` and in no bucket, and would inflate `disputed_by_a_person`. Fix in 2a: a bucket per kind,
+  `disputed_by_a_person` restricted to `disagreement` with source person, and a test that the buckets sum
+  to `total`. Check the other readers of these counts (the Curate and Coverage tiles) and the wording of
+  the gap→RFA route in `projects.py`, which knows only the two old kinds.
+- **A2, deleting a feedback item** deletes its `feedback_routes` rows. A gap's evidence or an RFA's items
+  that name the deleted item say "feedback item deleted" when read, rather than pointing at nothing.
+- **A3, what an RFA says:** Q8 above.
+
+Smaller points from the same read-back, all taken:
+
+- Re-diagnosing back to a cause whose earlier route is now resolved says "already routed: gap #N,
+  resolved", and routes nothing new.
+- An item with no stored compile says "nothing to charge", separately from "no resource in scope".
+- 2b lists every place that resolves an RFA's entity to a registered resource (`registry.get`, resource
+  links in the drawer) and handles the `catalog`/`questions` pseudo-entity at each.
+- `feedback_routes` is real-schema DDL on the shared Postgres, so its PR goes through the gate and the
+  coordinator's clearance like any other schema change.
+- `stale` will be rare at first: sections carry a real as-of only once re-surveyed after #1025 deployed.
