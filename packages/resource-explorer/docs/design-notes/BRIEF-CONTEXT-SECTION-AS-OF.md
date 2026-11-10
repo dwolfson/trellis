@@ -2,7 +2,9 @@
 
 Status: **proposed**, for the project owner's decision. Requested by the owner on 2026-11-10 after the
 closed-loop step 1 follow-up (#1021) showed how rarely staleness can be judged at all. Reviewed in outline
-by the architect session on 2026-11-10; its additions are folded in below (§3, items a–g).
+by the architect session on 2026-11-10; its additions are folded in below (§3, items a–h). The architect
+passed the first full draft (78c072c3) with two additions: oldest-row `as_of` in §3a, and compile reuse in
+§3h.
 
 Rules that apply: one worktree, one PR, one `*-IMPLEMENTED.md`; DCO sign-off on every commit; the
 coordinator's gate before merge.
@@ -54,8 +56,13 @@ The data exists at compile time. It is dropped on the way to the manifest.
 
 **a) The field.** `packed[i].as_of` is the age of the evidence: when the analysis result was produced. It is
 never compile time and never vote time. Sources, in order of preference:
-1. the result's own `surveyed_at` (findings rows, or the reader's envelope), the newest one if several;
+1. the result's own `surveyed_at` (findings rows, or the reader's envelope) — the **oldest** one if the
+   section packs several rows;
 2. otherwise `Fact.as_of` from the fact layer (`read_snapshot`, else `last_run_at`).
+
+Oldest, not newest, because `as_of` is what the stale rule ages: a section that packs one fresh row and one
+200 days old is partly stale, and "newest" would hide it. The newest goes in its own field,
+`packed[i].as_of_newest`, written only when it differs. One meaning per field.
 
 When both exist, the result's `surveyed_at` wins: it describes the rows actually packed, while `Fact.as_of`
 describes the analysis's latest run, which may postdate what was read. Record which one was used in
@@ -84,19 +91,46 @@ the fact layer. Any path that can't be fixed is listed in the PR as a known gap,
 `instructions`, evidence entries with and without `as_of`, and a legacy entry with a naive pointer date.
 (#1021 passed review with fixtures that left out `instructions`, and so missed counting it as undated.)
 
+**h) Compile reuse must not freeze the date.** `_compile_id` hashes rung text only, so a later compile over
+a re-surveyed but unchanged result gets the same id, and `record_compile` then only bumps `hits` and
+`last_seen_at` (`registry.py`). The stored manifest would keep the first compile's `as_of` forever, and
+evidence re-verified since would go on being suggested as stale. The options:
+
+- (i) on a hit, refresh `as_of`/`as_of_source` in the stored manifest. It costs one JSON rewrite per hit,
+  and concurrent hits race harmlessly (both write the current dates). But an answer given *before* the
+  re-survey would then be judged against the newer date, which may postdate the answer itself.
+- (ii) store the dates per hit. That's correct for every answer, but it needs a table or column (DDL).
+- (iii) accept it, and word the rule "as of the first compile".
+
+**Recommended: (i) with a short history.** On a hit whose dates differ, append
+`{"seen_at": <hit time>, "as_of": {key: date}}` to a capped `manifest.as_of_seen` list (e.g. last 20), and
+refresh the top-level fields. The diagnosis reads the newest entry at or before the answer's time, and falls
+back to the packed entry. That gives (ii)'s per-answer accuracy inside the existing JSON, with no DDL. A hit
+whose dates are unchanged writes nothing beyond what it writes today.
+
 **g) Out of scope, noted for later.** The 90-day threshold may need to vary by analysis family: a
 dependency list ages faster than a licence file. Not part of this change.
 
 ## 4. Where the work lands
 
-- `trellis_context/packer.py`: `Candidate` (or `PackedSection`) carries an optional `as_of`;
-  `_packed_entry` writes it when set. This is a library change, with its own version bump.
+- `trellis_context/packer.py`: `Candidate` (or `PackedSection`) carries optional `as_of`, `as_of_source`
+  and `as_of_newest`; `_packed_entry` writes them when set. It is a library change: bump `trellis-context`
+  0.1.0 → 0.2.0. RE depends on it as an unpinned workspace source (`pyproject.toml`), so it picks up 0.2.0 in
+  the same PR; add a `>=0.2` floor there so a stale venv fails loudly rather than packing without dates. EA
+  does not import `trellis_context` today (it is only named in `collection_config.py`'s package list), so it
+  picks this up when it adopts the library, not before.
+- `registry.record_compile`: the hit path per §3h.
 - `resource_explorer/context_compile.py`: set the candidate's `as_of` per §3a on every evidence path,
   including the provenance fixes in §3e.
 - The write-site helper (§3c), with the sites that feed manifests switched to it.
 - `feedback_diagnosis.py` (`not_judged`, `suggestions`) and `journal.py` (`_as_ofs_of`) per §3d.
-- Tests per §3f, and a check against laz after deploy: the share of new compiles' evidence entries with an
-  aware `as_of` should be near 100% for any resource surveyed after the deploy.
+- Tests per §3f, plus a hit-path test: a re-surveyed, unchanged result refreshes the dates and appends to
+  `as_of_seen`.
+- Checks against laz after deploy:
+  - positive: the share of new compiles' evidence entries with an aware `as_of` is near 100% for any resource
+    surveyed after the deploy;
+  - negative: no new compile's `as_of` equals its own `created_at` (that would mean compile time leaked in,
+    against §3b).
 
 No DDL: the manifest is stored as JSON. Compile identity is unchanged: `_compile_id` hashes rung text only,
 and deliberately not provenance timestamps ("a re-read of the same stored result at a later `fetched_at` is
@@ -109,3 +143,5 @@ the same compile"). `as_of` is provenance and must stay out of the hash. Only th
    EA's compiles would get it too), or RE adds it to the manifest after packing.
 3. **Write-site scope.** Confirm §3c's scope (only the paths that feed manifests) rather than all 70
    `utcnow()` sites.
+4. **Compile reuse (§3h).** (i) with a history, as recommended; plain (i); (ii) per-hit storage, with DDL;
+   or (iii) "as of the first compile".
