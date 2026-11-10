@@ -554,10 +554,13 @@ class TestTheZoneRead:
                    control={"security": {"associatedSecurityList": {"READ": ["security-team"]}}})
         assert self._call(self._registry()) == "the resource is in a restricted zone (security)"
 
-    def test_a_zone_securing_only_updates_is_not_restricted(self, monkeypatch):
+    def test_a_zone_securing_only_updates_is_restricted(self, monkeypatch):
+        """Was `..._is_not_restricted`. Egeria b49c5ed0: a control with neither a READ nor a DEFAULT list "grants
+        access to no-one" for READ (validateZoneAccess :1156-1161), so the zone is restricted; the zone has a
+        control, so it is configuration and is named."""
         self._with(monkeypatch, zones=["data-lake"],
                    control={"data-lake": {"associatedSecurityList": {"UPDATE_PROPERTIES": ["stewards"]}}})
-        assert self._call(self._registry()) == ""
+        assert self._call(self._registry()) == "the resource is in a restricted zone (data-lake)"
 
     def test_an_unpublished_resource_has_no_zones(self, monkeypatch):
         self._with(monkeypatch, zones=["security"])

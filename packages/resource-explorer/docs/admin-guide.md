@@ -352,10 +352,19 @@ blueprint, dependency confirmations, node reclassify), every Publish item, the C
    and `PUBLISH` (the zone change of promotion), and a blueprint also `ATTACH` on itself and on each member
    component and child blueprint. RE reads the element's zones (or, for an element not in Egeria yet, the zones
    RE will give it), the caller's user account first (an unknown or disabled account is refused, as Egeria
-   does), and each zone's security access control. A zone named after the caller grants; a zone with no control
-   is ignored; a secured zone grants only through its list (`allUsers`, the account-type group, the account's
-   groups or roles, `instanceOwner`, maintainer groups). Reads run as RE's daemon account (reason
-   `access_check`), which needs the same platform-operator rights the private-zone setup already needs.
+   does), and each zone's security access control. A zone named after the caller grants (their personal zone);
+   **every other zone is secured**: a zone with no control, or whose control has neither a list for the operation
+   nor a `DEFAULT` list, grants no one, and any other zone grants only through its list (`allUsers`, the
+   account-type group, the account's groups or roles, `instanceOwner`, maintainer groups). One granting zone is
+   enough. This is Egeria's rule since e9fd817f4c (in b49c5ed0, the quickstart image 242abf68 and later). A
+   refusal never names a zone with no control unless it is one of RE's own configured zones, since such a zone
+   is normally someone's personal zone and its name says whose element it is. Reads run as RE's daemon account
+   (reason `access_check`), which needs the same platform-operator rights the private-zone setup already needs.
+
+   **`RE_ZONE_RULE`.** Leave it unset for the quickstart (b49c5ed0 or later). Set `RE_ZONE_RULE=legacy` only
+   against an Egeria platform built before e9fd817f4c, whose connector ignored a zone with no control (so an
+   element whose zones all lacked one was open). RE cannot tell which rule a platform runs; any value other than
+   `legacy` is the current rule, which refuses where the old one opened.
 5. **Could not check** (Egeria unreachable, or a zone, control or account read failed): refused, with
    "could not check access in Egeria (<reason>)". RE never opens by default when zones might apply.
    This is stricter than the connector, which treats an unreadable control as an unsecured zone.
