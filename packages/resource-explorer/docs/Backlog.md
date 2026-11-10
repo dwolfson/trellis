@@ -59,7 +59,15 @@ Fixed in the same pass: `scripts/regen_docs_index.py` filed a status reading "no
 **Fix:** reset or drain that semaphore in a fixture, or assert the cap relative to the slots free at the start of the test.
 **Status:** small; not scheduled.
 
-## Repositories added by scouting or the bulk add are never first-indexed for chat; the Analysis `rag_ingestion` step cannot do it (found 2026-10-18)
+## DONE (2026-10-20, fb383152): Repositories added by scouting or the bulk add are never first-indexed for chat; the Analysis `rag_ingestion` step cannot do it (found 2026-10-18)
+
+**Resolved by the first index, asked first** (`resource_explorer/first_index.py`, `web/routes/first_index.py`, `web/static/next/first-index.js`; designed in `docs/design-notes/REPLY-DESIGNER-GROUP-SCHEDULING-AND-FIRST-INDEX-2026-10-19.md` §4 and `REPLY-DESIGNER-FIRST-INDEX-CONSENT-CHOICE-2026-10-20.md`). How it answered the four questions below:
+1. A separate action, not `rag_ingestion`: the step still only refreshes, and a first index is its own run (run-queue kind `first_index`).
+2. It asks first, per repository, with measured size and estimates from repositories already indexed (or "unknown until the first index" when fewer than three give a basis).
+3. A repository's header shows "○ not yet indexed · index it ›"; Automate → First indexing lists every one not yet indexed and its progress.
+4. A bulk add queues nothing. A person chooses "Index all N" or "Ask me for each" in Automate → First indexing.
+
+Kept below as the record of the finding. Not covered by it: rebuilding an index that already exists, see the brief `BRIEF-REINDEX-FROM-SCRATCH.md` (2026-11-10).
 
 **Observed (coordinator, laz, 2026-10-18):** 42 of 73 repositories have no pgvector collections: 34 with a 0-chunk `rag_ingestion` row and 8 with none. docling, marquez and amundsen have `collections = []` and `last_indexed_at = ''`, were created 2026-08-21 by the bulk add, and show no index, ingest or register operation in their activity log at all. For these repositories nothing about the code or documentation is searchable, so chat answers from documents are empty. Per-repo chunk counts for indexed repositories are correct (they include the shared `web_docs_*` collection, so a cross-repo sum double-counts it).
 
@@ -74,7 +82,7 @@ Fixed in the same pass: `scripts/regen_docs_index.py` filed a status reading "no
 4. Does a bulk add queue the index work, or leave it to the person?
 
 **Done so far:** the step now reports "Not indexed for chat (no collections registered)" with outcome `unverified`, instead of "indexed no chunks" (branch `re/rag-never-indexed`).
-**Status:** design question, then slice. Not scheduled.
+**Status:** done, 2026-10-20 (fb383152). Entry corrected 2026-11-10; it had still read "not scheduled".
 
 ## Admin → Discovery Sources is repo-only by name and by behaviour; generalize or rename, and add CSV import/export (logged 2026-10-01, owner)
 
