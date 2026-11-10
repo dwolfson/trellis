@@ -29,6 +29,7 @@ import json
 import logging
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -362,14 +363,32 @@ def _build(r: _Run) -> None:
 
 def accept(registry, run_id: str, *, requested_by: str) -> dict:
     """An admin accepts a held first rebuild: a continuation run does the survey writes and the swap."""
+    if not (requested_by or "").strip():
+        raise ReindexRefused("Accepting needs a signed-in admin.", 401)
+    holder = f"accept:{requested_by}:{uuid.uuid4().hex[:8]}"
+    if not registry.take_claim(_decision_key(run_id), holder):
+        raise ReindexRefused("That rebuild is being accepted or cancelled right now.")
+    try:
+        return _accept_claimed(registry, run_id, requested_by)
+    finally:
+        registry.release_claim(_decision_key(run_id), holder)
+
+
+def _decision_key(run_id: str) -> str:
+    """One claim per held run for its accept-or-cancel (the architect's C-1 on 6a57117e): both are read-then-write, so
+    without it they could interleave, and an accepted continuation could run its survey writes for a cancelled run."""
+    return f"reindex-decision:{run_id}"
+
+
+def _accept_claimed(registry, run_id: str, requested_by: str) -> dict:
     row = registry.get_run(run_id)
     if row is None or row.get("kind") != RUN_KIND:
         raise ReindexRefused(f"No rebuild {run_id!r}.", 404)
     t = _target(row)
+    if t.get("phase") == "cancelled":
+        raise ReindexRefused("That rebuild was already cancelled.")
     if t.get("phase") != "awaiting_accept" or t.get("accepted"):
         raise ReindexRefused("That rebuild is not waiting to be accepted.")
-    if not (requested_by or "").strip():
-        raise ReindexRefused("Accepting needs a signed-in admin.", 401)
     registry.merge_run_target(run_id, {"accepted": requested_by, "accepted_at": _now().isoformat()})
     cont = {**{k: t[k] for k in ("slug", "sha", "counts", "added", "dropped", "kept") if k in t},
             "phase": "built", "held": False, "continue_of": run_id, "asked_by": requested_by, "outcomes": []}
@@ -383,10 +402,16 @@ def accept(registry, run_id: str, *, requested_by: str) -> dict:
     return {"run_id": new_id}
 
 
+def _original_cancelled(r: _Run) -> bool:
+    """For a continuation: whether the held run it continues was cancelled. The decision claim makes this impossible
+    between two callers of accept/cancel_held; the checks that read it are the second line (the architect's C-1)."""
+    if not r.t.get("continue_of"):
+        return False
+    return _target(r.d.registry.get_run(r.t["continue_of"]) or {}).get("phase") == "cancelled"
+
+
 def _continue_accepted(r: _Run) -> tuple[str, str]:
-    # A cancel that raced the accept wins: its aside tables are gone, so there is nothing to swap in.
-    original = r.d.registry.get_run(r.t["continue_of"]) or {}
-    if _target(original).get("phase") == "cancelled":
+    if _original_cancelled(r):
         msg = "the held rebuild was cancelled before this accept ran; nothing was swapped"
         r.step("failed", msg)
         return "failed", msg
@@ -399,11 +424,23 @@ def cancel_held(registry, run_id: str, *, by: str, deps: Deps | None = None) -> 
     nothing to undo. The next rebuild is still the held first one: only a rebuild that reaches `done` ends that."""
     if not (by or "").strip():
         raise ReindexRefused("Cancelling needs a signed-in admin.", 401)
+    holder = f"cancel:{by}:{uuid.uuid4().hex[:8]}"
+    if not registry.take_claim(_decision_key(run_id), holder):
+        raise ReindexRefused("That rebuild is being accepted or cancelled right now.")
+    try:
+        return _cancel_claimed(registry, run_id, by, deps)
+    finally:
+        registry.release_claim(_decision_key(run_id), holder)
+
+
+def _cancel_claimed(registry, run_id: str, by: str, deps: Deps | None) -> dict:
     row = registry.get_run(run_id)
     if row is None or row.get("kind") != RUN_KIND:
         raise ReindexRefused(f"No rebuild {run_id!r}.", 404)
     t = _target(row)
-    if t.get("phase") != "awaiting_accept" or t.get("accepted"):
+    if t.get("accepted"):
+        raise ReindexRefused("That rebuild was already accepted, so there is nothing to cancel.")
+    if t.get("phase") != "awaiting_accept":
         raise ReindexRefused("That rebuild is not waiting to be accepted, so there is nothing to cancel.")
     deps = deps or Deps(registry=registry)
     r = _Run(run_id, deps)
@@ -435,6 +472,12 @@ def _finish(r: _Run) -> tuple[str, str]:
         _drop_aside(r)
         r.step("failed", f"the survey writes failed before the swap, so nothing was swapped: {exc}")
         return "failed", str(exc)[:500]
+    if _original_cancelled(r):
+        _drop_aside(r)
+        msg = (f"the held rebuild was cancelled before its swap; nothing was swapped, and the survey writes it made "
+               f"stay ({UNDO_NOT_REVERTED})")
+        r.step("failed", msg)
+        return "failed", msg
     try:
         _swap(r)
     except Exception as exc:  # recover_target decides by the tables

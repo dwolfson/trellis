@@ -775,7 +775,7 @@ class TestCancelHeld:
     def test_after_a_cancel_accept_refuses_and_the_next_rebuild_is_held_again(self, registry, store):
         run_id, d = held_and_built(registry, store)
         reindex.cancel_held(registry, run_id, by="erin", deps=d)
-        with pytest.raises(reindex.ReindexRefused, match="not waiting to be accepted"):
+        with pytest.raises(reindex.ReindexRefused, match="already cancelled"):
             reindex.accept(registry, run_id, requested_by="erin")
         with pytest.raises(reindex.ReindexRefused, match="nothing to cancel"):
             reindex.cancel_held(registry, run_id, by="erin", deps=d)
@@ -821,3 +821,71 @@ class TestCancelHeld:
         run_id, d = held_and_built(registry, store)
         reindex.cancel_held(registry, run_id, by="erin", deps=d)
         assert reindex.recover(registry, registry.get_run(run_id), deps=d) == "nothing to recover at cancelled"
+
+
+class TestDecisionClaim:
+    """The architect's C-1 on 6a57117e: accept and cancel are each read-then-write, so one claim per held run decides
+    between them, and exactly one wins however they interleave."""
+
+    def test_a_cancel_arriving_mid_accept_is_refused_and_the_accept_wins(self, registry, store, monkeypatch):
+        run_id, d = held_and_built(registry, store)
+        real_enqueue, seen = registry.enqueue_run, []
+
+        def enqueue(*a, **kw):                     # accept has checked and marked; now a cancel arrives
+            with pytest.raises(reindex.ReindexRefused, match="right now") as e:
+                reindex.cancel_held(registry, run_id, by="fred", deps=d)
+            seen.append(str(e.value))
+            return real_enqueue(*a, **kw)
+        monkeypatch.setattr(registry, "enqueue_run", enqueue)
+        cont = reindex.accept(registry, run_id, requested_by="erin")["run_id"]
+        assert seen and target(registry, run_id)["phase"] == "awaiting_accept"
+        assert any(n.endswith("__rebuild") for n in store.tables)              # the cancel dropped nothing
+        assert execute(registry, cont, d) == ("succeeded", "")
+        with pytest.raises(reindex.ReindexRefused, match="already accepted"):
+            reindex.cancel_held(registry, run_id, by="fred", deps=d)
+
+    def test_an_accept_arriving_mid_cancel_is_refused_and_the_cancel_wins(self, registry, store, monkeypatch):
+        run_id, d = held_and_built(registry, store)
+        real_drop, seen = reindex._drop_aside, []
+
+        def drop(r):                               # cancel has checked and marked; now an accept arrives
+            with pytest.raises(reindex.ReindexRefused, match="right now") as e:
+                reindex.accept(registry, run_id, requested_by="erin")
+            seen.append(str(e.value))
+            return real_drop(r)
+        monkeypatch.setattr(reindex, "_drop_aside", drop)
+        reindex.cancel_held(registry, run_id, by="fred", deps=d)
+        assert seen and not target(registry, run_id).get("accepted")
+        assert [r for r in registry.list_runs(kind=reindex.RUN_KIND, limit=50) if _cont_of(r) == run_id] == []
+        with pytest.raises(reindex.ReindexRefused, match="already cancelled"):
+            reindex.accept(registry, run_id, requested_by="erin")
+
+    def test_the_claim_is_released_after_a_refusal(self, registry, store):
+        run_id, d = held_and_built(registry, store)
+        with pytest.raises(reindex.ReindexRefused):
+            reindex.cancel_held(registry, "no-such-run", by="fred", deps=d)
+        with pytest.raises(reindex.ReindexRefused):
+            reindex.accept(registry, "no-such-run", requested_by="erin")
+        assert registry.take_claim(reindex._decision_key(run_id), "probe")
+        registry.release_claim(reindex._decision_key(run_id), "probe")
+        reindex.cancel_held(registry, run_id, by="fred", deps=d)              # nothing was left holding it
+
+    def test_a_cancel_landing_after_the_survey_writes_stops_before_the_swap(self, registry, store, monkeypatch):
+        run_id, d = held_and_built(registry, store)
+        live_before = {k: list(v) for k, v in store.tables.items() if not k.endswith("__rebuild")}
+        list_before = list(registry.get(SLUG).collections)
+        cont = reindex.accept(registry, run_id, requested_by="erin")["run_id"]
+        real_survey = reindex._survey
+
+        def survey(r):                             # past the continuation's first check, then the original is cancelled
+            real_survey(r)
+            registry.merge_run_target(run_id, {"phase": "cancelled"})
+        monkeypatch.setattr(reindex, "_survey", survey)
+        state, error = execute(registry, cont, d)
+        assert state == "failed" and "cancelled before its swap" in error and "not reverted by undo" in error
+        assert {k: v for k, v in store.tables.items()} == live_before
+        assert list(registry.get(SLUG).collections) == list_before
+
+
+def _cont_of(row):
+    return reindex._target(row).get("continue_of")
