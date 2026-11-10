@@ -244,6 +244,15 @@ def test_is_admin_is_the_same_gate(monkeypatch):
     assert auth.is_admin(request({})) is False
 
 
+def test_auth_me_reports_is_admin(client, monkeypatch):
+    monkeypatch.setenv("ADVISOR_ADMIN_USERS", ADMIN)
+    me = client.get("/api/auth/me", headers=_bearer(ADMIN)).json()
+    assert me["authenticated"] is True and me["is_admin"] is True and me["user_id"] == ADMIN
+    assert client.get("/api/auth/me", headers=_bearer(OTHER)).json()["is_admin"] is False
+    monkeypatch.setenv("ADVISOR_ADMIN_TOKEN", TOKEN)
+    assert client.get("/api/auth/me", headers={**_bearer(OTHER), "X-Admin-Token": TOKEN}).json()["is_admin"] is True
+
+
 def test_the_token_is_compared_in_constant_time(monkeypatch, client):
     calls = []
     real = hmac.compare_digest
