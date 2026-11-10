@@ -136,14 +136,6 @@ class TestWhatRoutesNothing:
         assert out.json()["route"]["state"] == "skipped"
         assert reg.list_feedback_routes([item_id]) == {} and reg.list_gaps("r1") == []
 
-    @pytest.mark.parametrize("cause", ["stale"])
-    def test_later_steps_are_said_and_not_claimed(self, client, reg, feedback_store, admin_headers, cause):
-        _compile(reg, "c1", ABSENT)
-        item_id = _answer(feedback_store)
-        route = _save(client, admin_headers, item_id, cause).json()["route"]
-        assert route["state"] == "skipped" and "Not routed yet" in route["words"]
-        assert reg.list_feedback_routes([item_id]) == {}                  # left for 2b / 2c to route
-
     def test_a_status_change_alone_routes_nothing(self, client, reg, feedback_store, admin_headers):
         _compile(reg, "c1", ABSENT)
         item_id = _answer(feedback_store)
@@ -602,3 +594,147 @@ def test_joins_at_the_same_moment_both_land_on_postgres(pg_registry):
         assert all(pool.map(lambda p: pg_registry.add_activity_item(rfa_id, p), pointers))
     items = pg_registry.get_activity(rfa_id)["items"]
     assert all(p in items for p in pointers), f"lost: {[p for p in pointers if p not in items]}"
+
+
+# ── step 2c: Automate's schedule proposal ───────────────────────────────────────────────────────────────────────
+
+STALE = manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "licenses", "rung": "FULL"}],
+                 declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"},
+                           "licenses": {"as_of": "2026-01-01T00:00:00+00:00"}})
+
+
+def _stale_answer(store):
+    item_id, _ = store.add_answer(vote=-1, question="what licences?", compile_id="c1", slug="r1",
+                                  entity_type="repo", user_id="peterprofile")
+    # The vote's time is what the stale rule measures from (feedback_diagnosis).
+    return item_id
+
+
+class TestAutomateProposal:
+    def test_stale_proposes_the_stale_section_s_analysis_with_an_offer(self, client, reg, feedback_store,
+                                                                        admin_headers):
+        _compile(reg, "c1", STALE)
+        item_id = _stale_answer(feedback_store)
+        route = _save(client, admin_headers, item_id, "stale").json()["route"]
+        assert route["state"] == "routed" and route["consumer"] == "automate"
+        entry = _rfa(reg, route["target"])
+        assert entry["summary"].startswith("Schedule licenses weekly on r1")    # the stale one, not the first packed
+        assert "what licences?" not in repr(entry) and "peterprofile" not in repr(entry)
+        [row] = [r for r in client.get("/api/activity/rfas").json() if r["entry_id"] == route["target"]]
+        assert row["offer"] == {"kind": "schedule", "entity_type": "repo", "entity_slug": "r1",
+                                "analysis_id": "licenses", "cadence": "weekly"}
+
+    def test_the_admin_may_pick_another_charged_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", STALE)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale", analysis_id="deps").json()["route"]
+        assert _rfa(reg, route["target"])["summary"].startswith("Schedule deps weekly")
+
+    def test_an_analysis_already_scheduled_is_offered_the_next_faster_cadence(self, client, reg, feedback_store,
+                                                                            admin_headers):
+        _compile(reg, "c1", STALE)
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="monthly",
+                          enabled=True)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        entry = _rfa(reg, route["target"])
+        assert entry["summary"].startswith("Schedule licenses weekly") and "already scheduled monthly" in entry["detail"]
+
+    def test_already_daily_and_still_stale_is_a_defect_gap_not_an_rfa(self, client, reg, feedback_store,
+                                                                       admin_headers):
+        # The architect's read-back of 0969661a: at daily, a faster schedule is not the fix; the run or the result's
+        # path to the compile is, which is the analysis owner's.
+        _compile(reg, "c1", STALE)
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="daily", enabled=True)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        assert route["consumer"] == "gap"
+        gap = reg.get_gap(int(route["target"]))
+        assert (gap["analysis_id"], gap["gap_kind"]) == ("licenses", "analysis_defect")
+        assert not [r for r in client.get("/api/activity/rfas").json()
+                    if r["analysis_name"] == "Automate: schedule proposal"]
+
+    def test_a_later_stale_answer_escalates_past_a_completed_proposal(self, client, reg, feedback_store,
+                                                                      admin_headers):
+        # R2: the claim is keyed by cadence, so once weekly is in place the next proposal offers daily.
+        _compile(reg, "c1", STALE)
+        first = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="weekly", enabled=True)
+        second = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        assert second["target"] != first["target"]
+        assert _rfa(reg, second["target"])["summary"].startswith("Schedule licenses daily")
+
+    def test_one_proposal_per_resource_and_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", STALE)
+        a, b = _stale_answer(feedback_store), _stale_answer(feedback_store)
+        ra = _save(client, admin_headers, a, "stale").json()["route"]
+        rb = _save(client, admin_headers, b, "stale").json()["route"]
+        assert ra["target"] == rb["target"]
+        items = _rfa(reg, ra["target"])["items"]
+        assert {"kind": "feedback", "id": a} in items and {"kind": "feedback", "id": b} in items
+
+    def test_no_resource_is_not_routed(self, client, reg, feedback_store, admin_headers):
+        route = _save(client, admin_headers, _answer(feedback_store, slug="", compile_id=""), "stale").json()["route"]
+        assert route["state"] == "not_routed" and "nothing to schedule" in route["words"]
+
+    def test_the_offer_saves_through_the_schedule_route(self, client, reg, feedback_store, admin_headers,
+                                                        monkeypatch):
+        """What the drawer's button posts is what the per-card control posts; the schedule then exists."""
+        _compile(reg, "c1", STALE)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        [row] = [r for r in client.get("/api/activity/rfas").json() if r["entry_id"] == route["target"]]
+        o = row["offer"]
+        monkeypatch.setattr("resource_explorer.web.routes.curate.require_resource_write", lambda *a, **kw: None)
+        out = client.post(f"/api/schedules/{o['entity_type']}/{o['entity_slug']}",
+                          json={"analysis_id": o["analysis_id"], "schedule": o["cadence"], "enabled": True})
+        assert out.status_code == 200, out.text
+        assert any(s["analysis_id"] == "licenses" and s["schedule"] == "weekly" for s in reg.get_schedules("repo", "r1"))
+
+
+class TestAnOfferNeverSlowsASchedule:
+    """R1: the drawer saves with only_if_faster; a schedule already at or faster than the offer is left alone."""
+
+    def _post(self, client, monkeypatch, cadence):
+        monkeypatch.setattr("resource_explorer.web.routes.curate.require_resource_write", lambda *a, **kw: None)
+        return client.post("/api/schedules/repo/r1", json={"analysis_id": "licenses", "schedule": cadence,
+                                                           "enabled": True, "only_if_faster": True}).json()
+
+    def test_a_faster_schedule_is_left_as_it_is(self, client, reg, monkeypatch):
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="daily", enabled=True)
+        out = self._post(client, monkeypatch, "weekly")
+        assert out["status"] == "unchanged" and "already scheduled daily" in out["reason"]
+        assert [s["schedule"] for s in reg.get_schedules("repo", "r1")] == ["daily"]
+
+    def test_the_same_cadence_is_left_as_it_is(self, client, reg, monkeypatch):
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="weekly", enabled=True)
+        assert self._post(client, monkeypatch, "weekly")["status"] == "unchanged"
+
+    def test_a_slower_or_missing_schedule_is_sped_up(self, client, reg, monkeypatch):
+        assert self._post(client, monkeypatch, "weekly")["status"] == "ok"
+        assert self._post(client, monkeypatch, "daily")["status"] == "ok"
+        assert [s["schedule"] for s in reg.get_schedules("repo", "r1")] == ["daily"]
+
+    def test_a_disabled_schedule_counts_as_none(self, client, reg, monkeypatch):
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="daily", enabled=False)
+        assert self._post(client, monkeypatch, "weekly")["status"] == "ok"
+
+
+def test_a_value_error_outside_the_defect_gap_is_a_passing_failure(client, reg, feedback_store, admin_headers,
+                                                                    monkeypatch):
+    """The architect's nit on 190d7aa1: only the defect gap's refusal reads as "already daily, no gap". A ValueError
+    from writing the proposal is released and retried like any other passing failure."""
+    _compile(reg, "c1", STALE)
+    item_id = _stale_answer(feedback_store)
+
+    def broken(*a, **kw):
+        raise ValueError("activity log rejected the row")
+    with monkeypatch.context() as m:
+        m.setattr("resource_explorer.activity_logger.log_rfa", broken)
+        route = _save(client, admin_headers, item_id, "stale").json()["route"]
+    assert route["state"] == "failed" and "already runs daily" not in route["words"]
+    assert reg.list_feedback_routes([item_id]) == {}
+
+
+def test_a_daily_analysis_on_a_resource_without_gaps_is_not_routed(client, reg, feedback_store, admin_headers):
+    reg.record_compile("c9", "db1", "q?", {**STALE, "text": ""}, [])
+    reg.save_schedule(entity_type="database", entity_slug="db1", analysis_id="licenses", schedule="daily", enabled=True)
+    item_id, _ = feedback_store.add_answer(vote=-1, question="q?", compile_id="c9", slug="db1", entity_type="database")
+    route = _save(client, admin_headers, item_id, "stale").json()["route"]
+    assert route["state"] == "not_routed" and "already runs daily" in route["words"]

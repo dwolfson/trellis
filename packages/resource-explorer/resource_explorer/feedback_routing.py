@@ -20,10 +20,15 @@ The rules, all decided by the project owner on 2026-11-10:
   `private_context` is the one test.
 
 Step 2a: the gap consumers (`missing_evidence`, `analysis_defect`, and the gap half of `catalog_gap`).
+Step 2c: Automate. A `stale` diagnosis proposes a schedule for the analysis behind the stale section, as an RFA whose
+drawer row can save it, only ever making it faster (Q7). One proposal per (resource, analysis, cadence), in the same
+`feedback_rfas` table, so a completed weekly proposal does not stop a later daily one; no question text. An analysis
+that already runs daily and was still stale is an `analysis_defect` gap instead: the run, or its result's path to the
+compile, is what failed (the architect's read-back of 0969661a).
 Step 2b: the RFA consumers. `catalog_gap` also raises an RFA, attached to its gap (`analysis_gaps.rfa_activity_id`),
 or against the `catalog`/`questions` pseudo-entity when the answer had no resource; `unclear_question` raises an RFA
 only. One RFA per (question, cause, entity), claimed in `feedback_rfas` before it is written; a later answer on the
-same question joins it. RFAs are raised unassigned (Q5). `stale` (2c) is said to be not routed yet, and not claimed.
+same question joins it. RFAs are raised unassigned (Q5).
 """
 from __future__ import annotations
 
@@ -58,8 +63,15 @@ _RFA_LABEL = {
     "unclear_question": "A question could be read another way, or used a name the catalog does not know",
 }
 
-#: Routed by a later step of the brief, and not claimed until then.
-LATER = {"stale": "2c (Automate)"}
+#: Routed by a later step of the brief, and not claimed until then. Empty since 2c: every step 2 cause has a consumer.
+LATER: dict[str, str] = {}
+
+#: The cause step 2c routes to Automate.
+AUTOMATE_CAUSE = "stale"
+
+#: The cadences a proposal offers, slowest first. An analysis already scheduled is offered the next faster one.
+CADENCES = ("monthly", "weekly", "daily")
+DEFAULT_CADENCE = "weekly"
 
 #: Never routed in step 2 (Q6) or never routed at all.
 UNROUTED = {
@@ -146,6 +158,11 @@ def opaque_question_key(question: str, question_id: str = "") -> str:
     return f"question:sha1:{digest}"
 
 
+class DefectGapRefused(Exception):
+    """An already-daily stale analysis's defect gap could not be raised: its resource cannot hold gaps. Raised only
+    around that `_raise_gap` call, so no other error is mistaken for it (the architect's nit on 190d7aa1)."""
+
+
 class RouteRefused(ValueError):
     """The Save asked for something routing cannot honour (an analysis outside the charge set). Said as a 400,
     before anything is written."""
@@ -165,6 +182,9 @@ class Plan:
     words: str = ""
     #: Raise (or join) the question's RFA (step 2b).
     rfa: bool = False
+    #: Propose a schedule (step 2c), and the manifest's stale rule when it gave one.
+    automate: bool = False
+    rule: str = ""
     charge: list[dict] = field(default_factory=list)
 
 
@@ -180,11 +200,11 @@ def plan(item: dict, cause: str, *, analysis_id: str = "", registry: Any) -> Pla
         return Plan(cause=cause, words=f"Not routed: {cause.replace('_', ' ')} {UNROUTED[cause]}.")
     if cause in LATER:
         return Plan(cause=cause, words=f"Not routed yet: {cause.replace('_', ' ')} is routed by step {LATER[cause]}.")
-    if cause not in GAP_CAUSES and cause not in RFA_CAUSES:
+    if cause not in GAP_CAUSES and cause not in RFA_CAUSES and cause != AUTOMATE_CAUSE:
         return Plan(cause=cause, words=f"Not routed: no consumer is named for {cause!r}.")
 
     p = Plan(cause=cause, gap_kind=GAP_CAUSES.get(cause, ""), rfa=cause in RFA_CAUSES,
-             compile_id=(item.get("compile_id") or "").strip())
+             automate=cause == AUTOMATE_CAUSE, compile_id=(item.get("compile_id") or "").strip())
     picked = (analysis_id or "").strip()
     if cause in RFA_CAUSES:
         if picked:
@@ -193,7 +213,8 @@ def plan(item: dict, cause: str, *, analysis_id: str = "", registry: Any) -> Pla
             p.gap_kind = ""                       # no resource: no gap, the RFA goes to the question catalog
         return p
     if not (item.get("slug") or "").strip():
-        p.none_reason = "no resource in scope, so there is no gap to raise"
+        p.none_reason = ("no resource in scope, so there is nothing to schedule" if p.automate
+                         else "no resource in scope, so there is no gap to raise")
         if picked:
             raise RouteRefused("This answer had no resource in scope, so no analysis can be charged.")
         return p
@@ -212,7 +233,15 @@ def plan(item: dict, cause: str, *, analysis_id: str = "", registry: Any) -> Pla
             raise RouteRefused("This answer's compile charges no analysis.")
         p.none_reason = "nothing to charge: the compile charges no analysis"
         return p
-    chosen = next((c for c in p.charge if c["analysis_id"] == picked), None) if picked else p.charge[0]
+    if picked:
+        chosen = next((c for c in p.charge if c["analysis_id"] == picked), None)
+    elif p.automate:
+        # The section the manifest found stale, when it found one; else the first charged, as for a gap.
+        stale = next((s for s in d.get("suggestions") or [] if s.get("cause") == AUTOMATE_CAUSE), {})
+        chosen = next((c for c in p.charge if c["analysis_id"] in (stale.get("sections") or [])), p.charge[0])
+        p.rule = stale.get("rule", "")
+    else:
+        chosen = p.charge[0]
     if chosen is None:
         raise RouteRefused(f"{picked!r} is not in this answer's charge set "
                            f"({', '.join(c['analysis_id'] for c in p.charge)}).")
@@ -231,6 +260,8 @@ def _gap_words(route: dict, registry: Any) -> str:
         state = ", resolved" if gap.get("resolved_at") else ""
         rfa = f", RFA {gap['rfa_activity_id'][:8]} raised" if gap.get("rfa_activity_id") else ""
         return f"Routed: gap #{target}{on} ({cause.replace('_', ' ')}){rfa}{state}."
+    if consumer == "automate":
+        return f"Routed: schedule proposal RFA {target[:8]} for {cause.replace('_', ' ')}."
     if consumer == "rfa":
         why = f" ({route['reason']})" if route.get("reason") else ""
         return f"Routed: RFA {target[:8]} ({cause.replace('_', ' ')}){why}."
@@ -273,6 +304,17 @@ def execute(p: Plan | None, item: dict, *, actor: str, registry: Any) -> dict | 
                 gap_reason = f"no gap could be raised: {exc}"
         if p.rfa:
             rfa_id = _raise_rfa(p, item, gap_id=gap_id, registry=registry)
+        if p.automate:
+            try:
+                consumer, target = _propose_schedule(p, item, actor=actor, registry=registry)
+            except DefectGapRefused as exc:
+                # Already daily, so a defect gap, on a resource that cannot hold gaps (not a repository).
+                consumer, target = "", ""
+                gap_reason = f"it already runs daily, and no gap could be raised: {exc}"
+            if consumer == "gap":
+                gap_id = int(target)
+            elif consumer:
+                rfa_id = target
     except Exception as exc:  # a passing failure: release the claim so the next Save tries again
         logger.exception("routing %s of feedback %s failed", p.cause, item_id)
         registry.release_feedback_route(item_id, p.cause)
@@ -280,6 +322,8 @@ def execute(p: Plan | None, item: dict, *, actor: str, registry: Any) -> dict | 
                 "words": f"Not routed this time ({p.cause.replace('_', ' ')}): {exc}. Save again to retry."}
     if gap_id:
         registry.finish_feedback_route(item_id, p.cause, "gap", target=str(gap_id))
+    elif rfa_id and p.automate:
+        registry.finish_feedback_route(item_id, p.cause, "automate", target=rfa_id)
     elif rfa_id:
         registry.finish_feedback_route(item_id, p.cause, "rfa", target=rfa_id, reason=gap_reason)
     else:
@@ -340,6 +384,68 @@ def _raise_rfa(p: Plan, item: dict, *, gap_id: int, registry: Any) -> str:
     if gap_id:
         _stamp_gap(registry, gap_id, rfa_id)
     return rfa_id
+
+
+def _offer_cadence(current: dict | None) -> tuple[str, str]:
+    """(cadence to offer, words about the current schedule). "" to offer when the analysis already runs daily."""
+    if current and current.get("enabled") and current.get("schedule") in CADENCES:
+        now = current["schedule"]
+        faster = CADENCES[CADENCES.index(now) + 1] if now != CADENCES[-1] else ""
+        return faster, f"it is already scheduled {now}"
+    return DEFAULT_CADENCE, "it is not scheduled"
+
+
+def _propose_schedule(p: Plan, item: dict, *, actor: str, registry: Any) -> tuple[str, str]:
+    """Automate's answer to a stale diagnosis. Returns (consumer, target): ("automate", rfa id), or ("gap", gap id)
+    when the analysis already runs daily.
+
+    The proposal is an RFA naming the analysis and resource, whose drawer row can save the schedule (`offer`; the
+    save is `only_if_faster`, so it never slows a schedule someone has since sped up). One per (resource, analysis,
+    cadence), claimed in `feedback_rfas`; a later stale answer at the same cadence joins it, and one after the
+    schedule was raised gets the next cadence's proposal. No question text: it is about the analysis.
+
+    Already daily and still stale: a faster schedule is not the fix. The run, or the path from its result to the
+    compile, failed, which is the analysis owner's: an `analysis_defect` gap (raises DefectGapRefused for a resource
+    that cannot hold gaps, which `execute` records as not routed; any other error stays a passing failure).
+    """
+    from resource_explorer.activity_logger import log_rfa
+
+    entity_type = (item.get("entity_type") or "").strip() or "repo"
+    slug = item["slug"].strip()
+    current = next((s for s in registry.get_schedules(entity_type, slug)
+                    if s.get("analysis_id") == p.analysis_id), None)
+    cadence, now = _offer_cadence(current)
+    if not cadence:
+        defect = Plan(cause=p.cause, gap_kind=ANALYSIS_DEFECT, analysis_id=p.analysis_id, role=p.role,
+                      compile_id=p.compile_id)
+        try:
+            return "gap", str(_raise_gap(defect, item, actor=actor, registry=registry))
+        except ValueError as exc:
+            raise DefectGapRefused(str(exc)) from exc
+
+    key = f"schedule:{p.analysis_id}:{cadence}"
+    pointer = {"kind": "feedback", "id": item["id"]}
+    if not registry.claim_feedback_rfa(key, p.cause, entity_type, slug):
+        rfa_id = registry.get_feedback_rfa(key, p.cause, entity_type, slug)
+        if rfa_id and rfa_id != "pending":
+            registry.add_activity_item(rfa_id, pointer)
+        return "automate", rfa_id or "pending"
+    try:
+        summary = f"Schedule {p.analysis_id} {cadence} on {slug}: an answer drew on its out-of-date result"
+        detail = [f"An admin diagnosed a rated answer as stale; {now}."]
+        if p.rule:
+            detail.append(f"The manifest's rule: {p.rule}.")
+        if p.compile_id:
+            detail.append(f"The answer was built from compile {p.compile_id}.")
+        offer = {"kind": "schedule", "entity_type": entity_type, "entity_slug": slug,
+                 "analysis_id": p.analysis_id, "cadence": cadence}
+        rfa_id = log_rfa(registry, entity_type, slug, slug, "open", summary, detail=" ".join(detail),
+                         analysis_name="Automate: schedule proposal", items=[pointer], offer=offer)
+    except Exception:
+        registry.release_feedback_rfa(key, p.cause, entity_type, slug)
+        raise
+    registry.set_feedback_rfa(key, p.cause, entity_type, slug, rfa_id)
+    return "automate", rfa_id
 
 
 def _stamp_gap(registry: Any, gap_id: int, rfa_id: str) -> None:
