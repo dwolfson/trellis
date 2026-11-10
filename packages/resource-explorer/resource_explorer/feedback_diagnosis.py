@@ -138,12 +138,14 @@ def suggestions(manifest: dict, *, answered_at: str = "",
     return sorted(out, key=lambda s: order[s["cause"]])
 
 
-def not_judged(manifest: dict, *, answered_at: str = "") -> list[dict[str, str]]:
-    """The manifest-signalled causes that could NOT be judged for this compile, with why: [{cause, why}].
+def not_judged(manifest: dict, *, answered_at: str = "") -> list[dict]:
+    """The manifest-signalled causes that could NOT be judged for this compile, with why: [{cause, why}], plus
+    `partial: True` when the cause was judged for some sections and not others.
 
     Absence is an answer only when it is stated. Few compiles declare an as-of date for their sections (4 in 400
     on laz, 2026-11-10), so "stale did not fire" usually means "there was nothing to judge staleness by", and the
-    panel must say so rather than imply the evidence was fresh.
+    panel must say so rather than imply the evidence was fresh. The same holds per section: when only some sections
+    are dated, "N of M sections have no as-of date" says which ages were never measured.
     """
     declared = manifest.get("declared") or {}
     if _parse(answered_at) is None:
@@ -151,12 +153,27 @@ def not_judged(manifest: dict, *, answered_at: str = "") -> list[dict[str, str]]
     dated = {k: (v or {}).get("as_of") for k, v in declared.items() if (v or {}).get("as_of")}
     if not dated:
         return [{"cause": "stale", "why": "no packed section declares an as-of date"}]
+    # Every evidence section the compile names, packed or declared, in the order it names them. The instructions
+    # section is always packed and is not evidence: it has no age to measure, so counting it would make every
+    # compile report one undated section that no fix could ever date.
+    sections = list(dict.fromkeys([p.get("key") for p in manifest.get("packed") or []
+                                   if isinstance(p, dict) and p.get("key") and p.get("role", "evidence") == "evidence"]
+                                  + list(declared)))
     unreadable = sorted(k for k, v in dated.items() if _parse(v) is None)
+    undated = sorted(k for k in sections if k not in dated)
+    whys = []
     if unreadable:
-        return [{"cause": "stale", "why": "the as-of date of " + ", ".join(unreadable)
-                 + " cannot be read (not an ISO time with a zone), so " + ("it was" if len(unreadable) == 1
-                                                                           else "they were") + " not judged"}]
-    return []
+        whys.append("the as-of date of " + ", ".join(unreadable) + " cannot be read (not an ISO time with a zone), so "
+                    + ("it was" if len(unreadable) == 1 else "they were") + " not judged")
+    if undated:
+        whys.append(f"{len(undated)} of {len(sections)} sections have no as-of date (" + ", ".join(undated) + "), so "
+                    + ("its age was" if len(undated) == 1 else "their ages were") + " not judged")
+    if not whys:
+        return []
+    out: dict = {"cause": "stale", "why": "; ".join(whys)}
+    if len(dated) > len(unreadable):
+        out["partial"] = True  # some sections were judged: "signals no stale section" is true of those
+    return [out]
 
 
 def catalog_analyses_for(manifest: dict, entity_type: str = "") -> list[str]:

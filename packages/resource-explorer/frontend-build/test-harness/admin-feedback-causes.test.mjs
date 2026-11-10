@@ -160,6 +160,23 @@ test('with nothing suggested, a cause that was not judged is not said to be abse
   assert.match(body, /Not judged: stale/);
 });
 
+test('a cause judged for some sections only is still listed, and its Not judged line names the rest', async () => {
+  const partial = { cause: 'stale', partial: true, why: '2 of 3 sections have no as-of date (ci, docs), so their ages were not judged' };
+  const { host, pane } = await setUp([
+    ['/api/curate/feedback', { reply: () => ok(LISTING) }],
+    ['/api/feedback/causes', { reply: () => ok(SUMMARY) }],
+    ['/api/feedback/a1/diagnosis', { reply: () => ok({ ...DIAGNOSIS, suggestions: [], not_judged: [partial] }) }],
+  ]);
+  await pane.renderFeedback(host);
+  const box = host.querySelector('[data-triage="a1"] [data-diagnosis]');
+  box.open = true;
+  box.dispatchEvent(new host.ownerDocument.defaultView.Event('toggle'));
+  await settle();
+  const body = text(box.querySelector('[data-diagnosis-body]'));
+  assert.match(body, /signals none of catalog gap, missing evidence, stale, over-compressed\./);
+  assert.match(body, /Not judged: stale — 2 of 3 sections have no as-of date \(ci, docs\)/);
+});
+
 test('the summary vote toggle asks for partly-right votes', async () => {
   const { host, pane, calls } = await setUp(BASE);
   await pane.renderFeedback(host);

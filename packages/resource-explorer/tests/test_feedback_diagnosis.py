@@ -79,6 +79,48 @@ class TestNotJudged:
         assert not_judged(manifest(declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
                           answered_at="2026-11-10T00:00:00+00:00") == []
 
+    def test_some_sections_undated_says_n_of_m(self):
+        # Architect P3 after #1019: a dated section does not vouch for the others.
+        [n] = not_judged(manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "ci", "rung": "FULL"},
+                                          {"key": "docs", "rung": "FULL"}],
+                                  declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                         answered_at="2026-11-10T00:00:00+00:00")
+        assert n == {"cause": "stale", "partial": True,
+                     "why": "2 of 3 sections have no as-of date (ci, docs), so their ages were not judged"}
+
+    def test_the_instructions_section_is_not_counted(self):
+        # Every real compile packs `instructions` (role "instructions"); it is not evidence and has no as-of.
+        [n] = not_judged(manifest(packed=[{"key": "instructions", "role": "instructions", "rung": "FULL"},
+                                          {"key": "deps", "role": "evidence", "rung": "FULL"},
+                                          {"key": "ci", "role": "evidence", "rung": "FULL"}],
+                                  declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                         answered_at="2026-11-10T00:00:00+00:00")
+        assert n["why"] == "1 of 2 sections have no as-of date (ci), so its age was not judged"
+
+    def test_all_evidence_dated_beside_instructions_is_judged(self):
+        assert not_judged(manifest(packed=[{"key": "instructions", "role": "instructions", "rung": "FULL"},
+                                           {"key": "deps", "role": "evidence", "rung": "FULL"}],
+                                   declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                          answered_at="2026-11-10T00:00:00+00:00") == []
+
+    def test_one_undated_section_reads_in_the_singular(self):
+        [n] = not_judged(manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "ci", "rung": "FULL"}],
+                                  declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}}),
+                         answered_at="2026-11-10T00:00:00+00:00")
+        assert n["why"] == "1 of 2 sections have no as-of date (ci), so its age was not judged"
+
+    def test_unreadable_and_undated_are_both_said(self):
+        [n] = not_judged(manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "ci", "rung": "FULL"},
+                                          {"key": "docs", "rung": "FULL"}],
+                                  declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"}, "ci": {"as_of": "last week"}}),
+                         answered_at="2026-11-10T00:00:00+00:00")
+        assert "ci cannot be read" in n["why"] and "1 of 3 sections have no as-of date (docs)" in n["why"]
+        assert n["partial"] is True
+
+    def test_all_dates_unreadable_is_not_partial(self):
+        [n] = not_judged(manifest(declared={"ci": {"as_of": "last week"}}), answered_at="2026-11-10T00:00:00+00:00")
+        assert "partial" not in n
+
     def test_an_unjudged_gap_quotes_the_stored_reason(self):
         [s] = suggestions(manifest(gaps=[{"key": "ci", "reason": "no candidate — resolver produced nothing yet"}]))
         assert "ci (not judged: no candidate — resolver produced nothing yet)" in s["rule"]
