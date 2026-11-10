@@ -1,6 +1,6 @@
 # Brief — an as-of date on every packed evidence section (2026-11-10)
 
-Status: **proposed**, for the project owner's decision. Requested by the owner on 2026-11-10 after the
+Status: **decided** (the project owner, 2026-11-10: all four §5 recommendations); build next. Requested by the owner on 2026-11-10 after the
 closed-loop step 1 follow-up (#1021) showed how rarely staleness can be judged at all. Reviewed in outline
 by the architect session on 2026-11-10; its additions are folded in below (§3, items a–h). The architect
 passed the first full draft (78c072c3) with two additions: oldest-row `as_of` in §3a, and compile reuse in
@@ -145,3 +145,15 @@ the same compile"). `as_of` is provenance and must stay out of the hash. Only th
    `utcnow()` sites.
 4. **Compile reuse (§3h).** (i) with a history, as recommended; plain (i); (ii) per-hit storage, with DDL;
    or (iii) "as of the first compile".
+
+**Decision (project owner, 2026-11-10):** "go with your recommendations on all four". That is:
+1. Go, as scoped.
+2. `as_of`, `as_of_source` and `as_of_newest` become fields of `trellis_context`'s packed entry (0.2.0);
+   RE takes a `>=0.2` floor.
+3. Timezone-aware writes only at the sites that feed manifests, not all 70 `utcnow()` sites.
+4. Compile reuse: (i) with a history: refresh the top-level dates on a hit, and append to a capped
+   `manifest.as_of_seen`.
+
+Build note from the architect's read-back: the `as_of_seen` append is a read-modify-write of the stored
+JSON, so two concurrent hits could drop one history entry. Do the append in a single UPDATE (jsonb on PG),
+or state the loss in the build PR.
