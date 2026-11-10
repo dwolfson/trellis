@@ -22,7 +22,7 @@ import { esc } from '/static/next/app.js';
 
 const TOKEN_KEY = 're_admin_token';
 
-const filter = { entity_type: '', category: '', source: '' };
+const filter = { entity_type: '', category: '', source: '', status: '' };
 let _host = null;
 
 function authHeaders() {
@@ -90,6 +90,38 @@ function chip(label, key, value) {
     >${esc(label)}</button>`;
 }
 
+/** Status words as an admin reads them. The vocabulary itself comes from the server (`data.statuses`). */
+const STATUS_WORDS = {
+  new: 'new', triaged: 'triaged', known_issue: 'known issue', actioned: 'actioned',
+  deferred: 'deferred', not_an_issue: 'not an issue',
+};
+const statusWord = (s) => STATUS_WORDS[s] || s;
+
+/** The triage cell of a page or answer item: its status and who set it, a status control with a note, and its
+ *  history on demand. Every change is a new event in trellis-feedback (append-only): the note belongs to that
+ *  change and nothing earlier is overwritten. */
+function triageHtml(r, statuses) {
+  const t = r.triage || {};
+  const current = r.triage_status || t.status || 'new';
+  const by = t.actor ? ` · ${esc(t.actor)}` : '';
+  const when = t.updated_at ? ` · ${esc(t.updated_at.slice(0, 16).replace('T', ' '))}` : '';
+  const last = t.note ? `<div class="max-w-[28ch] whitespace-normal text-provenance text-ink-muted">“${esc(t.note)}”</div>` : '';
+  const options = statuses.map((s) => `<option value="${esc(s)}"${s === current ? ' selected' : ''}>${esc(statusWord(s))}</option>`).join('');
+  return `<div data-triage="${esc(r.id)}">
+    <div><span class="text-ink">${esc(statusWord(current))}</span><span class="text-provenance text-ink-muted">${by}${when}</span></div>
+    ${last}
+    <div class="mt-[2px] flex flex-wrap items-center gap-[6px]">
+      <select data-triage-status aria-label="Status" class="rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink">${options}</select>
+      <input data-triage-note type="text" placeholder="Note (optional)" aria-label="Note"
+        class="w-[16ch] rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink" />
+      <button type="button" data-triage-save
+        class="cursor-pointer rounded-sm border border-accent bg-transparent px-2 py-[1px] text-caveat text-accent-ink">Save</button>
+    </div>
+    <div data-triage-error class="text-provenance text-state-warn"></div>
+    ${t.events ? `<details data-triage-history class="mt-[2px]"><summary class="cursor-pointer text-provenance text-ink-muted">history (${esc(String(t.events))})</summary><div data-history-body class="text-provenance text-ink-muted">Loading…</div></details>` : ''}
+  </div>`;
+}
+
 const LOOK_NAMES = [['dark', 'Dark'], ['light', 'Light'], ['paper', 'Paper']];
 
 /** Which look people use, from the activity rows each change writes (RULING-THEMES-PORTAL-DARK-LIGHT.md section 1).
@@ -130,6 +162,7 @@ async function reload() {
   if (filter.entity_type) params.set('entity_type', filter.entity_type);
   if (filter.category) params.set('category', filter.category);
   if (filter.source) params.set('source', filter.source);
+  if (filter.status) params.set('status', filter.status);
 
   let res;
   try {
@@ -154,6 +187,7 @@ async function reload() {
   const total = (counts.resource?.total || 0) + (counts.page?.total || 0) + (counts.answer?.total || 0);
   const types = [...new Set(rows.filter((r) => r.source !== 'page').map((r) => r.entity_type).filter(Boolean))].sort();
   const cats = [...new Set(rows.map((r) => r.category).filter(Boolean))].sort();
+  const statuses = data.statuses || ['new'];
 
   let empty;
   if (data.filtered) {
@@ -190,8 +224,8 @@ async function reload() {
           : `<span class="text-ink-muted">${esc(r.entity_type || '')}</span> <span class="font-mono text-ink">${esc(r.entity_slug || '')}</span>`;
       }
       const status = (isPage || isAnswer)
-        ? esc(r.triage_status || 'new')
-        : '<span class="italic text-ink-muted" title="resource_feedback has no triage workflow">n/a</span>';
+        ? triageHtml(r, statuses)
+        : '<span class="italic text-ink-muted" title="resource_feedback has no triage workflow yet">n/a</span>';
       return `<tr class="border-b border-rule hover:bg-paper-surface">
         <td class="whitespace-nowrap py-s2 pr-s3 font-mono text-provenance text-ink-muted">${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${sourceBadge(r.source)}</td>
@@ -199,7 +233,7 @@ async function reload() {
         <td class="py-s2 pr-s3 text-caveat text-ink-muted">${esc(r.category || '—')}</td>
         <td class="whitespace-nowrap py-s2 pr-s3">${ratingHtml(r.rating)}</td>
         <td class="max-w-[32ch] py-s2 pr-s3 text-caveat text-ink">${isAnswer ? answerMessageHtml(r) : esc(r.message || '')}</td>
-        <td class="whitespace-nowrap py-s2 text-caveat">${status}</td>
+        <td class="whitespace-nowrap py-s2 align-top text-caveat">${status}</td>
       </tr>`;
     }).join('')}</tbody></table>` : empty;
 
@@ -226,9 +260,68 @@ async function reload() {
       ${cats.length ? chip('Any category', 'category', '') : ''}
       ${cats.map((c) => chip(c, 'category', c)).join('')}
     </div>
+    <div class="mb-s3 flex flex-wrap items-center gap-[6px]">
+      ${chip('Any status', 'status', '')}
+      ${statuses.map((s) => chip(statusWord(s), 'status', s)).join('')}
+      ${filter.status ? '<span class="text-provenance text-ink-muted">Resource feedback has no status yet, so a status filter shows page and answer items only.</span>' : ''}
+    </div>
     <div class="max-h-[46vh] overflow-auto rounded-sm border border-rule">${body}</div>`;
 
   bindFilters();
+  bindTriage();
+}
+
+/** Save one status change: PATCH /api/feedback/{id} with the status and note, then reload so the row, its counts
+ *  and any active status filter all agree with the store. A refusal is said on the row, not swallowed. */
+function bindTriage() {
+  if (!_host) return;
+  _host.querySelectorAll('[data-triage]').forEach((cell) => {
+    const id = cell.dataset.triage;
+    const error = cell.querySelector('[data-triage-error]');
+    cell.querySelector('[data-triage-save]')?.addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      const triageStatus = cell.querySelector('[data-triage-status]').value;
+      const note = cell.querySelector('[data-triage-note]').value.trim();
+      button.disabled = true;
+      error.textContent = '';
+      let res;
+      try {
+        res = await fetch(`/api/feedback/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ triage_status: triageStatus, note }),
+        });
+      } catch (err) {
+        error.textContent = `Not saved: ${err.message}`;
+        button.disabled = false;
+        return;
+      }
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+        error.textContent = `Not saved: ${detail}`;
+        button.disabled = false;
+        return;
+      }
+      reload();
+    });
+    cell.querySelector('[data-triage-history]')?.addEventListener('toggle', async (e) => {
+      const box = e.currentTarget;
+      if (!box.open || box.dataset.loaded) return;
+      const body = box.querySelector('[data-history-body]');
+      try {
+        const res = await fetch(`/api/feedback/${encodeURIComponent(id)}`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const item = await res.json();
+        box.dataset.loaded = '1';
+        body.innerHTML = (item.history || []).map((ev) => `<div>${esc((ev.created_at || '').slice(0, 16).replace('T', ' '))}
+          · <span class="text-ink">${esc(statusWord(ev.status))}</span>${ev.actor ? ` · ${esc(ev.actor)}` : ''}${
+          ev.note ? ` — ${esc(ev.note)}` : ''}</div>`).join('') || 'No changes recorded.';
+      } catch (err) {
+        body.textContent = `Could not load the history: ${err.message}`;
+      }
+    });
+  });
 }
 
 function bindFilters() {
@@ -263,5 +356,6 @@ export async function renderFeedback(host) {
   filter.entity_type = '';
   filter.category = '';
   filter.source = '';
+  filter.status = '';
   await reload();
 }
