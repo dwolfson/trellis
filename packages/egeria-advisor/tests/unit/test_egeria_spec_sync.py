@@ -93,6 +93,13 @@ def test_sync_is_shared_and_never_asks_recursion_pyegeria_lacks():
     assert ("recursive" in kwargs) == ess.supports_recursion()
 
 
+def test_zone_filter_status_is_stated():
+    """C1: while pyegeria's sync has no public_only, the status says the zone filter is not applied."""
+    applied = ess._supports("public_only")
+    assert ess.egeria_held_status()["zone_filter"] == ("applied" if applied else "not applied")
+    assert ("public_only" in ess._sync_kwargs()) == applied
+
+
 # ── absence messages: never a bare empty list ──────────────────────────────────
 
 def test_no_folder_configured(monkeypatch):

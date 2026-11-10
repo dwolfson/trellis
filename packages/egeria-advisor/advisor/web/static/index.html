@@ -823,6 +823,7 @@ function renderEgeriaHeld(held, shadowed) {
     held.recursive ? 'Sub-folders are followed.' : 'Direct members only (sub-folders: pyegeria consumer-folders phase 2).',
     held.synced_at ? `Last synced ${held.synced_at} as ${held.identity}` : 'Not synced in this run',
     `Visibility: ${held.visibility}`,
+    `Zone filter: ${held.zone_filter || 'unknown'}` + (held.zone_filter === 'not applied' ? ' (pyegeria has no public_only yet; consumer folders must hold no zoned specs)' : ''),
   ].join('\n');
   el.appendChild(line);
   if (shadowed.length) {

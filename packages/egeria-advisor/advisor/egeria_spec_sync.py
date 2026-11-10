@@ -315,6 +315,11 @@ def egeria_held_status() -> Dict[str, Any]:
         "identity": st.get("identity"), "error": st.get("error"),
         "visibility": ("public specs only, read as EA's service account into a cache shared by every "
                        "EA user; zone-restricted specs are not read here"),
+        # C1 (Architect read-back, 2026-11-10): until pyegeria's sync takes public_only (B6), nothing
+        # stops a zoned spec the service account can read from entering the shared cache. The
+        # consumer-folders rule (no zoned spec in a consumer folder until B6) is what holds today;
+        # say so rather than imply a filter that is not there.
+        "zone_filter": "applied" if _supports("public_only") else "not applied",
     }
     out["reason"], out["message"] = _explain(out, st, identity)
     return out
