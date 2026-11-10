@@ -16,10 +16,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from resource_explorer.auth import get_current_user
+from resource_explorer.config import get_config
 from resource_explorer.feedback_store import FeedbackStore
 from resource_explorer.registry import ProjectRegistry
-
-from resource_explorer.config import get_config
 from resource_explorer.web.admin_auth import is_admin_request
 
 
