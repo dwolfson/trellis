@@ -28,6 +28,14 @@ Both apps grew feedback separately and both have gaps (§1 of the design doc):
   sequence id. An item's status is its latest event's, or `new` if it has none. Notes live only
   on events, so nothing is ever overwritten. Statuses: `new`, `triaged`, `known_issue`,
   `actioned`, `deferred`, `not_an_issue`.
+- **Diagnosis (0.3).** A triage event on an answer item may also record a `cause`: why the answer
+  failed, from the closed-loop design's nine (`CAUSES`, [`docs/feedback-closed-loop-design.md`](../../docs/feedback-closed-loop-design.md) §2).
+  The seven in `CAUSE_CHAIN` are in precedence order, and the cause is the earliest stage at
+  fault. An optional `secondary_cause` must come later in the chain and is for measurement only.
+  An item's cause is its latest diagnosis, so a later status-only event keeps it. Product reports
+  and external rows take a status only. `list(cause=...)` filters on it (`UNDIAGNOSED` for answer
+  items with none). `cause_counts()` counts answer items by cause. A 0.2 events table gains the two
+  columns in place when a 0.3 store opens it.
 - **External rows** (RE's Curate `resource_feedback`) are triaged by reference,
   `(app, source, id)`. The source must be on a list the app declares. When the app deletes such
   a row itself, its history stays and is reported as "gone" until an admin clears it.
@@ -54,6 +62,8 @@ item, created = store.submit(
 )
 store.triage(item.id, "triaged", note="looking at it", actor="erinoverview")
 store.list(status="triaged")              # each row carries its current "triage" state
+store.triage(item.id, "triaged", cause="wrong_evidence", secondary_cause="reasoning", actor="erinoverview")
+store.cause_counts(vote=-1)               # {"catalog_gap": 0, ..., "wrong_evidence": 1, "undiagnosed": 0}
 store.triage("42", "known_issue", source="resource_feedback")
 store.delete_item(item.id)                # removes its events too
 

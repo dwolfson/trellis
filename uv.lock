@@ -10299,7 +10299,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "trellis-feedback"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "packages/trellis-feedback" }
 dependencies = [
     { name = "sqlalchemy" },
