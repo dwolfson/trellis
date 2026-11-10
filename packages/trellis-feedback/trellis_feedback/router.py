@@ -15,10 +15,13 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from trellis_feedback.models import (
+    CAUSE_CHAIN,
+    CAUSES,
     ITEM_SOURCE,
     KINDS,
     PRODUCT_CATEGORIES,
     STATUSES,
+    UNDIAGNOSED,
     FeedbackError,
     FeedbackItem,
 )
@@ -61,6 +64,9 @@ class TriageBody(BaseModel):
     status: str
     source: str = ITEM_SOURCE
     note: str = ""
+    #: 0.3: a diagnosis of an answer item (closed-loop design §2); "" keeps the current one.
+    cause: str = ""
+    secondary_cause: str = ""
 
 
 def make_router(
@@ -106,6 +112,7 @@ def make_router(
             "app": store.app, "statuses": list(STATUSES), "kinds": list(KINDS),
             "categories": list(PRODUCT_CATEGORIES),
             "sources": [ITEM_SOURCE, *sorted(store.external_sources)],
+            "causes": list(CAUSES), "cause_chain": list(CAUSE_CHAIN), "undiagnosed": UNDIAGNOSED,
         }
 
     @router.post("/items")
@@ -128,20 +135,26 @@ def make_router(
     def list_items(
         request: Request,
         kind: str | None = None, status: str | None = None, category: str | None = None,
-        since: str | None = None, until: str | None = None,
+        cause: str | None = None, since: str | None = None, until: str | None = None,
         limit: int = Query(default=200, ge=1, le=1000), offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         _admin(request)
+        filters = {"kind": kind or None, "status": status or None, "category": category or None,
+                   "cause": cause or None, "since": since or None, "until": until or None}
         try:
-            rows = store.list(kind=kind or None, status=status or None, category=category or None,
-                              since=since or None, until=until or None, limit=limit, offset=offset)
+            rows = store.list(**filters, limit=limit, offset=offset)
         except FeedbackError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"items": rows, "total": store.count(),
-                "matched": store.count_matching(kind=kind or None, status=status or None,
-                                                category=category or None, since=since or None,
-                                                until=until or None),
-                "filtered": any([kind, status, category, since, until])}
+        return {"items": rows, "total": store.count(), "matched": store.count_matching(**filters),
+                "filtered": any(filters.values())}
+
+    @router.get("/causes")
+    def causes(request: Request, vote: int | None = None, since: str | None = None,
+               until: str | None = None) -> dict[str, Any]:
+        """Answer items by current cause, every cause listed (zeros included) plus undiagnosed."""
+        _admin(request)
+        return {"counts": store.cause_counts(vote=vote, since=since or None, until=until or None),
+                "causes": list(CAUSES), "undiagnosed": UNDIAGNOSED}
 
     @router.get("/items/{item_id}")
     def get_item(item_id: str, request: Request) -> dict[str, Any]:
@@ -170,7 +183,8 @@ def make_router(
             if str(body.ref_id) not in {str(x) for x in _lookup(body.source)([str(body.ref_id)])}:
                 raise HTTPException(status_code=404, detail=f"{body.source} {body.ref_id!r} does not exist")
         try:
-            event = store.triage(body.ref_id, body.status, source=body.source, note=body.note, actor=actor)
+            event = store.triage(body.ref_id, body.status, source=body.source, note=body.note, actor=actor,
+                                 cause=body.cause, secondary_cause=body.secondary_cause)
         except NotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except FeedbackError as exc:

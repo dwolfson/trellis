@@ -96,6 +96,7 @@ test('a refused save says why on that row and re-enables the button', async () =
   ]);
   await pane.renderFeedback(host);
   const cell = host.querySelector('[data-triage="p1"]');
+  cell.querySelector('[data-triage-status]').value = 'actioned';
   cell.querySelector('[data-triage-save]').click();
   await settle(); await settle(); await settle();
   assert.equal(text(cell.querySelector('[data-triage-error]')), 'Not saved: Admin credential required');

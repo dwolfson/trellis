@@ -1,6 +1,6 @@
 [project]
 name = "trellis-feedback"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared feedback store and triage workflow for Resource Explorer and Egeria Advisor — answer ratings and product reports, with append-only triage events. See docs/trellis-feedback-extraction.md."
 readme = "README.md"
 authors = [{ name = "Dan Wolfson" }]
