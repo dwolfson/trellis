@@ -42,6 +42,10 @@ class TriageUpdate(BaseModel):
     triage_status: str
     #: Kept on the triage event, never overwritten: each change carries its own note.
     note: str = ""
+    #: A diagnosis of an answer item (docs/feedback-closed-loop-design.md §2): one of trellis-feedback's CAUSES.
+    #: Blank keeps the current one. Product items take none; the library refuses one with a 400.
+    cause: str = ""
+    secondary_cause: str = ""
 
 
 def _require_admin(request: Request) -> None:
@@ -111,6 +115,95 @@ async def look_counts_route(request: Request) -> dict:
     return look_counts(rows)
 
 
+@router.get("/causes")
+def cause_counts_route(request: Request, vote: str = "-1", limit: int = 500) -> dict:
+    """Rated answers by cause, and the same counts by the analyses each diagnosed answer is charged to.
+
+    Closed-loop design §3.1 and §8 Q6: at 20-200 votes a week diagnosis is a routine, and the view that makes it one
+    is "which causes, on which analyses". `vote` defaults to -1, the thumbs-down the loop is about; `?vote=all`
+    counts every vote. The by-analysis half reads each diagnosed item's stored compile, up to `limit` items,
+    newest first, and says when it stopped there.
+
+    `counts` and `by_analysis` are different populations, and the response says so: `counts` is every rated answer
+    of that vote, all time; `by_analysis` is the diagnosed ones among the newest `limit`.
+
+    A plain `def`, not `async def`: it reads the registry and the question catalog synchronously, which inside an
+    async route would block the event loop (and every chat stream with it) while it ran. FastAPI runs a plain def
+    in its thread pool.
+    """
+    _require_admin(request)
+    from trellis_feedback import CAUSES, UNDIAGNOSED, VOTES
+
+    vote_n: int | None = None
+    if vote.strip() not in ("", "all"):
+        try:
+            vote_n = int(vote)
+        except ValueError:
+            vote_n = None
+        if vote_n not in VOTES:
+            raise HTTPException(status_code=400, detail=f"vote must be one of {list(VOTES)} or 'all', got {vote!r}")
+    limit = max(1, min(limit, 1000))
+
+    from resource_explorer.feedback_diagnosis import catalog_analyses_for, charge_set
+    from resource_explorer.registry import ProjectRegistry
+
+    store = FeedbackStore()
+    counts = store.cause_counts(vote=vote_n)
+    listed = store.list(kind="answer", limit=limit)
+    diagnosed = [r for r in listed
+                 if (r.get("triage") or {}).get("cause") and (vote_n is None or r.get("vote") == vote_n)]
+    registry = ProjectRegistry()
+    by_analysis: dict[str, dict] = {}
+    uncharged = 0
+    # One read per compile and one catalog lookup per question, however many votes share them.
+    compiles: dict[str, dict] = {}
+    catalog: dict[tuple[str, str], list[str]] = {}
+    for r in diagnosed:
+        cause = r["triage"]["cause"]
+        cid = r.get("compile_id") or ""
+        if cid and cid not in compiles:
+            compiles[cid] = (registry.get_compile(cid) or {}).get("manifest") or {}
+        manifest = compiles.get(cid, {})
+        ckey = ((manifest.get("coverage") or {}).get("question") or "", r.get("entity_type") or "")
+        if ckey not in catalog:
+            catalog[ckey] = catalog_analyses_for(manifest, r.get("entity_type") or "") if ckey[0] else []
+        charged = charge_set(manifest, catalog[ckey])
+        if not charged:
+            uncharged += 1
+        for c in charged:
+            entry = by_analysis.setdefault(c["analysis_id"], {"analysis_id": c["analysis_id"], "total": 0,
+                                                              "causes": {}, "roles": {}})
+            entry["total"] += 1
+            entry["causes"][cause] = entry["causes"].get(cause, 0) + 1
+            entry["roles"][c["role"]] = entry["roles"].get(c["role"], 0) + 1
+    return {
+        "vote": vote_n, "counts": counts, "causes": list(CAUSES), "undiagnosed": UNDIAGNOSED,
+        "by_analysis": sorted(by_analysis.values(), key=lambda e: (-e["total"], e["analysis_id"])),
+        #: Diagnosed items charged to no analysis: catalog gaps, unclear questions, and answers with no compile.
+        "uncharged": uncharged,
+        "read": len(listed), "limited": len(listed) >= limit,
+        "populations": {"counts": "every rated answer of this vote, all time",
+                        "by_analysis": f"the diagnosed answers among the newest {len(listed)} rated answers"},
+    }
+
+
+@router.get("/{feedback_id}/diagnosis")
+def feedback_diagnosis(feedback_id: str, request: Request) -> dict:
+    """The diagnosis panel of one rated answer: its stored compile (never a re-compile), the causes the manifest
+    suggests with the rule behind each, the causes it could not judge and why, and the analyses it is charged to.
+    Nothing here records a cause. A plain `def` for the same reason as /causes: synchronous reads."""
+    _require_admin(request)
+    from resource_explorer.feedback_diagnosis import diagnosis
+    from resource_explorer.registry import ProjectRegistry
+
+    found = FeedbackStore().get(feedback_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Feedback record not found")
+    if found.get("kind") != "answer":
+        raise HTTPException(status_code=400, detail="Only a rated answer is diagnosed; this is a page report")
+    return {"id": feedback_id, **diagnosis(found, ProjectRegistry())}
+
+
 @router.patch("/{feedback_id}")
 async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Request) -> dict:
     _require_admin(request)
@@ -121,10 +214,11 @@ async def triage_feedback(feedback_id: str, payload: TriageUpdate, request: Requ
     store = FeedbackStore()
     try:
         updated = store.update_triage_status(
-            feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request))
+            feedback_id, payload.triage_status, note=payload.note.strip(), actor=_actor(request),
+            cause=payload.cause.strip(), secondary_cause=payload.secondary_cause.strip())
     except FeedbackError as exc:
-        # The library refusing the change: from trellis-feedback 0.3, a status that contradicts the item's current
-        # cause ("re-diagnose it"). Said on the row as a 400, not a 500.
+        # A diagnosis that contradicts itself or its status, a status that contradicts the item's current cause
+        # ("re-diagnose it"), or a cause on a page report. Said on the row as a 400, not a 500.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Feedback record not found")

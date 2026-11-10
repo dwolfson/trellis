@@ -116,13 +116,14 @@ class TestThePage:
 
     def test_each_page_and_answer_row_has_a_status_control_with_a_note(self):
         js = _feedback_js()
-        assert "triageHtml(r, statuses)" in js
+        assert "triageHtml(r, statuses, causes, chain)" in js
         assert "data-triage-status" in js and "data-triage-note" in js and "data-triage-save" in js
 
     def test_save_patches_the_item_by_id_with_status_and_note(self):
         js = _feedback_js()
         assert "fetch(`/api/feedback/${encodeURIComponent(id)}`, {\n          method: 'PATCH'" in js
-        assert "JSON.stringify({ triage_status: triageStatus, note })" in js
+        assert "const payload = { triage_status: triageStatus, note };" in js
+        assert "JSON.stringify(payload)" in js
 
     def test_a_refused_save_is_said_on_the_row(self):
         js = _feedback_js()

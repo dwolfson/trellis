@@ -3,7 +3,10 @@
 Status: **accepted; the project owner answered §8 on 2026-11-10.**
 - The architect read back the first version (f33610dd). This revision folds in that read-back's four
   design changes and its smaller points.
-- Step 0, the repair of the existing loop, is built: PR #1015. Nothing else here is built.
+- Step 0, the repair of the existing loop, is built: PR #1015.
+- Step 1 is built: the library half is trellis-feedback 0.3 (#1018); RE's half is
+  `resource_explorer/feedback_diagnosis.py`, the cause menu and evidence panel in Admin → Feedback, and
+  `GET /api/feedback/causes`. Steps 2 to 5 are not built.
 - Written 2026-11-09.
 
 Related:

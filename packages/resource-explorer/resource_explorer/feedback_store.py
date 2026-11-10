@@ -235,18 +235,28 @@ class FeedbackStore:
         category: str | None = None,
         limit: int = 200,
         kind: str = "product",
+        cause: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Items of one kind (`product`, the page widget; `answer`, ratings of answers), newest first."""
+        """Items of one kind (`product`, the page widget; `answer`, ratings of answers), newest first.
+
+        `cause` (closed-loop step 1) is one of trellis-feedback's CAUSES, or UNDIAGNOSED; only answer items carry
+        one, so a cause filter on product items matches nothing."""
+        if cause and kind != "answer":
+            return []
         # An unknown category matches nothing, as the old SQL filter did; the library refuses it, and
         # curate.py's combined listing passes whatever the Admin filter holds. Answers have no category.
         if category and (kind != "product" or category not in VALID_CATEGORIES):
             return []
         rows = self.store.list(kind=kind, status=triage_status or None,
-                               category=category or None, limit=limit)
+                               category=category or None, cause=cause or None, limit=limit)
         return [_flatten(r) for r in rows]
 
     def count(self, kind: str = "product") -> int:
         return self.store.count(kind=kind)
+
+    def cause_counts(self, vote: int | None = None) -> dict[str, int]:
+        """Answer items by current cause, every cause listed (zeros included) plus `undiagnosed`."""
+        return self.store.cause_counts(vote=vote)
 
     def get(self, feedback_id: str) -> dict[str, Any] | None:
         item = self.store.get(feedback_id)
@@ -277,13 +287,17 @@ class FeedbackStore:
         }
 
     def update_triage_status(
-        self, feedback_id: str, triage_status: str, *, note: str = "", actor: str = ""
+        self, feedback_id: str, triage_status: str, *, note: str = "", actor: str = "",
+        cause: str = "", secondary_cause: str = "",
     ) -> dict[str, Any] | None:
-        """Append a triage event. Returns the item with its new state, or None if there is no such item."""
+        """Append a triage event, with a diagnosis when `cause` is given (answer items only; trellis-feedback 0.3
+        refuses one that contradicts itself, with FeedbackError). Returns the item with its new state, or None if
+        there is no such item."""
         if triage_status not in VALID_TRIAGE_STATUSES:
             raise ValueError(f"Invalid triage_status: {triage_status!r}")
         try:
-            self.store.triage(feedback_id, triage_status, note=note, actor=actor)
+            self.store.triage(feedback_id, triage_status, note=note, actor=actor,
+                              cause=cause, secondary_cause=secondary_cause)
         except NotFound:
             return None
         return self.get(feedback_id)
