@@ -87,6 +87,7 @@ test('the evidence panel offers the charged analyses, and Save sends the one pic
   const picker = cell.querySelector('[data-route-analysis]');
   assert.deepEqual([...picker.querySelectorAll('option')].map((o) => o.value), ['cve_scan', 'deps']);
   picker.value = 'deps';
+  picker.dispatchEvent(new host.ownerDocument.defaultView.Event('change'));   // a pick the admin made
   cell.querySelector('[data-triage-cause]').value = 'analysis_defect';
   cell.querySelector('[data-triage-save]').click();
   await settle();
@@ -159,4 +160,33 @@ test('Re-route posts the analysis picked in the evidence panel', async () => {
   const post = calls.filter((c) => c.method === 'POST').at(-1);
   assert.equal(post.url, '/api/feedback/a1/routes/missing_evidence/reroute');
   assert.deepEqual(post.body, { analysis_id: 'deps' });
+});
+
+test('an untouched picker sends no analysis, so the server keeps its own default', async () => {
+  const { host, pane, calls } = await setUp([...BASE,
+    ['/api/feedback/a1', { method: 'PATCH', reply: () => ok({ id: 'a1' }) }]]);
+  await pane.renderFeedback(host);
+  await openEvidence(host);
+  const cell = host.querySelector('[data-triage="a1"]');
+  cell.querySelector('[data-triage-cause]').value = 'stale';
+  cell.querySelector('[data-triage-save]').click();
+  await settle();
+  assert.deepEqual(calls.filter((c) => c.method === 'PATCH').at(-1).body,
+    { triage_status: 'triaged', note: '', cause: 'stale', secondary_cause: '' });
+});
+
+test('stale says which analysis it will propose a schedule for: the stale section first', async () => {
+  const diag = { ...DIAGNOSIS, suggestions: [{ cause: 'stale', sections: ['deps'], rule: 'deps is as of 2026-01-01' }] };
+  const listing = { ...LISTING, feedback: [{ ...LISTING.feedback[0], routes: [],
+    triage: { ...LISTING.feedback[0].triage, cause: 'reasoning' } }] };
+  const { host, pane } = await setUp([['/api/curate/feedback', { reply: () => ok(listing) }],
+    BASE[1], ['/api/feedback/a1/diagnosis', { reply: () => ok(diag) }]]);
+  await pane.renderFeedback(host);
+  const cell = host.querySelector('[data-triage="a1"]');
+  const cause = cell.querySelector('[data-triage-cause]');
+  cause.value = 'stale';
+  cause.dispatchEvent(new host.ownerDocument.defaultView.Event('change'));
+  await settle();
+  assert.equal(text(cell.querySelector('[data-route-default]')),
+    'Will propose a schedule for: deps (default); pick another in the evidence panel.');
 });

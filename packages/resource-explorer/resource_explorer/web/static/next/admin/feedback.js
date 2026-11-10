@@ -207,8 +207,10 @@ async function causeSummaryHtml() {
 /** The triage cell of a page or answer item: its status and who set it, a status control with a note, and its
  *  history on demand. Every change is a new event in trellis-feedback (append-only): the note belongs to that
  *  change and nothing earlier is overwritten. */
-/** The causes whose gap is charged to one analysis the admin picks (closed-loop step 2a, Q2). */
-const CHARGED_CAUSES = new Set(['missing_evidence', 'analysis_defect']);
+/** The causes charged to one analysis the admin picks (closed-loop step 2a, Q2; 2c adds stale's schedule proposal).
+ *  Only the gap causes can be re-routed. */
+const CHARGED_CAUSES = new Set(['missing_evidence', 'analysis_defect', 'stale']);
+const REROUTE_CAUSES = new Set(['missing_evidence', 'analysis_defect']);
 
 /** What the last Save said about a route that is not stored (a cause no consumer takes yet, or a failure to retry),
  *  by item id; shown once on the next render. */
@@ -217,7 +219,7 @@ const routeNotes = new Map();
 /** Where each diagnosis was routed (closed-loop step 2a), and any note from the last Save. */
 function routesHtml(r) {
   const lines = (r.routes || []).map((x) => `<div data-route="${esc(x.cause)}" class="max-w-[32ch] whitespace-normal text-provenance text-ink-muted">${esc(x.words)}${
-    CHARGED_CAUSES.has(x.cause) && (x.consumer === 'gap' || x.consumer === 'none')
+    REROUTE_CAUSES.has(x.cause) && (x.consumer === 'gap' || x.consumer === 'none')
       ? ` <button type="button" data-reroute="${esc(x.cause)}" class="cursor-pointer rounded-sm border border-rule-strong bg-transparent px-[6px] py-[1px] text-caveat text-ink-muted hover:text-ink">Re-route</button>`
       : ''}</div>`);
   const note = routeNotes.get(String(r.id));
@@ -516,8 +518,10 @@ function bindTriage() {
       if (causeSel && (causeSel.value !== causeSel.dataset.current || secondSel.value !== secondSel.dataset.current)) {
         payload.cause = causeSel.value;
         payload.secondary_cause = secondSel.value;
+        // Sent only when the admin actually picked: an untouched picker shows the first charged analysis, which is
+        // not stale's default, so sending it would override the server's choice.
         const picked = cell.querySelector('[data-route-analysis]');
-        if (picked && payload.cause) payload.analysis_id = picked.value;
+        if (picked && picked.dataset.touched && payload.cause) payload.analysis_id = picked.value;
       }
       // Nothing changed: an event with the same status, no note and no new cause would only add a line to the history.
       if (triageStatus === cell.querySelector('[data-triage-status]').dataset.current && !note && !('cause' in payload)) {
@@ -593,7 +597,10 @@ async function loadDiagnosis(cell, id) {
           cell.querySelector('[data-triage-cause]').value = b.dataset.useCause;
           showDefault(cell, id);
         }));
-        body.querySelector('[data-route-analysis]')?.addEventListener('change', () => showDefault(cell, id));
+        body.querySelector('[data-route-analysis]')?.addEventListener('change', (ev) => {
+          ev.currentTarget.dataset.touched = '1';
+          showDefault(cell, id);
+        });
         return d;
       } catch (err) {
         body.textContent = `Could not load the evidence: ${err.message}`;
@@ -617,13 +624,17 @@ async function showDefault(cell, id) {
   }
   const d = await loadDiagnosis(cell, id);
   const charge = (d && d.charge_set) || [];
+  // The server's default: for stale, the first section the manifest found stale; otherwise the first charged.
+  const staleSections = ((d && d.suggestions) || []).find((s) => s.cause === 'stale')?.sections || [];
+  const fallback = (cause === 'stale' && charge.find((c) => staleSections.includes(c.analysis_id))) || charge[0];
   const picked = cell.querySelector('[data-route-analysis]');
+  const verb = cause === 'stale' ? 'Will propose a schedule for' : 'Will charge';
   if (!charge.length) {
-    line.textContent = 'Will charge: no analysis (nothing is charged), so no gap is raised.';
-  } else if (picked && picked.value !== charge[0].analysis_id) {
-    line.textContent = `Will charge: ${picked.value}.`;
+    line.textContent = `${verb}: no analysis (nothing is charged), so nothing is routed.`;
+  } else if (picked && picked.dataset.touched && picked.value !== fallback.analysis_id) {
+    line.textContent = `${verb}: ${picked.value}.`;
   } else {
-    line.textContent = `Will charge: ${charge[0].analysis_id} (default)${charge.length > 1 ? '; pick another in the evidence panel' : ''}.`;
+    line.textContent = `${verb}: ${fallback.analysis_id} (default)${charge.length > 1 ? '; pick another in the evidence panel' : ''}.`;
   }
 }
 

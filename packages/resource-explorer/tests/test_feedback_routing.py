@@ -136,14 +136,6 @@ class TestWhatRoutesNothing:
         assert out.json()["route"]["state"] == "skipped"
         assert reg.list_feedback_routes([item_id]) == {} and reg.list_gaps("r1") == []
 
-    @pytest.mark.parametrize("cause", ["stale"])
-    def test_later_steps_are_said_and_not_claimed(self, client, reg, feedback_store, admin_headers, cause):
-        _compile(reg, "c1", ABSENT)
-        item_id = _answer(feedback_store)
-        route = _save(client, admin_headers, item_id, cause).json()["route"]
-        assert route["state"] == "skipped" and "Not routed yet" in route["words"]
-        assert reg.list_feedback_routes([item_id]) == {}                  # left for 2b / 2c to route
-
     def test_a_status_change_alone_routes_nothing(self, client, reg, feedback_store, admin_headers):
         _compile(reg, "c1", ABSENT)
         item_id = _answer(feedback_store)
@@ -602,3 +594,79 @@ def test_joins_at_the_same_moment_both_land_on_postgres(pg_registry):
         assert all(pool.map(lambda p: pg_registry.add_activity_item(rfa_id, p), pointers))
     items = pg_registry.get_activity(rfa_id)["items"]
     assert all(p in items for p in pointers), f"lost: {[p for p in pointers if p not in items]}"
+
+
+# ── step 2c: Automate's schedule proposal ───────────────────────────────────────────────────────────────────────
+
+STALE = manifest(packed=[{"key": "deps", "rung": "FULL"}, {"key": "licenses", "rung": "FULL"}],
+                 declared={"deps": {"as_of": "2026-11-01T00:00:00+00:00"},
+                           "licenses": {"as_of": "2026-01-01T00:00:00+00:00"}})
+
+
+def _stale_answer(store):
+    item_id, _ = store.add_answer(vote=-1, question="what licences?", compile_id="c1", slug="r1",
+                                  entity_type="repo", user_id="peterprofile")
+    # The vote's time is what the stale rule measures from (feedback_diagnosis).
+    return item_id
+
+
+class TestAutomateProposal:
+    def test_stale_proposes_the_stale_section_s_analysis_with_an_offer(self, client, reg, feedback_store,
+                                                                        admin_headers):
+        _compile(reg, "c1", STALE)
+        item_id = _stale_answer(feedback_store)
+        route = _save(client, admin_headers, item_id, "stale").json()["route"]
+        assert route["state"] == "routed" and route["consumer"] == "automate"
+        entry = _rfa(reg, route["target"])
+        assert entry["summary"].startswith("Schedule licenses weekly on r1")    # the stale one, not the first packed
+        assert "what licences?" not in repr(entry) and "peterprofile" not in repr(entry)
+        [row] = [r for r in client.get("/api/activity/rfas").json() if r["entry_id"] == route["target"]]
+        assert row["offer"] == {"kind": "schedule", "entity_type": "repo", "entity_slug": "r1",
+                                "analysis_id": "licenses", "cadence": "weekly"}
+
+    def test_the_admin_may_pick_another_charged_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", STALE)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale", analysis_id="deps").json()["route"]
+        assert _rfa(reg, route["target"])["summary"].startswith("Schedule deps weekly")
+
+    def test_an_analysis_already_scheduled_is_offered_the_next_faster_cadence(self, client, reg, feedback_store,
+                                                                            admin_headers):
+        _compile(reg, "c1", STALE)
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="monthly",
+                          enabled=True)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        entry = _rfa(reg, route["target"])
+        assert entry["summary"].startswith("Schedule licenses weekly") and "already scheduled monthly" in entry["detail"]
+
+    def test_daily_already_has_no_faster_offer(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", STALE)
+        reg.save_schedule(entity_type="repo", entity_slug="r1", analysis_id="licenses", schedule="daily", enabled=True)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        [row] = [r for r in client.get("/api/activity/rfas").json() if r["entry_id"] == route["target"]]
+        assert row["offer"] is None and "runs daily" in row["summary"]
+
+    def test_one_proposal_per_resource_and_analysis(self, client, reg, feedback_store, admin_headers):
+        _compile(reg, "c1", STALE)
+        a, b = _stale_answer(feedback_store), _stale_answer(feedback_store)
+        ra = _save(client, admin_headers, a, "stale").json()["route"]
+        rb = _save(client, admin_headers, b, "stale").json()["route"]
+        assert ra["target"] == rb["target"]
+        items = _rfa(reg, ra["target"])["items"]
+        assert {"kind": "feedback", "id": a} in items and {"kind": "feedback", "id": b} in items
+
+    def test_no_resource_is_not_routed(self, client, reg, feedback_store, admin_headers):
+        route = _save(client, admin_headers, _answer(feedback_store, slug="", compile_id=""), "stale").json()["route"]
+        assert route["state"] == "not_routed" and "nothing to schedule" in route["words"]
+
+    def test_the_offer_saves_through_the_schedule_route(self, client, reg, feedback_store, admin_headers,
+                                                        monkeypatch):
+        """What the drawer's button posts is what the per-card control posts; the schedule then exists."""
+        _compile(reg, "c1", STALE)
+        route = _save(client, admin_headers, _stale_answer(feedback_store), "stale").json()["route"]
+        [row] = [r for r in client.get("/api/activity/rfas").json() if r["entry_id"] == route["target"]]
+        o = row["offer"]
+        monkeypatch.setattr("resource_explorer.web.routes.curate.require_resource_write", lambda *a, **kw: None)
+        out = client.post(f"/api/schedules/{o['entity_type']}/{o['entity_slug']}",
+                          json={"analysis_id": o["analysis_id"], "schedule": o["cadence"], "enabled": True})
+        assert out.status_code == 200, out.text
+        assert any(s["analysis_id"] == "licenses" and s["schedule"] == "weekly" for s in reg.get_schedules("repo", "r1"))
