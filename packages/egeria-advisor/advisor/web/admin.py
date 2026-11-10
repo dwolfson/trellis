@@ -278,6 +278,16 @@ async def admin_page() -> FileResponse:
     return FileResponse(_STATIC / "admin.html")
 
 
+def _dre_templates_status() -> Dict[str, Any]:
+    """Where Dr.Egeria templates are read from (B2): the installed pyegeria,
+    or a fallback copy that may not match the dispatcher."""
+    try:
+        from advisor.dre_templates import templates_status
+        return templates_status()
+    except Exception as exc:
+        return {"source": "error", "root": None, "matches_executor": False, "error": str(exc)}
+
+
 @router.get("/api/admin/status")
 async def admin_status() -> Dict[str, Any]:
     from advisor.collection_config import ALL_COLLECTIONS
@@ -332,6 +342,7 @@ async def admin_status() -> Dict[str, Any]:
         "collections": sorted(collections_out, key=lambda c: (not c["enabled"], c["name"])),
         "repos": list(repos_seen.values()),
         "system": _system_health(),
+        "dr_egeria_templates": _dre_templates_status(),
         "jobs_running": sum(1 for j in _jobs.values() if j.status == "running"),
     }
 

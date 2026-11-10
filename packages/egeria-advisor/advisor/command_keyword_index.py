@@ -118,7 +118,24 @@ class CommandKeywordIndex:
             catalogued.add(command_name.lower())
 
     def _find_template_root(self) -> Optional[Path]:
-        """Find the Dr-Egeria-Templates directory.
+        """Find the template directory to index (the basic/ tree).
+
+        The installed pyegeria's packaged templates come first (BRIEF
+        EA-CATCHUP-AND-DASHBOARDS-2026-11-10 B2), so the index names exactly
+        the commands the installed dispatcher runs. Older pyegeria: fall back,
+        with a logged note, to ``_find_legacy_template_root``.
+        """
+        from advisor.dre_templates import installed_templates_root, note_fallback
+
+        root = installed_templates_root()
+        if root is not None:
+            return root / "basic"
+        legacy = self._find_legacy_template_root()
+        note_fallback("CommandKeywordIndex", legacy)
+        return legacy
+
+    def _find_legacy_template_root(self) -> Optional[Path]:
+        """Pre-B2: find the Dr-Egeria-Templates directory.
 
         Checked in decreasing preference. This repo's own bundled copy
         (<repo>/config/dr-egeria-templates/) comes first — it's version-controlled as part
