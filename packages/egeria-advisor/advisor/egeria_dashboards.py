@@ -91,9 +91,16 @@ def _is_token_refused(exc: BaseException) -> bool:
         from pyegeria.core._exceptions import PyegeriaUnauthorizedException
     except ImportError:  # pragma: no cover
         PyegeriaUnauthorizedException = ()  # type: ignore[assignment]
-    if isinstance(exc, PyegeriaUnauthorizedException) and getattr(exc, "related_http_code", None) == 401:
+    code = getattr(exc, "related_http_code", None)
+    if isinstance(exc, PyegeriaUnauthorizedException) and code == 401:
         return True
+    if code == 403:
+        # pyegeria <= 6.2.32 words a 403-020 (element in a hidden zone) "AUTHORIZATION_ERROR_401":
+        # that is the resolver's "restricted", never the viewer's token.
+        return False
     text = str(exc)
+    if "403-020" in text or "is not authorized to issue an operation read" in text:
+        return False
     return "401" in text and ("token" in text.lower() or "unauthor" in text.lower())
 
 
@@ -292,8 +299,13 @@ def run_placement(creds: Optional[Dict[str, str]], name: str, position: int, *,
                   pipeline: Any = None) -> Dict[str, Any]:
     """Run the report placement at `position` with EA's own report execution, as the viewer.
 
-    {"state": "ok" | "refused" | "not_visible" | "read_failed", "response": markdown | None,
-     "message": str | None}. A restricted, missing or text placement is refused with its reason."""
+    {"state": "ok" | "failed" | "refused" | "not_visible" | "read_failed", "response": markdown | None,
+     "message": str | None}. A restricted, missing or text placement is refused with its reason; a run
+    that fails is "failed" with the executor's words, never "ok" with an empty response.
+
+    An ANALYTIC spec (its action names an analytic_function) is sent its analytic params and nothing
+    else: an analytic function refuses the find vocabulary (search_string, page_size, start_from) with a
+    TypeError. The Portal learned this first (local_dashboards_handler, isAnalytic)."""
     resolved, answer = _resolved(creds, name, perspective, False, client_factory)
     if resolved is None:
         return {**answer, "response": None}
@@ -317,19 +329,31 @@ def run_placement(creds: Optional[Dict[str, str]], name: str, position: int, *,
     report = pl.report
     action = getattr(pl.format_set, "action", None)
     analytic = bool(getattr(action, "analytic_function", None)) if action is not None else False
-    params = dict(report.analytic_params if analytic else report.params)
-    search = params.pop("search_string", None) or "*"
     fmt = _display_format(report.output_format, output_format)
 
     if pipeline is None:
         from advisor.report_pipeline import get_report_pipeline
         pipeline = get_report_pipeline()
+    query = f"dashboard {name}: {pl.title}"
     # EA's existing execution path, as the viewer: run_report -> exec_report_spec with their token.
-    result = pipeline._execute_report(
-        f"dashboard {name}: {pl.title}", pl.spec, search_string=search, extra_params=params or None,
-        output_type=fmt, egeria_credentials=creds)
-    return {"state": "ok", "response": result.get("response"), "output_format": fmt,
-            "spec": pl.spec, "source": _badge_source(pl.spec_source, pl.spec), "message": None}
+    if analytic:
+        result = pipeline._execute_report(query, pl.spec, extra_params=dict(report.analytic_params),
+                                          output_type=fmt, egeria_credentials=creds, exact_params=True)
+    else:
+        params = dict(report.params)
+        search = params.pop("search_string", None) or "*"
+        result = pipeline._execute_report(query, pl.spec, search_string=search, extra_params=params or None,
+                                          output_type=fmt, egeria_credentials=creds)
+    base = {"output_format": fmt, "spec": pl.spec, "source": _badge_source(pl.spec_source, pl.spec),
+            "analytic": analytic}
+    run_error = (result or {}).get("run_error")
+    response = (result or {}).get("response")
+    if run_error or not response:
+        words = run_error or "the run returned nothing"
+        logger.info(f"dashboards: running {pl.spec!r} on {name!r} as {creds.get('user_id')!r} failed: {words}")
+        return {**base, "state": "failed", "response": None,
+                "message": f"'{pl.title}' did not run: {words}"}
+    return {**base, "state": "ok", "response": response, "message": None}
 
 
 def _reset_for_tests() -> None:

@@ -315,6 +315,65 @@ def test_restricted_text_and_absent_placements_never_run(viewers):
     assert pipe.calls == []
 
 
+def _real_pipeline(monkeypatch, executor):
+    """EA's real ReportPipeline (run_report -> exec_report_spec), with pyegeria's executor replaced."""
+    from advisor.report_pipeline import ReportPipeline
+    monkeypatch.setattr(ReportPipeline, "_read_pyegeria_connection", lambda self, egeria_credentials=None: {
+        "view_server": "fake-view", "platform_url": "https://fake:9443",
+        "user_id": egeria_credentials["user_id"], "user_pwd": "", "token": egeria_credentials["token"]})
+    monkeypatch.setattr("pyegeria.exec_report_spec", executor)
+    return ReportPipeline()
+
+
+def test_analytic_placement_gets_only_its_analytic_params(viewers, monkeypatch):
+    """B5-1: an analytic function refuses the find vocabulary. Live on laz, count_elements() raised
+    "unexpected keyword argument 'search_string'"; the fake executor here is just as strict."""
+    peter = viewers[PETER_TOKEN]
+    props = peter.entities[peter.guids["peter"]]["props"]["additionalProperties"]
+    props["reportSpec"] = "Analytic Demo - Element Count by Type"
+    props["analyticParams"] = '{"metadata_element_type": "Asset"}'
+    seen = {}
+
+    def count_elements(metadata_element_type=None, as_of_time=None):   # no **kwargs: unknown names raise
+        return {"kind": "json", "data": [{"type": metadata_element_type, "count": 7}]}
+
+    def executor(name, output_format=None, params=None, token=None, user=None, **conn):
+        seen.update(name=name, params=dict(params), token=token, user=user)
+        return count_elements(**params)
+
+    out = ed.run_placement(PETER, DEMO, 2, pipeline=_real_pipeline(monkeypatch, executor))
+    assert out["state"] == "ok" and out["analytic"] is True, out
+    assert seen["params"] == {"metadata_element_type": "Asset"}
+    assert (seen["token"], seen["user"]) == (PETER_TOKEN, "peterprofile")
+    assert "Asset" in out["response"]
+
+
+def test_failed_run_is_failed_with_words_not_ok(viewers, monkeypatch):
+    """B5-2: a run that raises is "failed" with the executor's words, never "ok" with nothing."""
+    def executor(name, **kw):
+        raise TypeError("count_elements() got an unexpected keyword argument 'search_string'")
+    out = ed.run_placement(PETER, DEMO, 2, pipeline=_real_pipeline(monkeypatch, executor))
+    assert out["state"] == "failed" and out["response"] is None
+    assert "unexpected keyword argument 'search_string'" in out["message"]
+
+
+def test_report_error_from_executor_is_failed(viewers, monkeypatch):
+    def executor(name, **kw):
+        raise ValueError("Report 'Collections' does not support output format TABLE")
+    out = ed.run_placement(PETER, DEMO, 2, pipeline=_real_pipeline(monkeypatch, executor))
+    assert out["state"] == "failed" and "does not support output format" in out["message"]
+
+
+def test_a_403_worded_401_is_not_a_refused_token():
+    """pyegeria <= 6.2.32 words a 403-020 (hidden zone) with AUTHORIZATION_ERROR_401."""
+    class Exc(Exception):
+        related_http_code = 403
+    assert not ed._is_token_refused(Exc("AUTHORIZATION_ERROR_401 unauthorized token"))
+    assert not ed._is_token_refused(RuntimeError(
+        "AUTHORIZATION_ERROR_401 OPEN-METADATA-SECURITY-403-020 User x is not authorized to issue an operation read"))
+    assert ed._is_token_refused(RuntimeError("HTTP 401: bearer token expired, unauthorized"))
+
+
 def test_spec_sync_invalidates_resolved_sheets(viewers):
     ed.show_sheet(ERIN, DEMO)
     assert ed.show_sheet(ERIN, DEMO)["cached"] is True

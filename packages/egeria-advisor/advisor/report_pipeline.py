@@ -621,6 +621,7 @@ class ReportPipeline:
         page_size: Optional[int] = None,
         extra_params: Optional[Dict[str, Any]] = None,
         egeria_credentials: Optional[Dict[str, str]] = None,
+        exact_params: bool = False,
     ) -> Optional[str]:
         """
         Execute a named report and return the output string.
@@ -628,6 +629,9 @@ class ReportPipeline:
         page_size: limits graph nodes Egeria traverses. None → use self._default_page_size.
         egeria_credentials: the authenticated caller's {user_id, password}; falls back
             to the service account (see advisor.auth.resolve_egeria_credentials) when None.
+        exact_params: send `extra_params` and nothing else -- no search_string / page_size /
+            start_from. An analytic spec's function takes only its own parameters and refuses
+            the find vocabulary (TypeError: unexpected keyword argument 'search_string').
         Returns None on failure.
         """
         effective_page_size = page_size if page_size is not None else self._default_page_size
@@ -656,16 +660,19 @@ class ReportPipeline:
         # provenance -- are theirs, not the service account's.
         bearer = conn.get("token") or None
 
-        params: Dict[str, Any] = {
-            "search_string": search_string,
-            "page_size": effective_page_size,
-            "start_from": 0,
-        }
-        # Prefix search is more efficient than full regex when a specific term is given
-        if not is_wildcard and self._starts_with_on_filter:
-            params["starts_with"] = True
-        if extra_params:
-            params.update(extra_params)
+        if exact_params:
+            params: Dict[str, Any] = dict(extra_params or {})
+        else:
+            params = {
+                "search_string": search_string,
+                "page_size": effective_page_size,
+                "start_from": 0,
+            }
+            # Prefix search is more efficient than full regex when a specific term is given
+            if not is_wildcard and self._starts_with_on_filter:
+                params["starts_with"] = True
+            if extra_params:
+                params.update(extra_params)
         # Egeria type names are always PascalCase — auto-capitalize first letter
         if "metadata_element_type" in params and isinstance(params["metadata_element_type"], str):
             met = params["metadata_element_type"].strip()
@@ -1378,8 +1385,13 @@ class ReportPipeline:
         extra_params: Optional[Dict[str, Any]] = None,
         output_type: Optional[str] = None,
         egeria_credentials: Optional[Dict[str, str]] = None,
+        exact_params: bool = False,
     ) -> Dict[str, Any]:
-        """Shared execution path: run a named report and format the result."""
+        """Shared execution path: run a named report and format the result.
+
+        On failure the result also carries `run_error` (the executor's words, or the connection
+        failure), so a caller that is not a chat turn can tell a failed run from a report.
+        """
         # Normalise to exact catalog name (catches camelCase / hyphen / space variants)
         report_name = self._resolve_report_name(report_name)
         fmt = output_type or self._detect_output_format(query)
@@ -1406,6 +1418,7 @@ class ReportPipeline:
                 output_type=mcp_output_type, page_size=page_size,
                 extra_params=extra_params,
                 egeria_credentials=egeria_credentials,
+                exact_params=exact_params,
             )
         except ConnectionError as exc:
             egeria_reachable = False
@@ -1431,6 +1444,7 @@ class ReportPipeline:
                 return {
                     "query": query,
                     "response": err_response,
+                    "run_error": run_error,
                     "query_type": "report",
                     "report_name": report_name,
                     "sources": [],
@@ -1461,6 +1475,7 @@ class ReportPipeline:
             return {
                 "query": query,
                 "response": err_response,
+                "run_error": None if egeria_reachable else (connection_err or "Egeria is not reachable"),
                 "query_type": "report",
                 "report_name": report_name,
                 "sources": [],
