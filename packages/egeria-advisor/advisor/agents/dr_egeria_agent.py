@@ -107,7 +107,11 @@ class TemplateIndex:
     """
     Lightweight in-memory index of Dr. Egeria command templates.
 
-    Indexed from:
+    Indexed from the installed pyegeria's packaged templates
+    (``md_processing.templates``, BRIEF EA-CATCHUP-AND-DASHBOARDS-2026-11-10
+    B2), so they match the dispatcher that runs the commands. Only when that
+    pyegeria predates the accessor does it fall back, with a logged note, to
+    the old egeria-python clone:
       data/repos/egeria-python/sample-data/templates/basic/
       data/repos/egeria-python/sample-data/templates/advanced/
 
@@ -120,7 +124,19 @@ class TemplateIndex:
         self._base_paths = base_paths
 
     def _default_base_paths(self) -> List[Path]:
-        """Find template base paths, deduplicating by resolved path."""
+        """The installed pyegeria's template root; else the legacy paths."""
+        from advisor.dre_templates import installed_templates_root, note_fallback
+
+        root = installed_templates_root()
+        if root is not None:
+            return [root]
+        legacy = self._legacy_base_paths()
+        note_fallback("TemplateIndex", legacy[0] if legacy else None)
+        return legacy
+
+    def _legacy_base_paths(self) -> List[Path]:
+        """Pre-B2: the egeria-python clone. Remove once trellis' pyegeria
+        floor carries packaged templates."""
         candidates = []
         # Repo path from config (primary)
         try:

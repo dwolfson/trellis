@@ -154,7 +154,29 @@ def _get_egeria_symbol_raw(name: str) -> str:
 
 def _templates_root() -> Path | None:
     """
-    Return the Dr.Egeria templates root directory, or None if not found.
+    Return the Dr.Egeria templates root directory (holding basic/ and
+    advanced/), or None if not found.
+
+    The installed pyegeria's packaged templates come first (BRIEF
+    EA-CATCHUP-AND-DASHBOARDS-2026-11-10 B2): they match the dispatcher that
+    executes the commands. Only when that pyegeria predates
+    ``md_processing.templates`` does this fall back, with a logged note, to
+    ``_legacy_templates_root()``.
+    """
+    from advisor.dre_templates import installed_templates_root, note_fallback
+
+    root = installed_templates_root()
+    if root is not None:
+        return root
+    legacy = _legacy_templates_root()
+    note_fallback("agents.tools._templates_root", legacy)
+    return legacy
+
+
+def _legacy_templates_root() -> Path | None:
+    """
+    Pre-B2 template discovery; used only when the installed pyegeria has no
+    packaged templates. Remove once trellis' pyegeria floor carries them.
 
     Candidate paths tried in order:
       1. {pyegeria_root}/Templates/Dr-Egeria-Templates   (case-sensitive, workspace layout)
