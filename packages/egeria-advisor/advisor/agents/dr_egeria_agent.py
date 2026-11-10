@@ -35,6 +35,117 @@ from loguru import logger
 # execution_errors, commands_total, commands_succeeded, commands_failed,
 # commands_detail} envelope governance_plan_agent._parse_dr_egeria_response()
 # has always expected. See docs/PROJECT_SUMMARY.md Phase 25.
+#
+# Identity (BRIEFS-EA-PHASE0-SAFETY-2026-11-10 §S3): a Dr.Egeria run goes out
+# as the signed-in user, on that user's own Egeria bearer token
+# (advisor.auth.apply_token). It never builds the client with a password and
+# never calls create_egeria_bearer_token() for a signed-in user: pyegeria fills
+# a missing password from its configured one, so minting a token "for" the
+# user would act as that user signed in with the shared password. The
+# configured service account is used only when there are no user credentials
+# AND the caller explicitly marks the run as a service operation. Everything
+# else is refused with SIGN_IN_TO_RUN. A token Egeria refuses (401) yields
+# SIGN_IN_AGAIN; there is no retry with a password.
+
+SIGN_IN_TO_RUN = "Sign in to run Dr.Egeria commands."
+SIGN_IN_AGAIN = (
+    "Egeria refused your sign-in (it may have expired). "
+    "Sign in again to run Dr.Egeria commands."
+)
+
+# What a PyegeriaUnauthorizedException looks like once md_processing has caught
+# it and turned it into a per-command failure message.
+_UNAUTHORIZED_MARKERS = ("AUTHORIZATION_ERROR_401", "PyegeriaUnauthorizedException")
+
+
+class DrEgeriaAuthError(Exception):
+    """A Dr.Egeria run that may not, or could not, authenticate.
+
+    ``reason``: "no_credentials" (anonymous, not a service operation),
+    "no_token" (a user id without that user's token) or "token_refused"
+    (Egeria answered 401, or the token had already expired).
+    """
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.message = message
+        self.reason = reason
+
+
+def _auth_envelope(err: DrEgeriaAuthError) -> Dict[str, Any]:
+    """The usual result envelope, failed, carrying the sign-in sentence."""
+    return {
+        "success": False,
+        "output": err.message,
+        "validation_errors": [],
+        "execution_errors": [{"step": 0, "command": "", "message": err.message}],
+        "commands_total": 0,
+        "commands_succeeded": 0,
+        "commands_failed": 0,
+        "commands_detail": [],
+        "auth_required": True,
+        "auth_reason": err.reason,
+    }
+
+
+def _build_client(conn: Dict[str, str]):
+    """An EgeriaTech authenticated the way ``conn["auth"]`` says.
+
+    "user": no password passed, the user's token applied with apply_token.
+    pyegeria never re-mints a caller-supplied token on a 401 (it only re-mints
+    tokens a client minted for itself), so a refused token raises
+    PyegeriaUnauthorizedException rather than silently switching identity.
+    "service": the configured service account mints its own token.
+    """
+    from pyegeria import EgeriaTech
+
+    if conn.get("auth") == "user":
+        token = conn.get("token")
+        if not token:  # _get_egeria_conn never builds this; refuse, don't mint
+            raise DrEgeriaAuthError(SIGN_IN_TO_RUN, "no_token")
+        from advisor.auth import apply_token
+        client = EgeriaTech(conn["server_name"], conn["url"], conn["user_id"])
+        apply_token(client, token)
+        return client
+    if conn.get("auth") == "service":
+        client = EgeriaTech(conn["server_name"], conn["url"], conn["user_id"], conn["user_pass"])
+        client.create_egeria_bearer_token()
+        return client
+    raise DrEgeriaAuthError(SIGN_IN_TO_RUN, "no_credentials")
+
+
+async def _check_user_token(client: Any, token: str) -> None:
+    """Raise DrEgeriaAuthError(SIGN_IN_AGAIN) if the user's token is expired or
+    Egeria refuses it.
+
+    md_processing turns every Egeria exception into a per-command failure, and
+    its as-is lookups treat a failed read as "not found", so a validate on a
+    refused token would otherwise report "would create" for every element. One
+    cheap per-user read (get_my_profile, the probe trellis_auth uses for Portal
+    tokens) up front tells the user to sign in again instead. Any other probe
+    error (no profile, Egeria briefly down) is not an identity problem and is
+    left to the run itself.
+    """
+    try:
+        from datetime import datetime, timezone
+        from trellis_auth.auth import egeria_token_expiry
+        exp = egeria_token_expiry(token)
+        if exp is not None and exp <= datetime.now(timezone.utc).timestamp():
+            raise DrEgeriaAuthError(SIGN_IN_AGAIN, "token_refused")
+    except DrEgeriaAuthError:
+        raise
+    except Exception:
+        pass
+
+    from pyegeria import PyegeriaUnauthorizedException
+    try:
+        await client._async_get_my_profile()
+    except PyegeriaUnauthorizedException as exc:
+        logger.info(f"Dr.Egeria: Egeria refused the signed-in user's token: {exc}")
+        raise DrEgeriaAuthError(SIGN_IN_AGAIN, "token_refused") from exc
+    except Exception as exc:
+        logger.debug(f"Dr.Egeria: token probe inconclusive ({type(exc).__name__}); running anyway")
+
 
 async def _execute_dr_egeria_markdown(
     markdown: str, directive: str, conn: Dict[str, str]
@@ -43,15 +154,22 @@ async def _execute_dr_egeria_markdown(
 
     from md_processing.dr_egeria import setup_dispatcher
     from md_processing.v2 import UniversalExtractor
-    from pyegeria import EgeriaTech
+    from pyegeria import PyegeriaUnauthorizedException
 
-    client = EgeriaTech(conn["server_name"], conn["url"], conn["user_id"], conn["user_pass"])
-    client.create_egeria_bearer_token()
+    try:
+        client = _build_client(conn)
+        if conn.get("auth") == "user":
+            await _check_user_token(client, conn["token"])
+    except DrEgeriaAuthError as err:
+        return _auth_envelope(err)
 
     commands = UniversalExtractor(markdown).extract_commands()
     dispatcher = setup_dispatcher(client)
     context = {"directive": directive, "request_id": str(uuid.uuid4())}
-    results = await dispatcher.dispatch_batch(commands, context)
+    try:
+        results = await dispatcher.dispatch_batch(commands, context)
+    except PyegeriaUnauthorizedException:
+        return _auth_envelope(DrEgeriaAuthError(SIGN_IN_AGAIN, "token_refused"))
 
     commands_detail: List[Dict[str, Any]] = []
     validation_errors: List[Dict[str, Any]] = []
@@ -87,8 +205,17 @@ async def _execute_dr_egeria_markdown(
         for err in res.get("errors", []) or []:
             validation_errors.append({"step": step, "command": command_name, "message": err})
 
-    return {
-        "success": failed == 0,
+    # A token that expired part-way through shows up only as per-command
+    # failure text; say "sign in again" rather than leave it in the detail.
+    token_refused = any(
+        any(m in (d.get("message") or "") for m in _UNAUTHORIZED_MARKERS)
+        for d in commands_detail
+    )
+    if token_refused:
+        execution_errors.insert(0, {"step": 0, "command": "", "message": SIGN_IN_AGAIN})
+
+    envelope = {
+        "success": failed == 0 and not token_refused,
         "output": "\n\n".join(outputs),
         "validation_errors": validation_errors,
         "execution_errors": execution_errors,
@@ -97,6 +224,10 @@ async def _execute_dr_egeria_markdown(
         "commands_failed": failed,
         "commands_detail": commands_detail,
     }
+    if token_refused:
+        envelope["auth_required"] = True
+        envelope["auth_reason"] = "token_refused"
+    return envelope
 
 
 # ---------------------------------------------------------------------------
@@ -431,18 +562,28 @@ class DrEgeriaActionAgent:
         self._template_index = TemplateIndex()
         self._egeria_conn: Optional[Dict[str, str]] = None  # lazy
 
-    def _get_egeria_conn(self, egeria_credentials: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    def _get_egeria_conn(
+        self,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+        service_operation: bool = False,
+    ) -> Dict[str, str]:
         """Extract Egeria connection params for Dr.Egeria command execution.
 
         url/server_name are static — same Egeria instance for everyone — resolved
         via advisor.mcp_config.get_pyegeria_platform_config() (env vars first,
-        then config/mcp_servers.json) and cached on self. user_id/user_pass are
+        then config/mcp_servers.json) and cached on self. The identity is
         resolved FRESH on every call from the caller's own credentials (see
-        advisor.auth.resolve_egeria_credentials) and are NEVER cached on self:
+        advisor.auth.resolve_egeria_credentials) and is NEVER cached on self:
         this class is a process-wide singleton (get_dr_egeria_agent()) shared
         across every user's requests, so caching credentials here would leak the
         first caller's identity into every subsequent user's actions for the
         life of the process.
+
+        Returns ``auth`` "user" with the user's ``token`` (and no password) for
+        a signed-in caller, or ``auth`` "service" with the configured service
+        account only when there are no user credentials and
+        ``service_operation`` is True. Raises DrEgeriaAuthError(SIGN_IN_TO_RUN)
+        otherwise, including for a user id that comes without its token.
         """
         if self._egeria_conn is None:
             from advisor.mcp_config import get_pyegeria_platform_config
@@ -452,8 +593,17 @@ class DrEgeriaActionAgent:
                 "server_name": conn["view_server"] or "qs-view-server",
             }
         from advisor.auth import resolve_egeria_credentials
-        creds = resolve_egeria_credentials(egeria_credentials)
-        return {**self._egeria_conn, "user_id": creds["user_id"], "user_pass": creds["password"]}
+        if egeria_credentials and egeria_credentials.get("user_id"):
+            creds = resolve_egeria_credentials(egeria_credentials)
+            if not creds.get("token"):
+                raise DrEgeriaAuthError(SIGN_IN_TO_RUN, "no_token")
+            return {**self._egeria_conn, "auth": "user",
+                    "user_id": creds["user_id"], "token": creds["token"]}
+        if not service_operation:
+            raise DrEgeriaAuthError(SIGN_IN_TO_RUN, "no_credentials")
+        creds = resolve_egeria_credentials(None)
+        return {**self._egeria_conn, "auth": "service",
+                "user_id": creds["user_id"], "user_pass": creds["password"]}
 
     def find_template(self, query: str) -> Optional[Dict[str, Any]]:
         """
@@ -600,6 +750,7 @@ JSON:"""
         directive: str = "process",
         dry_run: bool = False,
         egeria_credentials: Optional[Dict[str, str]] = None,
+        service_operation: bool = False,
     ) -> str:
         """
         Execute a composed Dr.Egeria markdown file in-process via md_processing's
@@ -609,19 +760,28 @@ JSON:"""
             markdown: Complete Dr.Egeria markdown command file
             directive: "display" | "validate" | "process"
             dry_run: If True, return the markdown without executing
-            egeria_credentials: the authenticated caller's {user_id, password};
-                falls back to the service account when None.
+            egeria_credentials: the signed-in caller's {user_id, password, token}
+                (advisor.auth.get_egeria_credentials); the run goes out on
+                ``token``. None → refused with SIGN_IN_TO_RUN, unless
+                ``service_operation``.
+            service_operation: True only for a deliberate service-account run
+                with no user behind it; ignored when user credentials are given.
 
         Returns:
             JSON-encoded envelope string ({success, output, validation_errors,
             execution_errors, commands_total, commands_succeeded, commands_failed,
             commands_detail}) — the same shape governance_plan_agent's
-            _parse_dr_egeria_response() has always expected.
+            _parse_dr_egeria_response() has always expected. A refused run is
+            the same envelope with success False, the sign-in sentence as
+            ``output``, and ``auth_required`` True.
         """
         if dry_run:
             return markdown
 
-        conn = self._get_egeria_conn(egeria_credentials)
+        try:
+            conn = self._get_egeria_conn(egeria_credentials, service_operation=service_operation)
+        except DrEgeriaAuthError as err:
+            return json.dumps(_auth_envelope(err))
 
         from advisor.report_pipeline import _run_async
         envelope = _run_async(_execute_dr_egeria_markdown(markdown, directive, conn))
@@ -641,8 +801,9 @@ JSON:"""
             query: User's natural language action request
             directive: "display" | "validate" | "process"
             dry_run: Return composed markdown without executing
-            egeria_credentials: the authenticated caller's {user_id, password};
-                falls back to the service account when None.
+            egeria_credentials: the signed-in caller's {user_id, password, token};
+                without them (and outside dry_run) the run is refused with
+                SIGN_IN_TO_RUN — handle() is never a service operation.
 
         Returns:
             Response dict compatible with RAGSystem result format.
@@ -696,6 +857,16 @@ JSON:"""
             output = f"Execution failed: {e}"
 
         response_text = output
+        auth_required = False
+        if not dry_run:
+            try:
+                env = json.loads(output)
+                if isinstance(env, dict) and env.get("auth_required"):
+                    auth_required = True
+                    response_text = (SIGN_IN_AGAIN if env.get("auth_reason") == "token_refused"
+                                     else SIGN_IN_TO_RUN)
+            except (TypeError, ValueError):
+                pass
         if dry_run:
             response_text = f"**Composed Dr. Egeria command** (not executed):\n\n```markdown\n{markdown}\n```"
 
@@ -707,6 +878,7 @@ JSON:"""
             "params_extracted": params,
             "markdown": markdown,
             "dry_run": dry_run,
+            "auth_required": auth_required,
             "sources": [f"Dr.Egeria template: {command_name}"],
             "num_sources": 1,
             "retrieval_time": 0.0,
