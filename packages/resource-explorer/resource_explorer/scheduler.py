@@ -193,6 +193,10 @@ def _tick_body() -> None:
         _reconcile_rfa_actions()
     except Exception:
         log.exception("RFA reconciliation iteration failed")
+    try:
+        _drop_expired_previous_indexes()
+    except Exception:
+        log.exception("Dropping expired previous chat indexes failed")
     # The native-survey read-back sweep and the outbox drain are NOT called here: `_readback_loop` owns both, so
     # a long `_run_due` cannot starve them (and nothing runs them twice).
 
@@ -223,6 +227,16 @@ def _readback_pass() -> None:
             _drain_egeria_outbox()
         except Exception:
             log.exception("Egeria outbox drain iteration failed")
+
+
+def _drop_expired_previous_indexes() -> None:
+    """A rebuild keeps its previous chat index 7 days for undo (reindex.py, R1c); after that, drop it."""
+    from resource_explorer import reindex
+    from resource_explorer.registry import ProjectRegistry
+
+    dropped = reindex.drop_expired_previous(ProjectRegistry())
+    if dropped:
+        log.info("Scheduler: dropped the previous chat index of %s", ", ".join(dropped))
 
 
 def _reconcile_rfa_actions() -> None:

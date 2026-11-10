@@ -77,3 +77,13 @@ def undo(slug: str, request: Request) -> dict:
         return reindex.undo(_registry(), slug, requested_by=_who(request))
     except reindex.ReindexRefused as exc:
         raise _refused(exc) from exc
+
+
+@router.post("/{slug}/discard-previous")
+def discard_previous(slug: str, request: Request) -> dict:
+    """Drop the previous index of `slug`'s last rebuild now, ending its undo window early."""
+    require_admin(request)
+    try:
+        return reindex.discard_previous(_registry(), slug, by=_who(request))
+    except reindex.ReindexRefused as exc:
+        raise _refused(exc) from exc

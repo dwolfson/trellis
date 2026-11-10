@@ -6,6 +6,7 @@ calls. Real Postgres behaviour of the swap itself is R1a's (tests/test_collectio
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -522,3 +523,99 @@ class TestTheRestOfTheReadBack:
         out = reindex.queue(registry, SLUG, requested_by="erin", store=store)
         assert out["needs_bytes"] == 3 * 1_048_576                           # the repo's own tables, not web_docs
         assert "needs about 3 MB more" in out["needs_words"]
+
+
+# ── R1c: the previous index, discarded early or dropped after 7 days (Q4) ─────────────────────────────────────
+
+def rebuilt(registry, store):
+    d = deps(registry, store)
+    run_id = queued(registry)
+    execute(registry, run_id, d)
+    return run_id, d
+
+
+class TestDiscard:
+    def test_discard_drops_the_previous_tables_and_the_remap_log_and_ends_undo(self, registry, store):
+        run_id, d = rebuilt(registry, store)
+        registry.merge_run_target(run_id, {"vote_moves": {"a": "b"}})
+        out = reindex.discard_previous(registry, SLUG, by="erin", deps=d)
+        assert sorted(out["dropped"]) == [f"{SLUG}_java_code__previous", f"{SLUG}_markdown_docs__previous"]
+        assert not any(n.endswith("__previous") for n in store.tables)
+        t = target(registry, run_id)
+        assert t["discarded"] == "erin" and t["vote_moves"] == {}
+        with pytest.raises(reindex.ReindexRefused):
+            reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+        assert store.count(f"{SLUG}_markdown_docs") == 3                  # the live index is untouched
+
+    def test_after_a_discard_the_repository_can_be_rebuilt_again(self, registry, store):
+        _, d = rebuilt(registry, store)
+        reindex.discard_previous(registry, SLUG, by="erin", deps=d)
+        assert reindex.queue(registry, SLUG, requested_by="erin", store=FakeStore())["run_id"]
+
+    def test_discard_is_refused_while_rebuilding_or_while_another_holds_it(self, registry, store):
+        _, d = rebuilt(registry, store)
+        registry.take_claim(reindex._claim_key(SLUG), "someone-else")
+        with pytest.raises(reindex.ReindexRefused, match="right now"):
+            reindex.discard_previous(registry, SLUG, by="erin", deps=d)
+        with pytest.raises(reindex.ReindexRefused, match="right now"):
+            reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+
+    def test_discard_writes_an_activity_row(self, registry, store):
+        _, d = rebuilt(registry, store)
+        reindex.discard_previous(registry, SLUG, by="erin", deps=d)
+        rows = [a for a in registry.list_activity(entity_slug=SLUG, limit=50) if a.get("operation") == "reindex"]
+        assert any("previous index dropped" in a["summary"] for a in rows)
+
+
+class TestTheSevenDayJob:
+    def test_nothing_is_dropped_inside_the_window(self, registry, store):
+        _, d = rebuilt(registry, store)
+        assert reindex.drop_expired_previous(registry, deps=d) == []
+        assert store.collection_exists(f"{SLUG}_markdown_docs__previous")
+
+    def test_after_seven_days_it_is_dropped_with_its_reason(self, registry, store):
+        run_id, d = rebuilt(registry, store)
+        later = reindex._now() + timedelta(days=reindex.KEEP_PREVIOUS_DAYS, minutes=1)
+        assert reindex.drop_expired_previous(registry, now=later, deps=d) == [SLUG]
+        assert not store.collection_exists(f"{SLUG}_markdown_docs__previous")
+        assert "7-day undo window closed" in target(registry, run_id)["outcomes"][-1]["words"]
+        assert reindex.drop_expired_previous(registry, now=later, deps=d) == []      # once only
+
+    def test_a_repository_that_is_rebuilding_keeps_it_until_the_next_pass(self, registry, store, monkeypatch):
+        _, d = rebuilt(registry, store)
+        monkeypatch.setattr(reindex, "is_rebuilding", lambda reg, slug: True)
+        later = reindex._now() + timedelta(days=8)
+        assert reindex.drop_expired_previous(registry, now=later, deps=d) == []
+        assert store.collection_exists(f"{SLUG}_markdown_docs__previous")
+
+    def test_an_undone_rebuild_has_nothing_to_drop(self, registry, store):
+        _, d = rebuilt(registry, store)
+        reindex.undo(registry, SLUG, requested_by="erin", deps=d)
+        assert reindex.drop_expired_previous(registry, now=reindex._now() + timedelta(days=8), deps=d) == []
+
+    def test_progress_says_until_when_undo_is_available(self, registry, store):
+        rebuilt(registry, store)
+        p = reindex.progress(registry, SLUG)
+        assert p["previous_until"] and "undo available until" in p["outcomes"][-1]["words"]
+
+
+def test_the_scheduler_tick_runs_the_job(monkeypatch):
+    from resource_explorer import scheduler
+
+    called = {}
+    monkeypatch.setattr(scheduler, "_run_due", lambda: None)
+    monkeypatch.setattr(scheduler, "_reconcile_rfa_actions", lambda: None)
+    monkeypatch.setattr(reindex, "drop_expired_previous", lambda reg: called.setdefault("ran", True) and [])
+    scheduler._tick_body()
+    assert called.get("ran")
+
+
+def test_the_discard_route_is_admin_only(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from resource_explorer.web.app import app
+
+    monkeypatch.setenv("REGISTRY_DATABASE_URL", f"sqlite:///{tmp_path}/r.db")
+    import resource_explorer.config as cfg
+    cfg._config = None
+    assert TestClient(app).post(f"/api/reindex/{SLUG}/discard-previous").status_code in (401, 403)

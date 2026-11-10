@@ -674,6 +674,69 @@ def recover_undos(registry, deps: Deps | None = None) -> list[str]:
     return out
 
 
+# ── the previous index: discarded by an admin, or dropped after 7 days (R1c) ─────────────────────────────────────
+
+def discard_previous(registry, slug: str, *, by: str, reason: str = "", deps: Deps | None = None) -> dict:
+    """Drop the previous index of `slug`'s last rebuild, ending its undo window early (an admin) or on time (the 7-day
+    job). Drops each `{name}__previous` table (its indexes go with it) and the vote-remap log, which only an undo reads,
+    and writes an activity row. Refused while the repository is rebuilding, or while another undo or discard holds it."""
+    if not (by or "").strip():
+        raise ReindexRefused("Discarding needs a signed-in admin.", 401)
+    row = latest_done(registry, slug)
+    if row is None:
+        raise ReindexRefused(f"{slug} has no rebuild whose previous index is still kept.", 404)
+    if is_rebuilding(registry, slug):
+        raise ReindexRefused(f"{slug} has a rebuild in progress; its previous index is kept until it ends.")
+    deps = deps or Deps(registry=registry)
+    holder = f"discard:{by}:{row['id']}"
+    if not registry.take_claim(_claim_key(slug), holder):
+        raise ReindexRefused(f"{slug}'s previous index is being discarded or undone right now.")
+    try:
+        r = _Run(row["id"], deps)
+        dropped: list[str] = []
+        for n in (r.t.get("kept") or []) + (r.t.get("dropped") or []):
+            if deps.store.collection_exists(previous(n)):
+                deps.store.drop_collection(previous(n))
+                dropped.append(previous(n))
+        why = reason or f"discarded by {by}"
+        words = f"previous index dropped ({why}): {', '.join(dropped) or 'nothing was left to drop'}; undo is no longer " \
+                "available"
+        r.step("done", words, discarded=by, discarded_at=_now().isoformat(), vote_moves={})
+        from resource_explorer.activity_logger import log_reindex
+
+        p = registry.get(slug)
+        log_reindex(registry, slug, (p.display_name if p else "") or slug, "ok",
+                    f"Rebuild of {slug}'s chat index: {words}.")
+        return {"run_id": row["id"], "dropped": dropped}
+    finally:
+        registry.release_claim(_claim_key(slug), holder)
+
+
+def drop_expired_previous(registry, *, now: datetime | None = None, deps: Deps | None = None) -> list[str]:
+    """The 7-day job (Q4), run by the scheduler: drop every previous index whose undo window has closed. A repository
+    that is rebuilding, or whose previous index another process holds, is left for the next pass. Returns the slugs
+    dropped."""
+    now_iso = (now or _now()).isoformat()
+    done: list[str] = []
+    for row in registry.list_runs(kind=RUN_KIND, limit=500):
+        t = _target(row)
+        if (t.get("phase") != "done" or t.get("undone") or t.get("discarded")
+                or not t.get("previous_until") or t["previous_until"] >= now_iso):
+            continue
+        slug = t.get("slug", "")
+        if latest_done(registry, slug) is None or latest_done(registry, slug)["id"] != row["id"]:
+            continue
+        try:
+            discard_previous(registry, slug, by="the scheduled 7-day job",
+                             reason=f"the {KEEP_PREVIOUS_DAYS}-day undo window closed", deps=deps)
+            done.append(slug)
+        except ReindexRefused as exc:
+            log.info("previous index of %s kept for now: %s", slug, exc)
+        except Exception:
+            log.exception("could not drop the previous index of %s; the next pass tries again", slug)
+    return done
+
+
 def _metrics():
     from resource_explorer.vector_store_pg import _metrics_collector
     return _metrics_collector()
