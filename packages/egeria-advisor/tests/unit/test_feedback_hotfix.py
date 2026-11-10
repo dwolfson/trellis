@@ -247,8 +247,10 @@ def test_event_loop_serves_other_requests_while_a_vote_is_written(monkeypatch):
                 return r
 
             async def other():
+                # Any cheap route a signed-in non-admin may call: the probe is "does the loop answer",
+                # not this route. (Not /api/feedback/extended: S1 made that admin-only.)
                 await asyncio.sleep(0.1)
-                r = await client.get("/api/feedback/extended", headers=headers)
+                r = await client.get("/api/auth/me", headers=headers)
                 done.append("other")
                 return r
             rv, ro = await asyncio.gather(vote(), other())
