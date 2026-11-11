@@ -404,3 +404,19 @@ def test_js_harness_tiles_are_what_the_server_makes():
         TILES_FOR_JS.write_text(json.dumps(made, indent=1, ensure_ascii=False))
     assert json.loads(TILES_FOR_JS.read_text()) == made, (
         "tiles_for_js.json is out of date: regenerate with EA_REGEN_TILE_FIXTURE=1 pytest -k js_harness")
+
+
+def test_the_live_cdo_sheet_serialises_as_the_page_expects():
+    """The real resolved sheet (laz, read-only): kinds in sheet order, drill-downs, stored list junk dropped."""
+    from pyegeria.view.dashboard_resolver import ResolvedSheet
+    data = json.loads((FIX / "resolved_sheet_cdo_2026-11-11.json").read_text())
+    data.pop("_source")
+    sheet = ResolvedSheet(**data)
+    placements = [ed._placement_dict(p) for p in sheet.placements]
+    kinds = "".join("t" if p["kind"] == "text" else "r" for p in placements)
+    assert kinds == "ttrrrtrrrrttrrtrrrtrrr"
+    assert {p["position"]: p["detail_spec"] for p in placements if p["detail_spec"]} == {
+        4: "Governance-Metric-DrE-Basic", 16: "Digital-Products", 18: "Information-Supply-Chain-DrE-Basic"}
+    assert all(p["runnable"] for p in placements if p["kind"] == "report")
+    for p in placements:
+        assert not any(isinstance(v, str) and v.startswith("[") for v in p["params"].values()), p["params"]
