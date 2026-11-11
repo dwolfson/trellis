@@ -61,8 +61,12 @@ def test_index_loads_vendored_libraries_and_render_js_in_order():
         assert lib in order, lib
     assert order.index("/static/vendor/marked.min.js") < order.index("/static/render.js")
     assert order.index("/static/vendor/purify.min.js") < order.index("/static/render.js")
+    import trellis_ui   # /static/trellis-ui/ is the shared package's, mounted by app.py (A-U3)
     for s in order:
-        if s.startswith("/static/"):
+        if s.startswith(trellis_ui.STATIC_URL + "/"):
+            assert (trellis_ui.static_dir() / s[len(trellis_ui.STATIC_URL) + 1:]).is_file(), \
+                f"{s} is referenced but not in trellis-ui"
+        elif s.startswith("/static/"):
             assert (STATIC / s[len("/static/"):]).is_file(), f"{s} is referenced but not in static/"
 
 
@@ -141,7 +145,8 @@ def test_node_render_harness():
         if required:
             pytest.fail(f"EA_RENDER_HARNESS_REQUIRED=1 but {missing}: the security harness did not run")
         pytest.skip(missing)
-    r = subprocess.run(["node", "--test", str(STATIC / "test" / "render.test.mjs")],
+    # Every harness file: render.test.mjs (the security harness) and look.test.mjs (the looks, A-U3).
+    r = subprocess.run(["node", "--test", *map(str, sorted((STATIC / "test").glob("*.test.mjs")))],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
     assert re.search(r"^# fail 0$", r.stdout, re.M) and re.search(r"^# skipped 0$", r.stdout, re.M), r.stdout[-2000:]

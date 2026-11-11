@@ -3,10 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- The look (Dark / Light / Paper), shared with Resource Explorer (packages/trellis-ui): set before first paint
+       from localStorage["trellis.look"]; nothing stored, or storage blocked, means Dark. ea_look.js switches it. -->
+  <script>(function () { var l = 'dark'; try { var v = localStorage.getItem('trellis.look');
+    if (v === 'light' || v === 'paper' || v === 'dark') l = v; } catch (e) {} document.documentElement.setAttribute('data-look', l); })();</script>
   <title>Egeria Advisor — Admin</title>
   <script src="/static/auth.js?v=20260908a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { darkMode: 'class' };</script>
+  <script src="/static/trellis-ui/tokens.js"></script>
+  <script src="/static/ea_tailwind.js?v=20261111a"></script>
   <style>
     body { font-family: 'Inter', system-ui, sans-serif; }
     .badge-healthy  { background:#14532d; color:#86efac; }
@@ -24,6 +29,10 @@
     ::-webkit-scrollbar-track { background: #0f172a; }
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
   </style>
+  <!-- The looks' variables (trellis-ui) and EA's roles for them; after the <style> above, which they follow. -->
+  <link rel="stylesheet" href="/static/trellis-ui/themes.css">
+  <link rel="stylesheet" href="/static/ea_looks.css?v=20261111a">
+  <script type="module" src="/static/ea_look.js?v=20261111a"></script>
 </head>
 <body class="dark bg-slate-900 text-slate-100 min-h-screen">
 
@@ -36,7 +45,8 @@
   </div>
   <div class="flex items-center gap-3">
     <div id="sys-health" class="flex gap-2 text-xs"></div>
-    <span class="text-slate-600 text-xs">Auto-refresh <span id="countdown" class="text-slate-400">10s</span></span>
+    <span data-look-host class="text-xs"></span>
+    <span class="text-slate-500 text-xs">Auto-refresh <span id="countdown" class="text-slate-400">10s</span></span>
     <button onclick="refresh()" class="px-3 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded transition-colors">↺ Refresh</button>
     <a href="/" class="px-3 py-1 text-xs bg-cyan-800 hover:bg-cyan-700 rounded text-white transition-colors">← Chat</a>
   </div>
@@ -399,7 +409,7 @@ function renderCollections(cols) {
     const actions = c.enabled ? `
       <button class="action-btn btn-blue mr-1" onclick="reindex(${_jsArg(c.name)}, false)" title="Incremental update (changed files only)">▲ Update</button>
       <button class="action-btn btn-amber" onclick="reindex(${_jsArg(c.name)}, true)" title="Drop and rebuild the full collection">▲▲ Rebuild</button>
-    ` : `<span class="text-xs text-slate-600">disabled</span>`;
+    ` : `<span class="text-xs text-slate-500">disabled</span>`;
     tr.innerHTML = `
       <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${_esc(c.name)}</td>
       <td class="px-4 py-2.5 text-xs text-slate-500 hidden md:table-cell">${_esc(c.repo || '—')}</td>
@@ -443,10 +453,10 @@ function renderRepos(repos) {
       : `<span class="px-2 py-0.5 rounded text-xs badge-empty">missing</span>`;
     const action = r.exists
       ? `<button class="action-btn btn-blue" onclick="pullRepo(${_jsArg(r.name)})">↓ Pull</button>`
-      : `<span class="text-xs text-slate-600">—</span>`;
+      : `<span class="text-xs text-slate-500">—</span>`;
     tr.innerHTML = `
       <td class="px-4 py-2.5 font-mono text-xs text-cyan-300">${_esc(r.name)}</td>
-      <td class="px-4 py-2.5 text-xs text-slate-500 hidden lg:table-cell">${_esc(r.last_commit_date ? r.last_commit_date.slice(0,19) : '—')} <span class="font-mono text-slate-600">${_esc(r.last_commit || '')}</span></td>
+      <td class="px-4 py-2.5 text-xs text-slate-500 hidden lg:table-cell">${_esc(r.last_commit_date ? r.last_commit_date.slice(0,19) : '—')} <span class="font-mono text-slate-500">${_esc(r.last_commit || '')}</span></td>
       <td class="px-4 py-2.5 text-xs text-slate-400 hidden xl:table-cell truncate max-w-xs">${_esc(r.last_commit_msg || '—')}</td>
       <td class="px-4 py-2.5 text-center">${badge}</td>
       <td class="px-4 py-2.5 text-right">${action}</td>
@@ -517,7 +527,7 @@ function renderJobs(jobs) {
         <span class="text-xs text-slate-300 truncate">${_esc(job.description)}</span>
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        <span class="text-xs text-slate-600">${_esc(age)}</span>
+        <span class="text-xs text-slate-500">${_esc(age)}</span>
         <button class="action-btn btn-slate text-xs" onclick="openJobModal(${_jsArg(job.id)}, ${_jsArg(job.description)})">View</button>
       </div>
     `;
@@ -611,7 +621,7 @@ async function loadPlanStats() {
             <div class="flex items-center gap-1.5">
               <span class="text-xs ${color} font-medium">${_esc(e.event_type)}</span>
               ${e.outcome_status ? `<span class="text-xs text-slate-500">${_esc(e.outcome_status)}</span>` : ''}
-              <span class="text-xs text-slate-600 ml-auto shrink-0">${_esc(ts)}</span>
+              <span class="text-xs text-slate-500 ml-auto shrink-0">${_esc(ts)}</span>
             </div>
             <div class="text-xs text-slate-400 truncate">${_esc(e.title || e.doc_id)}</div>
           </div>
@@ -747,12 +757,12 @@ async function loadFeedbackAnalysis() {
 
         <div>
           <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction agents (≥5 queries)</div>
-          ${lowAgents ? `<ul class="space-y-0.5">${lowAgents}</ul>` : '<div class="text-xs text-slate-600">None</div>'}
+          ${lowAgents ? `<ul class="space-y-0.5">${lowAgents}</ul>` : '<div class="text-xs text-slate-500">None</div>'}
         </div>
 
         <div>
           <div class="text-xs text-slate-500 font-medium mb-1">Low-satisfaction perspectives (≥5 queries)</div>
-          ${lowPersp ? `<ul class="space-y-0.5">${lowPersp}</ul>` : '<div class="text-xs text-slate-600">None (or insufficient data)</div>'}
+          ${lowPersp ? `<ul class="space-y-0.5">${lowPersp}</ul>` : '<div class="text-xs text-slate-500">None (or insufficient data)</div>'}
         </div>
 
         <div>
@@ -762,7 +772,7 @@ async function loadFeedbackAnalysis() {
               gapItems.map(g =>
                 `<div class="text-xs text-slate-400 truncate" title="${_esc(g.query)}">${_esc(g.query)}</div>`
               ).join('') + `</div>`
-            : '<div class="text-xs text-slate-600">None</div>'}
+            : '<div class="text-xs text-slate-500">None</div>'}
         </div>
       </div>
     </div>`;
@@ -838,7 +848,7 @@ async function loadFeedbackReview() {
       <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${ts}</td>
       <td class="px-3 py-2 text-xs">
         <div class="font-medium text-slate-200 max-w-xs">${query}</div>
-        <div class="text-slate-500 mt-0.5">${perspective} / ${intent} → <span class="font-mono">${queryType}</span> <span class="text-slate-600">[${agent}]</span></div>
+        <div class="text-slate-500 mt-0.5">${perspective} / ${intent} → <span class="font-mono">${queryType}</span> <span class="text-slate-500">[${agent}]</span></div>
         ${respText ? `<details class="mt-1"><summary class="cursor-pointer text-slate-500 hover:text-slate-300">Response ▸</summary><pre id="${respId}" class="mt-1 text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto bg-slate-900/60 rounded p-2">${respText}</pre></details>` : ''}
       </td>
       <td class="px-3 py-2">
@@ -868,7 +878,7 @@ async function loadFeedbackReview() {
       </thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="px-3 py-2 text-xs text-slate-600 border-t border-slate-700/50">${filtered.length} of ${records.length} records</div>
+    <div class="px-3 py-2 text-xs text-slate-500 border-t border-slate-700/50">${filtered.length} of ${records.length} records</div>
   `;
 }
 
@@ -1034,7 +1044,7 @@ async function openSessionModal(sessionId) {
       const ts      = _esc(e.ts ? String(e.ts).slice(11, 19) : '');
       const role    = _esc(e.role || e.event || 'event');
       const rawContent = String(e.content || JSON.stringify(e));
-      const phase   = e.phase ? `<span class="text-slate-600">[${_esc(e.phase)}]</span> ` : '';
+      const phase   = e.phase ? `<span class="text-slate-500">[${_esc(e.phase)}]</span> ` : '';
 
       // Detect failure signals
       const contentLow = (e.content || '').toLowerCase();
@@ -1060,12 +1070,12 @@ async function openSessionModal(sessionId) {
       // Truncate very long messages
       const maxLen = 600;
       const displayContent = rawContent.length > maxLen
-        ? _esc(rawContent.slice(0, maxLen)) + `<span class="text-slate-600">…(${rawContent.length} chars)</span>`
+        ? _esc(rawContent.slice(0, maxLen)) + `<span class="text-slate-500">…(${rawContent.length} chars)</span>`
         : _esc(rawContent);
 
       return `<div class="p-2 rounded ${rowCls}">
         <div class="flex items-baseline gap-2 mb-0.5">
-          <span class="text-slate-600 shrink-0">${ts}</span>
+          <span class="text-slate-500 shrink-0">${ts}</span>
           <span class="${roleColor} font-semibold shrink-0">${role}</span>
           ${badge}
           ${phase}
