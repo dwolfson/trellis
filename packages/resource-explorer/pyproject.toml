@@ -47,6 +47,9 @@ dependencies = [
     # renderer) -- packages/trellis-ui, served at /static/trellis-ui/ (web/app.py). Declared for the reason
     # trellis-auth is: a root sources entry makes it available, not required.
     "trellis-ui",
+    # One device choice (GPU / Apple GPU / CPU) and the start-up hardware report -- packages/trellis-accel,
+    # docs/hardware-acceleration-proposal.md. No dependencies of its own; never pulls a PyTorch build.
+    "trellis-accel",
     # The Analytic Library: Curate's By-analysis tab calls
     # trellis_analytics.routines.curation_coverage (brief 2b). Since LS2 it is its own
     # distribution (odpi/egeria-trellis-analytics); the readers it asks for are RE's, in

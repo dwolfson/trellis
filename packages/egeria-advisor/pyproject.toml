@@ -19,6 +19,8 @@ dependencies = [
     # The looks (Dark / Light / Paper) shared with Resource Explorer -- packages/trellis-ui, served at
     # /static/trellis-ui/ (advisor/web/app.py).
     "trellis-ui",
+    # One device choice and the start-up hardware report, shared with RE -- packages/trellis-accel.
+    "trellis-accel",
     # Chat votes and their triage (advisor/feedback_store.py, Phase 2 A-F1), shared with Resource Explorer --
     # packages/trellis-feedback. The `api` extra brings the router EA mounts at /api/feedback/v2.
     "trellis-feedback[api]>=0.3,<0.4",

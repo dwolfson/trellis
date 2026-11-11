@@ -193,6 +193,32 @@ from advisor.web.dashboards import router as _dashboards_router
 app.include_router(_dashboards_router)
 
 
+def _hardware_purposes() -> dict:
+    """The device setting each of EA's models really runs with: its embeddings from
+    advisor.yaml's `embeddings.device` (what advisor/embeddings.py reads; shipped as "auto"),
+    Docling on auto. The report states these, not one generic choice."""
+    from advisor.config import get_full_config
+
+    return {"embeddings": get_full_config()["embeddings"].device, "docling": "auto"}
+
+
+def _log_hardware_in_background(log) -> None:
+    """The start-up hardware line (packages/trellis-accel): what the machine has, what this
+    PyTorch can use, the device chosen and any finding that names a fix. Built off the startup
+    path (importing torch takes seconds) and cached, so /health/hardware serves it without
+    touching torch again. It reports; it never installs anything."""
+    import threading
+
+    def run():
+        try:
+            from trellis_accel import report_once, startup_line
+            log.info(startup_line(report_once(_hardware_purposes())))
+        except Exception as exc:  # noqa: BLE001 -- a report, never a reason to stop serving
+            log.warning(f"hardware report could not be made: {exc}")
+
+    threading.Thread(target=run, name="hardware-report", daemon=True).start()
+
+
 @app.on_event("startup")
 async def _startup():
     """Ensure pgvector collection tables exist, then pre-warm the MCP agent
@@ -226,6 +252,7 @@ async def _startup():
             logger.warning(f"MCP pre-warm failed (reports will initialize on first use): {exc}")
 
     threading.Thread(target=_warm, daemon=True).start()
+    _log_hardware_in_background(logger)   # trellis-accel: device, build, findings
 
     # Report specs held in Egeria: sync EA's consumer folder into the EGERIA tier in the
     # background, retrying while Egeria starts. Never blocks startup (advisor/egeria_spec_sync.py).
@@ -266,6 +293,19 @@ async def index() -> FileResponse:
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+
+@app.get("/health/hardware")
+async def health_hardware() -> dict:
+    """The hardware report made at start-up (packages/trellis-accel): the machine's GPUs, the
+    installed PyTorch, the device chosen and findings that name a fix. Signed-in only: it is not
+    in the public paths (GPU names and versions are not for anyone who can reach the port),
+    unlike /health."""
+    import asyncio
+
+    from trellis_accel import report_once
+    return await asyncio.to_thread(lambda: report_once(_hardware_purposes()))
 
 
 @app.get("/api/status")

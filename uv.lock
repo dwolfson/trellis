@@ -20,6 +20,7 @@ resolution-markers = [
 members = [
     "egeria-advisor",
     "resource-explorer",
+    "trellis-accel",
     "trellis-analytics-re",
     "trellis-artifact-tree",
     "trellis-auth",
@@ -2070,6 +2071,7 @@ dependencies = [
     { name = "transformers" },
     { name = "tree-sitter" },
     { name = "tree-sitter-java" },
+    { name = "trellis-accel" },
     { name = "trellis-auth", extra = ["egeria"] },
     { name = "trellis-feedback", extra = ["api"] },
     { name = "trellis-querycache" },
@@ -2151,6 +2153,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.22.2" },
     { name = "tree-sitter", specifier = ">=0.23.0" },
     { name = "tree-sitter-java", specifier = ">=0.23.0" },
+    { name = "trellis-accel", editable = "packages/trellis-accel" },
     { name = "trellis-auth", extras = ["egeria"], editable = "packages/trellis-auth" },
     { name = "trellis-feedback", extras = ["api"], editable = "packages/trellis-feedback" },
     { name = "trellis-querycache", editable = "packages/trellis-querycache" },
@@ -8476,6 +8479,7 @@ dependencies = [
     { name = "transformers" },
     { name = "tree-sitter" },
     { name = "tree-sitter-java" },
+    { name = "trellis-accel" },
     { name = "trellis-analytics-re" },
     { name = "trellis-artifact-tree" },
     { name = "trellis-auth" },
@@ -8576,6 +8580,7 @@ requires-dist = [
     { name = "tree-sitter-java", specifier = ">=0.21" },
     { name = "tree-sitter-javascript", marker = "extra == 'ast'", specifier = ">=0.21" },
     { name = "tree-sitter-python", marker = "extra == 'ast'", specifier = ">=0.21" },
+    { name = "trellis-accel", editable = "packages/trellis-accel" },
     { name = "trellis-analytics-re", editable = "packages/trellis-analytics" },
     { name = "trellis-artifact-tree", editable = "packages/trellis-artifact-tree" },
     { name = "trellis-auth", editable = "packages/trellis-auth" },
@@ -10085,6 +10090,11 @@ wheels = [
 ]
 
 [[package]]
+name = "trellis-accel"
+version = "0.1.0"
+source = { editable = "packages/trellis-accel" }
+
+[[package]]
 name = "trellis-analytics-re"
 version = "0.2.0"
 source = { editable = "packages/trellis-analytics" }
@@ -10152,6 +10162,7 @@ ocr-mac = [
 pdf = [
     { name = "docling" },
     { name = "transformers" },
+    { name = "trellis-accel" },
 ]
 
 [package.metadata]
@@ -10167,6 +10178,7 @@ requires-dist = [
     { name = "tree-sitter-java", marker = "extra == 'code'", specifier = ">=0.23.0" },
     { name = "tree-sitter-javascript", marker = "extra == 'code'", specifier = ">=0.23.0" },
     { name = "tree-sitter-python", marker = "extra == 'code'", specifier = ">=0.23.0" },
+    { name = "trellis-accel", marker = "extra == 'pdf'", editable = "packages/trellis-accel" },
 ]
 provides-extras = ["code", "pdf", "ocr", "ocr-mac", "dev"]
 
@@ -10434,6 +10446,7 @@ source = { virtual = "." }
 dev = [
     { name = "egeria-advisor" },
     { name = "resource-explorer", extra = ["dev"] },
+    { name = "trellis-accel" },
     { name = "trellis-analytics-re", extra = ["dev"] },
     { name = "trellis-artifact-tree" },
     { name = "trellis-auth" },
@@ -10461,6 +10474,7 @@ dev = [
 dev = [
     { name = "egeria-advisor", editable = "packages/egeria-advisor" },
     { name = "resource-explorer", extras = ["dev"], editable = "packages/resource-explorer" },
+    { name = "trellis-accel", editable = "packages/trellis-accel" },
     { name = "trellis-analytics-re", extras = ["dev"], editable = "packages/trellis-analytics" },
     { name = "trellis-artifact-tree", editable = "packages/trellis-artifact-tree" },
     { name = "trellis-auth", editable = "packages/trellis-auth" },
