@@ -38,6 +38,17 @@ from fastapi import APIRouter, HTTPException, Request, Response
 router = APIRouter()
 
 
+def _require_visible_plan(request: Request, doc_id: str) -> None:
+    """404 unless the requester can see this plan (its own, shared, or an admin's view; SS-4). Checked
+    before any route acts on a plan by id: the engine calls below see every namespace."""
+    from advisor.governance_docs import get_doc_manager
+    from advisor.web.ownership import requester
+    user_id, role = requester(request)
+    if get_doc_manager().load(doc_id, include_trash=True, requester_user_id=user_id, requester_role=role,
+                              enforce_ownership=True) is None:
+        raise HTTPException(status_code=404, detail=f"Plan {doc_id!r} not found")
+
+
 @router.post("/api/plans/import")
 async def import_plan(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -73,10 +84,8 @@ async def list_plans(request: Request) -> Dict[str, Any]:
     """
     from advisor.governance_docs import get_doc_manager
     from advisor.governance_draft import list_visible_drafts
-    from advisor.auth import get_current_user
-    user = get_current_user(request)
-    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
-    role = (user or {}).get("role")
+    from advisor.web.ownership import requester
+    user_id, role = requester(request)
     dm = get_doc_manager()
     inbox = dm.list_inbox(requester_user_id=user_id, requester_role=role)
     outbox = dm.list_outbox(requester_user_id=user_id, requester_role=role)
@@ -102,10 +111,8 @@ async def get_plan(request: Request, doc_id: str) -> Dict[str, Any]:
     back as 404 (never 403) unless the requester is a curator.
     """
     from advisor.governance_docs import get_doc_manager
-    from advisor.auth import get_current_user
-    user = get_current_user(request)
-    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
-    role = (user or {}).get("role")
+    from advisor.web.ownership import requester
+    user_id, role = requester(request)
     dm = get_doc_manager()
     content = dm.load(doc_id, include_trash=True, requester_user_id=user_id,
                        requester_role=role, enforce_ownership=True)
@@ -116,8 +123,9 @@ async def get_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/plans/{doc_id}/export")
-async def export_plan(doc_id: str) -> Response:
+async def export_plan(request: Request, doc_id: str) -> Response:
     """Download the full current content of a plan document (inbox or outbox)."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     content = dm.load(doc_id)
@@ -131,12 +139,13 @@ async def export_plan(doc_id: str) -> Response:
 
 
 @router.get("/api/plans/{doc_id}/report-export")
-async def export_plan_report(doc_id: str) -> Response:
+async def export_plan_report(request: Request, doc_id: str) -> Response:
     """
     Download just the report content (Mermaid diagrams, result tables) extracted
     from an executed plan's Dr.Egeria output — shareable independent of the plan
     that produced it.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager, DocumentManager
     from advisor.agents.outcome_reporter import _extract_report_sections
 
@@ -175,6 +184,7 @@ async def export_plan_report(doc_id: str) -> Response:
 @router.put("/api/plans/{doc_id}")
 async def save_plan(request: Request, doc_id: str, body: Dict[str, Any]) -> Dict[str, str]:
     """Save updated plan content to inbox (with automatic version backup)."""
+    _require_visible_plan(request, doc_id)
     from advisor.auth import get_current_user
     from advisor.governance_docs import get_doc_manager
     content = body.get("content", "")
@@ -206,6 +216,7 @@ async def execute_plan(request: Request, doc_id: str, body: Optional[Dict[str, A
     Requires login — this performs live writes against Egeria and must be
     attributable to the signed-in user, not a shared service account.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
@@ -224,6 +235,7 @@ async def validate_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
     Requires login — see execute_plan.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
@@ -241,6 +253,7 @@ async def retry_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
     Requires login — see execute_plan.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
@@ -260,6 +273,7 @@ async def rerun_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
     Requires login — see execute_plan.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
@@ -272,8 +286,9 @@ async def rerun_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/recover")
-async def recover_plan(doc_id: str) -> Dict[str, Any]:
+async def recover_plan(request: Request, doc_id: str) -> Dict[str, Any]:
     """Move an outbox plan back to inbox for editing (does NOT re-execute)."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     inbox_doc_id = dm.move_to_inbox(doc_id)
@@ -283,8 +298,9 @@ async def recover_plan(doc_id: str) -> Dict[str, Any]:
 
 
 @router.get("/api/plans/{doc_id}/versions")
-async def list_plan_versions(doc_id: str) -> Dict[str, Any]:
+async def list_plan_versions(request: Request, doc_id: str) -> Dict[str, Any]:
     """List available versions for a plan document."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     versions = dm.list_versions(doc_id)
@@ -292,8 +308,9 @@ async def list_plan_versions(doc_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/versions/{version_file:path}/restore")
-async def restore_plan_version(doc_id: str, version_file: str) -> Dict[str, Any]:
+async def restore_plan_version(request: Request, doc_id: str, version_file: str) -> Dict[str, Any]:
     """Restore a specific version of a plan to inbox."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     ok = dm.restore_version(doc_id, version_file)
@@ -303,12 +320,13 @@ async def restore_plan_version(doc_id: str, version_file: str) -> Dict[str, Any]
 
 
 @router.post("/api/plans/{doc_id}/fork")
-async def fork_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+async def fork_plan(request: Request, doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Create a new, independent plan seeded from doc_id (or a specific version
     of it). Known objects (Qualified Name + GUID) from the source's Command
     Results table are carried forward as a reference appendix.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     title = (body.get("title") or "").strip()
     if not title:
@@ -323,12 +341,13 @@ async def fork_plan(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/save-as")
-async def save_plan_as(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+async def save_plan_as(request: Request, doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Save doc_id's current content (or a specific prior version) as a new,
     independent plan — the specification only, no history (unlike fork,
     which carries forward a Known Objects appendix and lineage note).
     """
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     title = (body.get("title") or "").strip()
     if not title:
@@ -343,12 +362,13 @@ async def save_plan_as(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/save-as-template")
-async def save_plan_as_template(doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+async def save_plan_as_template(request: Request, doc_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """
     Save any existing plan document (inbox or outbox) as a named, reusable
     template — a starting point for new plans, not itself executable.
     Outcome/execution history is stripped first.
     """
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager, strip_outcome_sections
     from advisor.plan_templates import get_template_manager
     name = (body.get("name") or "").strip()
@@ -371,10 +391,8 @@ async def delete_plan(request: Request, doc_id: str) -> Dict[str, Any]:
     requester's own, unless the requester is a curator.
     """
     from advisor.governance_docs import get_doc_manager
-    from advisor.auth import get_current_user
-    user = get_current_user(request)
-    user_id = None if not user or user.get("anonymous") else user.get("user_id") or user.get("sub")
-    role = (user or {}).get("role")
+    from advisor.web.ownership import requester
+    user_id, role = requester(request)
     dm = get_doc_manager()
     visible = dm.load(doc_id, requester_user_id=user_id, requester_role=role, enforce_ownership=True)
     if visible is None:
@@ -386,8 +404,9 @@ async def delete_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/restore-trash")
-async def restore_plan_from_trash(doc_id: str) -> Dict[str, Any]:
+async def restore_plan_from_trash(request: Request, doc_id: str) -> Dict[str, Any]:
     """Restore a plan document from trash back to inbox."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     ok = dm.restore_from_trash(doc_id)
@@ -400,8 +419,9 @@ async def restore_plan_from_trash(doc_id: str) -> Dict[str, Any]:
 
 
 @router.delete("/api/plans/{doc_id}/purge")
-async def purge_plan(doc_id: str) -> Dict[str, Any]:
+async def purge_plan(request: Request, doc_id: str) -> Dict[str, Any]:
     """Permanently delete a plan document from trash. Version history is preserved."""
+    _require_visible_plan(request, doc_id)
     from advisor.governance_docs import get_doc_manager
     dm = get_doc_manager()
     ok = dm.purge(doc_id)
