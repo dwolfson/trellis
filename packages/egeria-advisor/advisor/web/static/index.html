@@ -2335,6 +2335,8 @@ async function feedbackClick(e) {
     // A-F1: session + exchange + vote is the vote's idempotency key, so Retry on this row is the same vote.
     session_id: (window._eaFeedbackSession ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
     exchange_id: (fb.dataset.exchangeId ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
+    // N1: each click on this row is its own vote; the latest on an answer is the one counted.
+    vote_seq: (fb._voteSeq = (fb._voteSeq || 0) + 1),
   };
   // Keep the buttons so a failed send can be retried; acknowledge the click at once.
   if (!fb._buttons) fb._buttons = [...fb.querySelectorAll('button')];

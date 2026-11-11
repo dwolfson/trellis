@@ -90,8 +90,10 @@ def test_a_vote_is_an_answer_item_with_its_fields(backend, client):
     assert (item["app"], item["kind"], item["vote"]) == ("egeria-advisor", "answer", 1)
     assert (item["user_id"], item["session_id"]) == (OTHER, "s1")
     assert item["query_text"] == BODY["query"] and item["response_text"] == BODY["response_text"]
-    assert (item["intent_label"], item["perspective"], item["routing_agent"]) == ("explain", "Data Steward", "doc_agent")
-    assert item["extra"]["exchange_id"] == "x1" and item["extra"]["query_type"] == "explanation"
+    # N2: intent_label is the ROUTED intent; the UI selector has its own clearly named field
+    assert (item["intent_label"], item["perspective"], item["routing_agent"]) == ("explanation", "Data Steward", "doc_agent")
+    assert item["extra"]["intent_selected"] == "explain" and "query_type" not in item["extra"]
+    assert item["extra"]["exchange_id"] == "x1"
     assert item["triage"]["status"] == "new"
 
 
@@ -264,3 +266,57 @@ def test_a_failed_cache_clear_is_500_with_the_reason(client, monkeypatch):
     monkeypatch.setattr("advisor.query_cache.get_query_cache", lambda: _Cache())
     r = client.post("/api/admin/maintenance/clear_cache", headers=_as(ADMIN))
     assert r.status_code == 500 and r.json()["detail"] == "Query cache not cleared: OSError: disk full"
+
+
+# ── A-F1 N1: a changed vote supersedes the earlier one; N2: routed intent vs selector ────────────
+
+def _click(client, vote, seq, user=OTHER, exchange="x1"):
+    r = client.post("/api/feedback", json={**BODY, "vote": vote, "session_id": "s1", "exchange_id": exchange,
+                                           "vote_seq": seq}, headers=_as(user))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_changed_vote_is_stored_and_only_the_latest_counts(backend, client):
+    up = _click(client, 1, 1)
+    down = _click(client, -1, 2)
+    assert up["created"] and down["created"] and up["item"]["id"] != down["item"]["id"]
+    assert _store().count(kind="answer") == 2                       # both kept, with their own history
+    body = client.get("/api/feedback/analysis", headers=_as(ADMIN)).json()
+    assert body["count"] == 1 and body["superseded"] == 1
+    assert (body["stats"]["positive"], body["stats"]["negative"]) == (0, 1)
+
+
+def test_changing_back_counts_the_last_choice_not_the_first_item(backend, client):
+    _click(client, 1, 1)
+    _click(client, -1, 2)
+    back = _click(client, 1, 3)              # a new click, so a new item: not a replay of click 1
+    assert back["created"] is True
+    body = client.get("/api/feedback/analysis", headers=_as(ADMIN)).json()
+    assert (body["count"], body["superseded"]) == (1, 2)
+    assert (body["stats"]["positive"], body["stats"]["negative"]) == (1, 0)
+
+
+def test_a_resent_click_is_still_one_item(backend, client):
+    first = _click(client, -1, 2)
+    again = _click(client, -1, 2)
+    assert again["created"] is False and again["item"]["id"] == first["item"]["id"]
+    assert _store().count(kind="answer") == 1
+
+
+def test_votes_on_different_answers_or_by_different_users_all_count(backend, client):
+    _click(client, 1, 1, exchange="x1")
+    _click(client, -1, 1, exchange="x2")
+    _click(client, -1, 1, user=ADMIN, exchange="x1")
+    fc = fcmod.get_feedback_collector()
+    _vote(fc, "a CLI vote, no exchange id")
+    _vote(fc, "another CLI vote, no exchange id")
+    body = client.get("/api/feedback/analysis", headers=_as(ADMIN)).json()
+    assert (body["count"], body["superseded"]) == (5, 0)
+
+
+def test_routed_intent_reads_items_from_before_n2_too():
+    old = {"intent_label": "auto", "extra": {"query_type": "explanation"}}
+    new = {"intent_label": "explanation", "extra": {"intent_selected": "auto"}}
+    assert feedback_store.routed_intent(old) == feedback_store.routed_intent(new) == "explanation"
+    assert feedback_store.as_collector_entry({**old, "vote": 1})["query_type"] == "explanation"

@@ -102,14 +102,15 @@ def test_vote_records_user_id_and_keeps_intent_out_of_comment(http, tmp_path, _i
     (item,) = _items()
     assert item["id"] == body["item"]["id"]
     assert item["user_id"] == "erinoverview"
-    assert item["intent_label"] == "explain"               # its own field, never a comment
+    assert item["intent_label"] == "explanation"           # the routed intent (A-F1 N2)
+    assert item["extra"]["intent_selected"] == "explain"   # the UI selector: its own field, never a comment
     assert item["query_text"] == BODY["query"] and item["response_text"] == BODY["response_text"]
     assert (item["perspective"], item["routing_agent"]) == ("Data Steward", "doc_agent")
     assert item["message"] == ""
     extra = item["extra"]
     assert "user_comment" not in extra and "feedback_text" not in extra
     assert "sentiment" not in extra                        # nothing the user wrote, nothing analysed
-    assert extra["query_type"] == "explanation"
+    assert "query_type" not in extra                       # not repeated: it is intent_label
     assert _records(tmp_path) == [] and _records(tmp_path, "feedback_extended.jsonl") == []   # no JSONL
 
 

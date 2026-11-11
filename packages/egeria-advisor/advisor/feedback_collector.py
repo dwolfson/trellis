@@ -94,6 +94,8 @@ class FeedbackCollector:
         self.feedback_file = self.legacy_file or (resolve_advisor_data_root() / "feedback" / "user_feedback.jsonl")
         #: Lines of the legacy file that could not be read on the last pass (line number, reason).
         self.unreadable_lines: List[Dict[str, Any]] = []
+        #: Library votes left out of the last read: an earlier vote on an answer its user voted on again.
+        self.superseded = 0
         logger.info("Initialized feedback collector: "
                     + (f"legacy file {self.legacy_file}" if self.legacy_file else "trellis-feedback store"))
     
@@ -250,12 +252,15 @@ class FeedbackCollector:
         if entry.rating not in VOTE_BY_RATING:
             raise FeedbackWriteError(f"rating must be one of {sorted(VOTE_BY_RATING)}, got {entry.rating!r}")
         # Everything EA's analytics read that the library item has no column for.
-        keep = ("query_type", "collections_searched", "response_length", "star_rating", "category",
+        # The routed intent is the item's intent_label and the UI selector is extra.intent_selected
+        # (A-F1 N2), so neither is repeated here.
+        keep = ("collections_searched", "response_length", "star_rating", "category",
                 "suggested_collection", "feedback_text", "user_comment", "sentiment",
                 "sentiment_confidence", "sentiment_emotion", "sentiment_keywords")
         extra = {k: entry_dict[k] for k in keep if entry_dict.get(k) not in (None, "", [])}
         if exchange_id:
             extra["exchange_id"] = exchange_id
+        extra["intent_selected"] = entry.intent_override or ""
         try:
             from trellis_feedback import FeedbackItem
             store = get_store()
@@ -263,7 +268,7 @@ class FeedbackCollector:
                 app=store.app, kind="answer", vote=VOTE_BY_RATING[entry.rating],
                 query_text=(entry.query or "").strip(), response_text=response_text or "",
                 user_id=entry.user_id or "", session_id=entry.session_id or "",
-                intent_label=entry.intent_override or "", perspective=entry.perspective or "",
+                intent_label=entry.query_type or "", perspective=entry.perspective or "",
                 routing_agent=entry.routing_agent or "", extra=extra,
             )
             stored, created = store.submit(item, idempotency_key=idempotency_key)
@@ -278,15 +283,20 @@ class FeedbackCollector:
 
     def entries(self) -> List[Dict[str, Any]]:
         """Every vote, in the shape the statistics read. From the trellis-feedback store, or from
-        `legacy_file` when the collector was built with one.
+        `legacy_file` when the collector was built with one. From the store, only the LATEST vote on each
+        answer counts (A-F1 N1); `superseded` says how many earlier ones were left out.
 
         Raises FeedbackReadError when the store cannot be read. A legacy line that is not JSON is
         skipped and listed in `unreadable_lines` (line number and reason), never silently dropped."""
         self.unreadable_lines = []
+        self.superseded = 0
         if self.legacy_file is None:
-            from advisor.feedback_store import StoreUnavailable, as_collector_entry, get_store, iter_answer_items
+            from advisor.feedback_store import (StoreUnavailable, as_collector_entry, get_store, iter_answer_items,
+                                                latest_votes)
             try:
-                return [as_collector_entry(r) for r in iter_answer_items(get_store())]
+                counted, superseded = latest_votes(list(iter_answer_items(get_store())))
+                self.superseded = len(superseded)
+                return [as_collector_entry(r) for r in counted]
             except StoreUnavailable as e:
                 raise FeedbackReadError(str(e)) from e
             except Exception as e:  # noqa: BLE001 -- a read that failed is reported, not shown as "no votes"
@@ -320,6 +330,8 @@ class FeedbackCollector:
             "gaps": self._gaps_from_entries(entries, stats),
             "improvements": self.get_routing_improvements(stats),
             "count": len(entries),
+            # Votes left out because the same user later voted again on the same answer (A-F1 N1).
+            "superseded": self.superseded,
             "unreadable_lines": list(self.unreadable_lines),
         }
 

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote
 
 APP = "egeria-advisor"
@@ -138,13 +138,52 @@ class LazyStore:
         return getattr(store, name)
 
 
-def vote_key(session_id: Optional[str], exchange_id: Optional[str], vote: int) -> Optional[str]:
-    """The idempotency key of one vote: session + exchange + vote. None without both ids: an old
-    client that sends neither gets a plain submit, not a key it cannot reproduce."""
+def vote_key(session_id: Optional[str], exchange_id: Optional[str], vote: int,
+             vote_seq: Optional[int] = None) -> Optional[str]:
+    """The idempotency key of one vote SEND: session + exchange + the row's click sequence number.
+
+    Each choice a user makes on a row (👍, then 👎, then 👍 again) is its own submission with its own
+    `vote_seq`, so each is stored; only a re-send of the same click (a network retry) replays. Which vote
+    counts is decided when reading: the latest per answer (`latest_votes`, A-F1 N1).
+
+    A client without `vote_seq` (before N1) keys on the vote itself, as A-F1 first did. None without
+    both ids: an old client that sends neither gets a plain submit, not a key it cannot reproduce."""
     s, e = (session_id or "").strip(), (exchange_id or "").strip()
     if not s or not e:
         return None
-    return f"{s}:{e}:{int(vote)}"[:128]
+    tail = f"n{int(vote_seq)}" if vote_seq is not None else str(int(vote))
+    return f"{s}:{e}:{tail}"[:128]
+
+
+def answer_key(row: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+    """The answer a vote is about: (user, session, exchange). None for a vote that carries no exchange
+    id (the CLI, an imported line, an old client): such a vote stands on its own."""
+    exchange = (row.get("extra") or {}).get("exchange_id") or ""
+    session = row.get("session_id") or ""
+    if not exchange or not session:
+        return None
+    return (row.get("user_id") or "", session, exchange)
+
+
+def latest_votes(rows: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(counted, superseded): one vote per answer, the LATEST (A-F1 N1).
+
+    A user who changes 👍 to 👎 on one answer has made one judgement, the second. Every vote is kept
+    in the store, and its triage history with it; the earlier ones are only left out of the counts.
+    Latest is by `created_at`, then id, so the choice is the same on every read."""
+    best: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    for r in rows:
+        k = answer_key(r)
+        if k is None:
+            continue
+        cur = best.get(k)
+        if cur is None or (r.get("created_at") or "", r.get("id") or "") > (cur.get("created_at") or "", cur.get("id") or ""):
+            best[k] = r
+    counted, superseded = [], []
+    for r in rows:
+        k = answer_key(r)
+        (counted if k is None or best[k] is r else superseded).append(r)
+    return counted, superseded
 
 
 def iter_answer_items(store) -> Iterator[Dict[str, Any]]:
@@ -162,13 +201,26 @@ RATING_BY_VOTE = {1: "positive", 0: "neutral", -1: "negative"}
 VOTE_BY_RATING = {v: k for k, v in RATING_BY_VOTE.items()}
 
 
+def routed_intent(row: Dict[str, Any]) -> str:
+    """The intent EA routed the question to (A-F1 N2).
+
+    - From N2 on, `intent_label` holds it and `extra.intent_selected` holds the UI selector ("auto",
+      "explain", ...).
+    - An item written before N2 had the selector in `intent_label` and the routed intent in
+      `extra.query_type`. The presence of `intent_selected` tells the two apart."""
+    extra = row.get("extra") or {}
+    if "intent_selected" in extra:
+        return row.get("intent_label") or "unknown"
+    return extra.get("query_type") or "unknown"
+
+
 def as_collector_entry(row: Dict[str, Any]) -> Dict[str, Any]:
     """A library answer row in the shape EA's analytics read (`FeedbackCollector` stats and gaps)."""
     extra = row.get("extra") or {}
     return {
         "timestamp": row.get("created_at"),
         "query": row.get("query_text") or "",
-        "query_type": extra.get("query_type") or "unknown",
+        "query_type": routed_intent(row),
         "collections_searched": list(extra.get("collections_searched") or []),
         "rating": RATING_BY_VOTE.get(row.get("vote"), "neutral"),
         "star_rating": extra.get("star_rating"),
