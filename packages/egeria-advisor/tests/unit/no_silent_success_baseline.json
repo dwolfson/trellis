@@ -31,7 +31,6 @@
   "advisor/data_prep/code_parser.py::_get_signature": 2,
   "advisor/data_prep/example_extractor.py::_extract_script_example": 1,
   "advisor/egeria_type_registry.py::_load_registry": 1,
-  "advisor/embeddings.py::_detect_best_device": 1,
   "advisor/embeddings.py::encode_with_cache": 2,
   "advisor/feedback_collector.py::record_vote": 1,
   "advisor/governance_docs.py::list_versions": 1,

@@ -20,9 +20,10 @@ descending, which is what `cut()` is for.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, replace
-from importlib import metadata
+from importlib import (
+    metadata,  # noqa: F401 -- kept: tests patch adapters_pdf.metadata.version (the shared module)
+)
 from typing import Iterable
 
 from trellis_artifact_tree.model import ArtifactTree, Node, Provenance, Rung
@@ -51,51 +52,44 @@ def disable_torch_compile() -> None:
     settings.inference.compile_torch_models = False
 
 
-# The first transformers release whose RT-DETR layout models stop hard-coding float64 on MPS.
-MPS_SAFE_TRANSFORMERS = "5.22.2"
-ALLOW_MPS_ENV = "TRELLIS_DOCLING_ALLOW_MPS"
+# The device choice is trellis-accel's, shared with RE's and EA's embeddings (docs/hardware-acceleration-proposal.md).
+# These names stay here for callers that import them from this module.
+from trellis_accel import (  # noqa: F401 -- re-exported
+    ALLOW_MPS_ENV,
+    MPS_SAFE_TRANSFORMERS,
+)
 
 
 def mps_is_safe() -> bool:
-    """Whether Docling may run on Apple MPS here.
+    """Whether Docling may run on Apple's GPU here: `TRELLIS_DOCLING_ALLOW_MPS` when set (1/true/yes allows, anything
+    else forbids), else transformers 5.22.2 or later (whose RT-DETR models compute in float32 on MPS). The rule is
+    trellis_accel.mps_problem's; this is its yes/no."""
+    from trellis_accel import mps_problem
 
-    `TRELLIS_DOCLING_ALLOW_MPS` decides when set (1/true/yes allows, anything else forbids); otherwise the installed
-    transformers decides: MPS is safe from 5.22.2, whose RT-DETR models compute in float32 on MPS.
-    """
-    override = os.environ.get(ALLOW_MPS_ENV, "").strip().lower()
-    if override:
-        return override in {"1", "true", "yes"}
-    try:
-        from packaging.version import Version
-
-        return Version(metadata.version("transformers")) >= Version(MPS_SAFE_TRANSFORMERS)
-    except Exception:  # noqa: BLE001 -- not installed or unparseable: take the safe path
-        return False
+    return mps_problem("docling") is None
 
 
 def keep_off_mps(options) -> None:
-    """Run Docling's models on the CPU where it would otherwise pick Apple MPS, unless MPS is safe.
+    """Point Docling at the device trellis-accel chooses for it, where that matters: the CPU instead of Apple's GPU
+    when the GPU is not safe for Docling, and the CPU whenever `TRELLIS_DEVICE=cpu`. A GPU it chooses (CUDA/ROCm, or
+    a safe Apple GPU) is what Docling's own AUTO picks too, so AUTO is left alone; a device set explicitly on the
+    options is left alone unless it is an unsafe Apple GPU.
 
-    Turning torch.compile off was not enough. Gate b354 on laz (2026-11-11) ran a real PDF through the converter
-    with compile off, and Docling raised: transformers' RT-DETRv2 layout model built its position embedding with
-    `torch.arange(..., dtype=torch.float64, device=device)`, and MPS has no float64 ("Cannot convert a MPS Tensor to
-    float64"). transformers 5.22.2 fixed that, so on a lock with it MPS is used (`mps_is_safe`); an older lock falls
-    back to the CPU, which is slower but correct. CUDA and the CPU are left as Docling chooses them.
+    History: Docling's compiled layout model, then transformers' float64 in RT-DETRv2, failed on Apple's GPU (gate
+    b354, laz, 2026-11-11); transformers 5.22.2 fixed the latter. A `TRELLIS_DEVICE` this PyTorch cannot use raises
+    trellis_accel.DeviceUnavailable with a sentence.
     """
-    if mps_is_safe():
-        return
     try:
-        import torch
         from docling.datamodel.accelerator_options import AcceleratorDevice
     except ImportError:  # pragma: no cover - the [pdf] extra is not installed
         return
+    from trellis_accel import pick_device
+
     device = options.accelerator_options.device
-    wants_mps = device in (AcceleratorDevice.MPS, AcceleratorDevice.MPS.value) or (
-        device in (AcceleratorDevice.AUTO, AcceleratorDevice.AUTO.value)
-        and not torch.cuda.is_available()
-        and torch.backends.mps.is_available()
-    )
-    if wants_mps:
+    choice = pick_device("auto", purpose="docling")
+    auto_or_mps = device in (AcceleratorDevice.AUTO, AcceleratorDevice.AUTO.value,
+                             AcceleratorDevice.MPS, AcceleratorDevice.MPS.value)
+    if choice.device == "cpu" and auto_or_mps:
         options.accelerator_options.device = AcceleratorDevice.CPU
 
 

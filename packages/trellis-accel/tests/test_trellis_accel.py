@@ -7,7 +7,6 @@ from __future__ import annotations
 import types
 
 import pytest
-
 import trellis_accel as ta
 
 

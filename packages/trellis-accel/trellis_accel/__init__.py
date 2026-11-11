@@ -24,14 +24,23 @@ import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from functools import lru_cache
+from functools import cache
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 __all__ = [
-    "ALLOW_MPS_ENV", "Choice", "DEVICE_ENV", "DeviceUnavailable", "MPS_SAFE_TRANSFORMERS", "hardware_report",
-    "mps_problem", "pick_device", "probe_machine", "report_once", "startup_line",
+    "ALLOW_MPS_ENV",
+    "DEVICE_ENV",
+    "MPS_SAFE_TRANSFORMERS",
+    "Choice",
+    "DeviceUnavailable",
+    "hardware_report",
+    "mps_problem",
+    "pick_device",
+    "probe_machine",
+    "report_once",
+    "startup_line",
 ]
 
 DEVICE_ENV = "TRELLIS_DEVICE"
@@ -50,12 +59,12 @@ class DeviceUnavailable(ValueError):
 class Choice:
     device: str            # "cpu" | "cuda" | "mps": what to hand to torch / sentence-transformers / Docling
     reason: str            # why, in words
-    gpu: Optional[str] = None   # the GPU's name, when one was chosen
+    gpu: str | None = None   # the GPU's name, when one was chosen
 
 
 def _torch():
     try:
-        import torch  # noqa: PLC0415 -- only when a choice needs it
+        import torch
         return torch
     except Exception:  # noqa: BLE001 -- not installed, or broken: the CPU is all there is
         return None
@@ -63,13 +72,13 @@ def _torch():
 
 def _version_at_least(installed: str, wanted: str) -> bool:
     try:
-        from packaging.version import Version  # noqa: PLC0415
+        from packaging.version import Version
         return Version(installed) >= Version(wanted)
     except Exception:  # noqa: BLE001 -- unparseable: not known to be safe
         return False
 
 
-def mps_problem(purpose: str = "") -> Optional[str]:
+def mps_problem(purpose: str = "") -> str | None:
     """Why Apple's GPU must not be used for this purpose, or None. One rule today, for Docling: transformers older
     than 5.22.2 hard-coded float64 in the RT-DETR layout model, which Apple's GPU lacks (gate b354, 2026-11-11).
     `TRELLIS_DOCLING_ALLOW_MPS` decides it when set."""
@@ -88,7 +97,7 @@ def mps_problem(purpose: str = "") -> Optional[str]:
             f"Apple's GPU lacks")
 
 
-def _gpu_name(torch) -> Optional[str]:
+def _gpu_name(torch) -> str | None:
     try:
         return torch.cuda.get_device_name(0)
     except Exception:  # noqa: BLE001
@@ -151,10 +160,10 @@ def _gfx(target_version: int) -> str:
     return f"gfx{major}{minor:x}{step:x}"
 
 
-def probe_machine() -> Dict[str, Any]:
+def probe_machine() -> dict[str, Any]:
     """The GPUs the machine has, read from the OS: NVIDIA from its driver, AMD from the kernel's kfd topology,
     Apple from the platform. No PyTorch, no network, nothing installed."""
-    out: Dict[str, Any] = {"platform": f"{sys.platform}/{platform.machine()}", "nvidia": [], "amd": [],
+    out: dict[str, Any] = {"platform": f"{sys.platform}/{platform.machine()}", "nvidia": [], "amd": [],
                            "apple": sys.platform == "darwin" and platform.machine() == "arm64"}
     if NVIDIA_PROC.is_dir():
         for info in sorted(NVIDIA_PROC.glob("*/information")):
@@ -163,9 +172,10 @@ def probe_machine() -> Dict[str, Any]:
             out["nvidia"].append(model)
     elif shutil.which("nvidia-smi"):
         try:
-            listed = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3).stdout
+            listed = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3,
+                                    check=False).stdout
             out["nvidia"] = [ln.split(":", 1)[1].split("(")[0].strip() for ln in listed.splitlines() if ":" in ln]
-        except Exception:  # noqa: BLE001 -- a probe, not a requirement
+        except Exception:  # noqa: BLE001, S110 -- a probe, not a requirement: no NVIDIA list is said as none
             pass
     if KFD_NODES.is_dir():
         for props in sorted(KFD_NODES.glob("*/properties")):
@@ -177,7 +187,7 @@ def probe_machine() -> Dict[str, Any]:
     return out
 
 
-def _build() -> Dict[str, Any]:
+def _build() -> dict[str, Any]:
     torch = _torch()
     if torch is None:
         return {"torch": None}
@@ -187,15 +197,15 @@ def _build() -> Dict[str, Any]:
             "gpu_available": bool(torch.cuda.is_available()), "mps_available": _available(torch, "mps")}
 
 
-def hardware_report(requested: str = "auto", purpose: str = "") -> Dict[str, Any]:
+def hardware_report(requested: str = "auto", purpose: str = "") -> dict[str, Any]:
     """What the machine has, what the installed PyTorch can use, the device chosen, and findings that name the fix.
     Reports only: it never installs or changes anything."""
     machine, build = probe_machine(), _build()
     try:
-        choice: Dict[str, Any] = asdict(pick_device(requested, purpose=purpose))
+        choice: dict[str, Any] = asdict(pick_device(requested, purpose=purpose))
     except DeviceUnavailable as exc:
         choice = {"device": None, "reason": str(exc), "gpu": None}
-    findings: List[Dict[str, str]] = []
+    findings: list[dict[str, str]] = []
     kind = build.get("kind")
     proposal = "see docs/hardware-acceleration-proposal.md"
     if build.get("torch") is None:
@@ -222,13 +232,13 @@ def hardware_report(requested: str = "auto", purpose: str = "") -> Dict[str, Any
     return {"machine": machine, "build": build, "choice": choice, "findings": findings}
 
 
-@lru_cache(maxsize=None)
-def report_once() -> Dict[str, Any]:
+@cache
+def report_once() -> dict[str, Any]:
     """The report, made once per process (at start-up): serving it costs nothing and never touches PyTorch again."""
     return hardware_report()
 
 
-def startup_line(report: Dict[str, Any]) -> str:
+def startup_line(report: dict[str, Any]) -> str:
     """One line for the start-up log: the device, why, and any finding."""
     b, c = report["build"], report["choice"]
     torch_word = f"PyTorch {b['torch']} ({b.get('kind')})" if b.get("torch") else "no PyTorch"

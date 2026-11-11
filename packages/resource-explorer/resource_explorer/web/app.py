@@ -64,6 +64,22 @@ async def start_line_within(seconds: float) -> str:
         return issue_117_start_line(lambda: "")
 
 
+def _log_hardware_in_background(log) -> None:
+    """The start-up hardware line (packages/trellis-accel): what the machine has, what this PyTorch can use, the device
+    chosen and any finding that names a fix. Built off the startup path (importing torch takes seconds) and cached,
+    so /health/hardware serves it without touching torch again. It reports; it never installs anything."""
+    import threading
+
+    def run():
+        try:
+            from trellis_accel import report_once, startup_line
+            log.info("%s", startup_line(report_once()))
+        except Exception as exc:  # noqa: BLE001 -- a report, never a reason to stop serving
+            log.warning("hardware report could not be made: %s", exc)
+
+    threading.Thread(target=run, name="hardware-report", daemon=True).start()
+
+
 async def _lifespan(app: FastAPI):
     """Serve HTTP. Start background loops only when asked to embed one.
 
@@ -93,6 +109,7 @@ async def _lifespan(app: FastAPI):
     log_daemon_identity_at_startup()        # INFO: which source the daemon identity came from (Brief L)
     from resource_explorer.bootstrap import log_heal_identity_at_startup
     log_heal_identity_at_startup()          # who the heal applies Dr.Egeria as, and from where; warns when unset
+    _log_hardware_in_background(logging.getLogger(__name__))   # trellis-accel: device, build, findings
 
     # Re-project stored credentials if a redeploy deleted the secrets file.
     # Non-fatal by construction (heal_missing never raises) and no network.
@@ -504,6 +521,18 @@ async def health() -> dict:
     route 500'd while this kept returning 200, which is useless for
     detecting the actual problem. Frontend uses /health/ready instead."""
     return {"status": "ok"}
+
+
+
+@app.get("/health/hardware")
+async def health_hardware() -> dict:
+    """The hardware report made at start-up (packages/trellis-accel): the machine's GPUs, the installed PyTorch, the
+    device chosen and findings that name a fix. Signed-in only: it is not in the public paths (GPU names and versions
+    are not for anyone who can reach the port), unlike /health."""
+    import asyncio
+
+    from trellis_accel import report_once
+    return await asyncio.to_thread(report_once)
 
 
 # A fresh token per server process: a page that sees it change knows the server restarted (and so what it can

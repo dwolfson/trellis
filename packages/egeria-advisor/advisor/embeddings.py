@@ -204,42 +204,14 @@ class EmbeddingGenerator:
             logger.info(f"embedding model loaded from cache (offline): {self.model_name}")
 
     def _detect_best_device(self) -> str:
-        """
-        Detect the best available device for acceleration.
-        
-        Checks in priority order:
-        1. NVIDIA CUDA
-        2. AMD ROCm
-        3. Apple Metal (MPS)
-        4. CPU (fallback)
-        
-        Returns:
-            Device string: "cuda", "mps", "cpu", or ROCm device
-        """
-        # Check for NVIDIA CUDA or AMD ROCm — PyTorch's ROCm builds report AMD GPUs
-        # through the same torch.cuda.* API (there is no separate torch.hip namespace
-        # to check in current PyTorch), so both vendors are detected here;
-        # torch.version.hip is only set on ROCm builds and distinguishes which one it
-        # actually is, for logging purposes only.
-        if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            if getattr(torch.version, "hip", None):
-                logger.info(f"✓ AMD ROCm available: {device_name} (ROCm {torch.version.hip})")
-            else:
-                logger.info(f"✓ NVIDIA CUDA available: {device_name}")
-            return "cuda"
-        
-        # Check for Apple Metal (MPS)
-        try:
-            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                logger.info("✓ Apple Metal (MPS) available")
-                return "mps"
-        except Exception as e:
-            logger.debug(f"MPS check failed: {e}")
-        
-        # Fallback to CPU
-        logger.info("No GPU acceleration available, using CPU")
-        return "cpu"
+        """The device for EMBEDDING_DEVICE=auto: the shared choice (packages/trellis-accel), which is TRELLIS_DEVICE
+        when set, else an NVIDIA or AMD (ROCm) GPU, then Apple's GPU, then the CPU, and says why. EA's own default
+        stays "cpu" (EMBEDDING_DEVICE); this runs only when that is set to "auto"."""
+        from trellis_accel import pick_device
+
+        choice = pick_device("auto", purpose="embeddings")
+        logger.info(f"Embedding device: {choice.device} ({choice.reason})")
+        return choice.device
 
     def _test_gpu(self):
         """Test GPU functionality with a sample encoding."""
