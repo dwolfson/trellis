@@ -3,7 +3,10 @@
 The first timed rebuild on laz (2026-11-10) found Docling 2.118 compiling its layout model with torch.compile by
 default: on Apple MPS (no float64) every batch failed inside the layout stage, and Docling returned an EMPTY document
 without raising. RE's `_ingest_pdfs` then swallowed the rest, so 36 chunks of PDFs became none and only the rebuild's
-drop-to-zero check noticed. These tests convert a real PDF through the same converter the pipeline uses.
+drop-to-zero check noticed. Compile off was not enough: gate b354 (2026-11-11) ran the real-PDF test below on laz
+and transformers' RT-DETRv2 layout model still failed on MPS, since it hard-codes float64. So Docling runs on the CPU
+wherever it would pick MPS. These tests convert a real PDF through the same converter the pipeline uses; on laz that
+is the MPS check.
 """
 from __future__ import annotations
 
@@ -61,6 +64,50 @@ def test_the_artifact_tree_adapter_turns_it_off_too():
     settings.inference.compile_torch_models = True
     disable_torch_compile()
     assert settings.inference.compile_torch_models is False
+
+
+def _mps_host(monkeypatch, *, cuda=False):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+
+
+def test_the_converter_runs_on_the_cpu_where_it_would_pick_mps(monkeypatch):
+    pytest.importorskip("docling")
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from trellis_artifact_tree.adapters_pdf import keep_off_mps
+
+    _mps_host(monkeypatch)
+    for device in (AcceleratorDevice.AUTO, AcceleratorDevice.MPS):
+        options = PdfPipelineOptions()
+        options.accelerator_options.device = device
+        keep_off_mps(options)
+        assert options.accelerator_options.device == AcceleratorDevice.CPU
+
+
+def test_cuda_is_left_alone(monkeypatch):
+    pytest.importorskip("docling")
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from trellis_artifact_tree.adapters_pdf import keep_off_mps
+
+    _mps_host(monkeypatch, cuda=True)
+    options = PdfPipelineOptions()
+    options.accelerator_options.device = AcceleratorDevice.AUTO
+    keep_off_mps(options)
+    assert options.accelerator_options.device == AcceleratorDevice.AUTO
+
+
+def test_rebuilding_the_converter_on_an_mps_host_uses_the_cpu(monkeypatch):
+    pytest.importorskip("docling")
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.base_models import InputFormat
+
+    _mps_host(monkeypatch)
+    converter = _converter_or_skip()
+    options = converter.format_to_options[InputFormat.PDF].pipeline_options
+    assert options.accelerator_options.device == AcceleratorDevice.CPU
 
 
 def test_a_real_pdf_converts_to_its_text(tmp_path):

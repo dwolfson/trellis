@@ -26,7 +26,7 @@ def build_pdf_converter(ocr: bool | None = None, engine: str | None = None):
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
-    from trellis_artifact_tree.adapters_pdf import disable_torch_compile
+    from trellis_artifact_tree.adapters_pdf import disable_torch_compile, keep_off_mps
 
     from resource_explorer.config import get_config
 
@@ -37,6 +37,8 @@ def build_pdf_converter(ocr: bool | None = None, engine: str | None = None):
     # empty document without raising (laz, 2026-11-10).
     disable_torch_compile()
     options = PdfPipelineOptions()
+    # And off MPS altogether: the layout model hard-codes float64, which MPS lacks (gate b354, 2026-11-11).
+    keep_off_mps(options)
     options.do_ocr = use_ocr
     options.do_table_structure = True
     if use_ocr:
