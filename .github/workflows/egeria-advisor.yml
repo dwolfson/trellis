@@ -9,7 +9,7 @@ name: egeria-advisor
 #
 # Required check (owner, 2026-11-11): the job is `ea-tests`. pull_request has NO path filter, so the
 # check reports on every PR; the "Decide whether this change needs the EA suite" step skips the suite
-# (with a notice) when the PR changes nothing EA tests: EA, the two shared packages it imports, the
+# (with a notice) when the PR changes nothing EA tests: EA, the shared packages it imports, the
 # workspace lockfile, the jsdom lockfile the render harness uses, and this workflow and its script.
 # push to main keeps its path filter: no check is required there.
 on:
@@ -90,10 +90,14 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "$EVENT: the suite always runs"; exit 0
           fi
           git fetch --no-tags --depth=1 origin "$BASE"
+          # Keep in step with EA's dependencies (packages/egeria-advisor/pyproject.toml): every workspace
+          # package EA imports belongs here. Add packages/trellis-feedback/** with A-F1 and
+          # packages/trellis-ui/** with A-U3.
           python3 .github/scripts/changed_paths.py --base "$BASE" --head HEAD --include \
               "packages/egeria-advisor/**" \
               "packages/trellis-auth/**" \
               "packages/trellis-vectorstore/**" \
+              "packages/trellis-querycache/**" \
               "pyproject.toml" \
               "uv.lock" \
               "packages/resource-explorer/frontend-build/package.json" \
@@ -148,4 +152,4 @@ jobs:
 
       - name: EA suite not needed for this change
         if: steps.scope.outputs.run != 'true'
-        run: echo "::notice title=EA suite skipped::This PR changes no EA path (EA, trellis-auth, trellis-vectorstore, the lockfiles, this workflow), so the EA suite did not run."
+        run: echo "::notice title=EA suite skipped::This PR changes no EA path (EA, trellis-auth, trellis-vectorstore, trellis-querycache, the lockfiles, this workflow), so the EA suite did not run."
