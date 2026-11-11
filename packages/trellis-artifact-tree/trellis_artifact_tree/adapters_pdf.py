@@ -33,6 +33,22 @@ _CONTENT_LABELS = {"text", "list_item", "table", "code", "formula", "caption"}
 _DROPPED_LABELS = {"page_header", "page_footer", "picture"}
 
 
+def disable_torch_compile() -> None:
+    """Turn off Docling's torch.compile of its models, before any pipeline options are built.
+
+    Docling (2.118) compiles its layout model by default (`settings.inference.compile_torch_models`). On Apple
+    MPS, which has no float64, every batch then fails inside the layout stage ("KeyError: torch.float64"), and
+    Docling returns an EMPTY document without raising. Found on laz by the first timed rebuild (2026-11-10): 36
+    chunks of PDFs became none. Compilation is only a speed-up, so it is off everywhere; the engines read this
+    setting when their options are constructed, so it must be set before `PdfPipelineOptions()`.
+    """
+    try:
+        from docling.datamodel.settings import settings
+    except ImportError:  # pragma: no cover - the [pdf] extra is not installed
+        return
+    settings.inference.compile_torch_models = False
+
+
 @dataclass(frozen=True)
 class DocItem:
     """The subset of a Docling item this mapping needs.
@@ -238,6 +254,7 @@ class PdfAdapter:
         return getattr(po, options_name)()
 
     def _convert(self, path: str) -> list[DocItem]:
+        disable_torch_compile()
         try:
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import PdfPipelineOptions

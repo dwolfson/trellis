@@ -49,10 +49,14 @@ class IncrementalIndexer:
     def __init__(self) -> None:
         self.registry = ProjectRegistry()
         self.client = GitHubClient()
+        #: (file, why) for each PDF the last refresh got no text from; its old chunks were replaced with none.
+        self.pdf_failures: list[tuple[str, str]] = []
 
     def refresh(self, project: Project) -> RefreshResult:
         import tempfile
         from pathlib import Path
+
+        self.pdf_failures = []
 
         from resource_explorer import reindex
 
@@ -186,6 +190,14 @@ class IncrementalIndexer:
                             repo, project.slug, collection_name, ctype, local_root,
                             changed_files=relative_changed,
                         )
+                failed_pdfs = [(f, why) for f, why in getattr(pipeline, "pdf_failures", []) or []
+                               if name == "pdfs" and (use_full_rebuild or f in relative_changed)]
+                if failed_pdfs:
+                    # Said in the refresh's own output, not left to the pipeline's console line: these files' old
+                    # chunks were replaced with none (Docling can return an empty document without raising).
+                    print(f"  WARNING {collection_name}: {len(failed_pdfs)} PDF(s) yielded no text: "
+                          + "; ".join(f"{f} ({why})" for f, why in failed_pdfs[:5]))
+                    self.pdf_failures.extend(failed_pdfs)
                 carried = chunk_votes.carry(voted, inserted)
                 votes = f"; {carried.words()}" if voted else ""
                 if use_full_rebuild:

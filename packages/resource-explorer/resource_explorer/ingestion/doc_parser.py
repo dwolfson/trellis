@@ -26,12 +26,16 @@ def build_pdf_converter(ocr: bool | None = None, engine: str | None = None):
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
+    from trellis_artifact_tree.adapters_pdf import disable_torch_compile
 
     from resource_explorer.config import get_config
 
     cfg = get_config().artifact_tree
     use_ocr = cfg.pdf_ocr if ocr is None else ocr
 
+    # Before the options are built: Docling's compiled layout model fails every batch on Apple MPS and returns an
+    # empty document without raising (laz, 2026-11-10).
+    disable_torch_compile()
     options = PdfPipelineOptions()
     options.do_ocr = use_ocr
     options.do_table_structure = True

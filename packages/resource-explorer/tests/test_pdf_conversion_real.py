@@ -1,0 +1,130 @@
+"""PDFs yield text, and a PDF that yields none is recorded, not skipped quietly.
+
+The first timed rebuild on laz (2026-11-10) found Docling 2.118 compiling its layout model with torch.compile by
+default: on Apple MPS (no float64) every batch failed inside the layout stage, and Docling returned an EMPTY document
+without raising. RE's `_ingest_pdfs` then swallowed the rest, so 36 chunks of PDFs became none and only the rebuild's
+drop-to-zero check noticed. These tests convert a real PDF through the same converter the pipeline uses.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+TEXT = "Trellis rebuild conversion check"
+
+
+def _pdf(path: Path, text: str = TEXT) -> Path:
+    """A minimal one-page PDF with `text` as real (not rasterised) text, built by hand so the test needs no PDF
+    library. Offsets in the xref table are computed, so the file is valid."""
+    stream = f"BT /F1 24 Tf 72 720 Td ({text}) Tj ET".encode()
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+         b"/Resources << /Font << /F1 5 0 R >> >> >>"),
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    path.write_bytes(bytes(out))
+    return path
+
+
+def _converter_or_skip():
+    pytest.importorskip("docling")
+    from resource_explorer.ingestion.doc_parser import build_pdf_converter
+
+    return build_pdf_converter(ocr=False)
+
+
+def test_building_the_converter_turns_torch_compile_off():
+    _converter_or_skip()
+    from docling.datamodel.settings import settings
+
+    assert settings.inference.compile_torch_models is False
+
+
+def test_the_artifact_tree_adapter_turns_it_off_too():
+    pytest.importorskip("docling")
+    from docling.datamodel.settings import settings
+    from trellis_artifact_tree.adapters_pdf import disable_torch_compile
+
+    settings.inference.compile_torch_models = True
+    disable_torch_compile()
+    assert settings.inference.compile_torch_models is False
+
+
+def test_a_real_pdf_converts_to_its_text(tmp_path):
+    converter = _converter_or_skip()
+    try:
+        document = converter.convert(str(_pdf(tmp_path / "check.pdf"))).document
+    except Exception as exc:  # no models offline is an environment fact, not a result
+        if "huggingface" in str(exc).lower() or "connect" in str(exc).lower():
+            pytest.skip(f"Docling models are not available here: {exc}")
+        raise
+    assert TEXT in document.export_to_markdown()
+
+
+class _Ctype:
+    name, chunk_size, chunk_overlap = "pdfs", 384, 48
+
+
+def test_the_pipeline_records_a_pdf_that_yields_no_text(tmp_path, monkeypatch):
+    """Docling's silent failure, reproduced without MPS: a converter that returns a document with no text."""
+    from resource_explorer.ingestion import doc_parser
+    from resource_explorer.ingestion.pipeline import IngestionPipeline
+
+    class Empty:
+        def export_to_markdown(self):
+            return ""
+
+        def iterate_items(self, *a, **kw):
+            return iter(())
+
+    class Conv:
+        def convert(self, path):
+            return type("R", (), {"document": Empty()})()
+
+    monkeypatch.setattr(doc_parser, "build_pdf_converter", lambda *a, **kw: Conv())
+    monkeypatch.setattr(doc_parser.DocParser, "parse_pdf", lambda self, *a, **kw: [])
+    import resource_explorer.ingestion.artifact_tree_sink as sink
+    monkeypatch.setattr(sink, "build_pdf_trees_from_documents",
+                        lambda converted, slug: type("T", (), {"near_empty": 0, "status": "disabled", "stored": 0,
+                                                               "skipped": 0, "reason": ""})())
+    _pdf(tmp_path / "a.pdf")
+    pipeline = IngestionPipeline.__new__(IngestionPipeline)
+    from rich.console import Console
+    pipeline.console = Console()
+    assert pipeline._ingest_pdfs(tmp_path, "rr", _Ctype()) == []
+    assert pipeline.pdf_failures == [("a.pdf", "converted to no text")]
+
+
+def test_the_pipeline_records_a_pdf_that_fails_to_convert(tmp_path, monkeypatch):
+    from resource_explorer.ingestion import doc_parser
+    from resource_explorer.ingestion.pipeline import IngestionPipeline
+
+    class Conv:
+        def convert(self, path):
+            raise RuntimeError("Stage layout failed")
+
+    monkeypatch.setattr(doc_parser, "build_pdf_converter", lambda *a, **kw: Conv())
+    import resource_explorer.ingestion.artifact_tree_sink as sink
+    monkeypatch.setattr(sink, "build_pdf_trees_from_documents",
+                        lambda converted, slug: type("T", (), {"near_empty": 0, "status": "disabled", "stored": 0,
+                                                               "skipped": 0, "reason": ""})())
+    _pdf(tmp_path / "b.pdf")
+    pipeline = IngestionPipeline.__new__(IngestionPipeline)
+    from rich.console import Console
+    pipeline.console = Console()
+    pipeline._ingest_pdfs(tmp_path, "rr", _Ctype())
+    assert pipeline.pdf_failures and pipeline.pdf_failures[0][0] == "b.pdf"
+    assert "Stage layout failed" in pipeline.pdf_failures[0][1]
