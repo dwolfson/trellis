@@ -90,7 +90,7 @@ from fastapi import HTTPException, Request
 from loguru import logger
 
 from trellis_auth import AuthConfig
-from trellis_auth import apply_token  # re-exported for live call sites
+from trellis_auth import apply_token as _trellis_apply_token
 from trellis_auth import create_access_token as _create_access_token
 from trellis_auth import decode_token as _decode_token
 from trellis_auth import exchange_portal_token as _exchange_portal_token
@@ -377,9 +377,46 @@ def _validation_config() -> AuthConfig:
 
 SERVICE_ACCOUNT_DETAIL = "this is a service account; sign in as yourself"
 
+#: The id anonymous mode's stand-in user carries (get_current_user). It is never an Egeria identity: no
+#: credential is ever built for it (A-I1).
+ANONYMOUS_USER_ID = "anonymous"
+
+
+def is_anonymous(user: Optional[Dict[str, Any]]) -> bool:
+    """True for anonymous mode's stand-in user (or any payload naming the anonymous id)."""
+    if not user:
+        return False
+    uid = (user.get("user_id") or user.get("sub") or "").strip().casefold()
+    return bool(user.get("anonymous")) or uid == ANONYMOUS_USER_ID
+
+
+def apply_token(client: Any, token: Optional[str]) -> None:
+    """trellis_auth.apply_token, refusing a client built for the anonymous id (A-I1): the one choke point
+    every live EA call passes before Egeria, so "anonymous" can never be sent there."""
+    uid = (getattr(client, "user_id", None) or "").strip().casefold()
+    if uid == ANONYMOUS_USER_ID:
+        from advisor.egeria_signin import SIGN_IN_TO_READ_EGERIA
+        raise PermissionError(f"{SIGN_IN_TO_READ_EGERIA} (an anonymous caller has no Egeria identity)")
+    _trellis_apply_token(client, token)
+
+
+def _own_service_account() -> str:
+    """EA's own Egeria service account (EGERIA_USER, the resolve_egeria_credentials fallback)."""
+    try:
+        from advisor.config import settings
+        return (settings.egeria_user or "").strip()
+    except Exception as exc:  # noqa: BLE001 - config unreadable: nothing to add, and say so
+        logger.warning(f"auth: could not read EA's service account from config: {exc}")
+        return ""
+
 
 def service_account_ids() -> frozenset:
+    """Ids no human may sign in as: RE's daemon, TRELLIS_SERVICE_ACCOUNTS, and EA's own service account
+    (EGERIA_USER; added by A-I1, 2026-11-11)."""
     ids = set()
+    own = _own_service_account()
+    if own:
+        ids.add(own.casefold())
     daemon = os.environ.get("RE_DAEMON_USER_ID", "")
     if daemon.strip():
         ids.add(daemon.strip().casefold())
@@ -510,7 +547,7 @@ def is_admin(request: Request) -> bool:
 def get_egeria_token(request: Request) -> Optional[str]:
     """The signed-in user's Egeria bearer token, or None when anonymous."""
     user = get_current_user(request)
-    if user is None:
+    if user is None or is_anonymous(user):
         return None
     return user.get("egeria_token") or None
 
@@ -521,8 +558,11 @@ def get_egeria_credentials(request: Request) -> Optional[EgeriaCredentials]:
 
     `password` is always `""` — the JWT has carried a bearer token instead of a
     password since 2026-09-04. Returns None only when there is no authenticated
-    user (anonymous, no/invalid token) — callers decide whether to fall back
-    via resolve_egeria_credentials().
+    user (no/invalid token). Anonymous mode's stand-in user comes back as
+    itself with no token; resolve_egeria_credentials() turns that into NO
+    identity (never the service account), so the call site refuses with
+    "Sign in" (Phase 0 S3b, A-I1). Callers decide whether to fall back via
+    resolve_egeria_credentials().
     """
     user = get_current_user(request)
     if user is None:
@@ -555,6 +595,11 @@ def resolve_egeria_credentials(creds: Optional[Dict[str, str]]) -> EgeriaCredent
     with no config fallback) is unaffected: the fallback still fires only for a
     request with no signed-in user at all.
     """
+    if creds and creds.get("user_id") and is_anonymous(creds):
+        # Never send "anonymous" to Egeria, and never upgrade it to the service account (A-I1): an empty
+        # identity, which every live call site refuses with "Sign in" (lacks_credential, Phase 0 S3b).
+        logger.info("auth: anonymous caller has no Egeria identity; the live call will ask them to sign in")
+        return {"user_id": "", "password": "", "token": ""}
     if creds and creds.get("user_id"):
         return {
             "user_id": creds["user_id"],
@@ -601,6 +646,59 @@ def login_with_password(user_id: str, password: str) -> Optional[str]:
 def validate_egeria_token(token: str) -> bool:
     """Check an Egeria bearer token with one cheap authenticated view-server call."""
     return _validate_egeria_token(token, _validation_config())
+
+
+PORTAL_TOKEN_ACCEPTED, PORTAL_TOKEN_REJECTED, PORTAL_TOKEN_UNREACHABLE = "accepted", "rejected", "unreachable"
+
+
+def check_portal_egeria_token(token: str) -> tuple[str, str]:
+    """(verdict, reason) for the Egeria bearer token a Portal SSO token carries (A-I1, 2026-11-11).
+
+    verdict: "accepted" | "rejected" | "unreachable". Unlike validate_egeria_token (a bare bool, also False
+    when Egeria is down), this separates Egeria SAYING NO from Egeria not answering, so SSO can refuse the
+    first and only log the second. The shapes come from laz (tests/unit/fixtures/egeria_live/
+    sso_token_check.json): a rejected token makes get_my_profile raise PyegeriaUnauthorizedException (401);
+    a closed platform raises PyegeriaConnectionException.
+
+    - missing, or expired by its own `exp`: rejected, without a call;
+    - get_my_profile answers, or 404s (the token authenticated; the person has no profile): accepted;
+    - 401 / 403: rejected;
+    - connection error or timeout, or no Egeria configured: unreachable;
+    - anything else: rejected ("could not be verified"): sign-in fails closed.
+    """
+    from datetime import datetime, timezone
+    from trellis_auth import egeria_token_expiry
+    if not token:
+        return PORTAL_TOKEN_REJECTED, "the Portal's sign-in carried no Egeria token"
+    exp = egeria_token_expiry(token)
+    if exp is not None and exp <= datetime.now(timezone.utc).timestamp():
+        return PORTAL_TOKEN_REJECTED, "its Egeria token has expired"
+    cfg = _validation_config()
+    if not (cfg.egeria_view_server and cfg.egeria_platform_url):
+        return PORTAL_TOKEN_UNREACHABLE, "no Egeria platform is configured"
+    try:
+        from pyegeria.core._exceptions import (PyegeriaConnectionException, PyegeriaNotFoundException,
+                                               PyegeriaTimeoutException, PyegeriaUnauthorizedException)
+        from pyegeria.egeria_tech_client import EgeriaTech
+    except ImportError as exc:
+        return PORTAL_TOKEN_UNREACHABLE, f"pyegeria is not available ({exc})"
+    try:
+        client = EgeriaTech(view_server=cfg.egeria_view_server, platform_url=cfg.egeria_platform_url,
+                            user_id=cfg.egeria_service_account_user or "unknown")
+        apply_token(client, token)
+        client.get_my_profile()
+        return PORTAL_TOKEN_ACCEPTED, ""
+    except PyegeriaUnauthorizedException:
+        return PORTAL_TOKEN_REJECTED, "Egeria rejected its token (HTTP 401)"
+    except PyegeriaNotFoundException:
+        return PORTAL_TOKEN_ACCEPTED, ""
+    except (PyegeriaConnectionException, PyegeriaTimeoutException, ConnectionError, TimeoutError) as exc:
+        return PORTAL_TOKEN_UNREACHABLE, f"{type(exc).__name__}"
+    except Exception as exc:  # noqa: BLE001 - fail closed: an unverifiable token is not a sign-in
+        code = getattr(exc, "related_http_code", None)
+        if code in (401, 403):
+            return PORTAL_TOKEN_REJECTED, f"Egeria rejected its token (HTTP {code})"
+        return PORTAL_TOKEN_REJECTED, f"its Egeria token could not be verified ({type(exc).__name__})"
 
 
 def validate_egeria_credentials(user_id: str, password: str) -> bool:
