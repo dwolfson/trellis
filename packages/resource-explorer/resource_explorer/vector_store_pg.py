@@ -234,6 +234,9 @@ class MultiCollectionStore:
     def delete_by_metadata(self, collection: str, field: str, values: list[str]) -> int:
         return self._store.delete_by_metadata(collection, field, values)
 
+    def count_by_metadata(self, collection: str, field: str) -> dict[str, int]:
+        return self._store.count_by_metadata(collection, field)
+
     def search(
         self,
         query: str,

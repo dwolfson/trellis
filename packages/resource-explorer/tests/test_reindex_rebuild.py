@@ -39,6 +39,13 @@ class FakeStore:
     def count(self, n):
         return len(self.tables.get(n, []))
 
+    def count_by_metadata(self, n, field):
+        out: dict = {}
+        for _, _, m in self.tables.get(n, []):
+            k = str(m.get(field) or "")
+            out[k] = out.get(k, 0) + 1
+        return out
+
     def has_vector_index(self, n):
         return n in self.indexed
 
@@ -894,28 +901,84 @@ def _cont_of(row):
 # ── PDFs that yield no text (the first timed rebuild on laz, 2026-11-10) ─────────────────────────────────────────
 
 class _PdfFailingPipeline(FakePipeline):
-    """The pipeline as it is after `_ingest_pdfs` met Docling's silent failure on some files."""
+    """The pipeline as it is after `_ingest_pdfs` met Docling's silent failure on some files. `duplicates` is what
+    data preparation reports as dropped copies, as the real pipeline's `last_duplicate_of`."""
+
+    duplicates: dict = {}  # noqa: RUF012 -- replaced per test, never mutated
 
     def _ingest_collection(self, repo, slug, name, ct, root, *, id_collection=None, extra_paths=None):
         if ct.name == "pdfs":
             self.pdf_failures = [("docs/a.pdf", "converted to no text"), ("docs/b.pdf", "converted to no text")]
+            self.last_duplicate_of = self.duplicates
+            self.last_kept_per_file = {f: 1 for f, _ in self.content.get("pdfs", [])}
         return super()._ingest_collection(repo, slug, name, ct, root, id_collection=id_collection,
                                           extra_paths=extra_paths)
 
 
 class TestPdfFailures:
-    def test_a_rebuild_whose_pdfs_yielded_no_text_is_refused_and_names_them(self, registry, store):
+    """Refuse only a regression: a PDF with live chunks that now yields none (Architect read-back of #1055)."""
+
+    @staticmethod
+    def _with_live_pdfs(registry, store, rows):
+        registry.set_project_collections(SLUG, [f"{SLUG}_markdown_docs", f"{SLUG}_java_code", "web_docs_site",
+                                                f"{SLUG}_pdfs"])
+        store.insert(f"{SLUG}_pdfs", [t for _, t in rows], [{"file_path": f} for f, _ in rows])
+
+    @staticmethod
+    def _deps(registry, store):
         d = deps(registry, store, proposed=("markdown_docs", "python_code", "pdfs"),
                  content={"markdown_docs": [("README.md", "intro")], "python_code": [("a.py", "x")],
                           "pdfs": [("docs/c.pdf", "the one that converted")]})
         d.pipeline = _PdfFailingPipeline(store, d.pipeline.content)
+        return d
+
+    def test_a_pdf_that_had_live_chunks_and_now_yields_none_refuses_the_swap(self, registry, store):
+        # Written before PDFs stored their relative path: the live row carries that run's download folder.
+        self._with_live_pdfs(registry, store, [("/tmp/tmpq1/x-rr-0a1b2c/docs/a.pdf", "old a"),
+                                               ("docs/c.pdf", "old c")])
+        d = self._deps(registry, store)
         live_before = {k: list(v) for k, v in store.tables.items()}
         state, error = execute(registry, queued(registry), d)
         assert state == "failed"
-        assert "2 PDF(s) yielded no text" in error and "docs/a.pdf: converted to no text" in error
+        assert "1 PDF(s) with live chunks now yield no text" in error
+        assert "docs/a.pdf: converted to no text (had 1 live chunk(s))" in error
+        assert "docs/b.pdf" not in error                                     # never had chunks: not a regression
         assert store.tables == live_before                                   # nothing swapped, aside dropped
+        c = reindex.progress(registry, SLUG)["counts"][f"{SLUG}_pdfs"]
+        assert c["failed_files"][0].startswith("docs/a.pdf")
+        assert c["no_text_before"] == ["docs/b.pdf: converted to no text"]
+
+    def test_pdfs_that_never_had_text_are_a_note_not_a_refusal(self, registry, store):
+        self._with_live_pdfs(registry, store, [("docs/c.pdf", "old c")])
+        d = self._deps(registry, store)
+        state, _ = execute(registry, queued(registry), d)
+        assert state == "succeeded"
         pr = reindex.progress(registry, SLUG)
-        assert pr["counts"][f"{SLUG}_pdfs"]["failed_files"][0].startswith("docs/a.pdf")
+        assert pr["notes"] == [(f"{SLUG}_pdfs: 2 PDF(s) gave no text, as before "
+                                "(docs/a.pdf: converted to no text; docs/b.pdf: converted to no text)")]
+        built = next(o["words"] for o in pr["outcomes"] if o["phase"] == "built")
+        assert "note: " in built and "gave no text, as before" in built
+
+    def test_a_first_pdf_collection_cannot_regress(self, registry, store):
+        state, _ = execute(registry, queued(registry), self._deps(registry, store))
+        assert state == "succeeded"
+
+    def test_the_collection_to_zero_refusal_stays(self, registry, store):
+        self._with_live_pdfs(registry, store, [("docs/c.pdf", "old c")])
+        d = self._deps(registry, store)
+        d.pipeline.content["pdfs"] = []
+        state, error = execute(registry, queued(registry), d)
+        assert state == "failed" and f"{SLUG}_pdfs had 1 chunk(s) and now has none" in error
+
+    def test_a_pdf_left_with_no_chunks_because_it_duplicates_another_says_so(self, registry, store):
+        d = self._deps(registry, store)
+        d.pipeline.duplicates = {"docs/copy.pdf": {"docs/c.pdf": 4}, "docs/c.pdf": {"docs/other.pdf": 1}}
+        state, _ = execute(registry, queued(registry), d)
+        assert state == "succeeded"
+        notes = reindex.progress(registry, SLUG)["notes"]
+        # docs/c.pdf kept a chunk, so a partial overlap is not called out; docs/copy.pdf kept none.
+        assert notes[-1] == (f"{SLUG}_pdfs: 1 PDF(s) left with no chunks, all duplicates "
+                             "(docs/copy.pdf: dropped as duplicates (4 of docs/c.pdf))")
 
     def test_failures_from_an_earlier_collection_do_not_leak_into_a_later_rebuild(self, registry, store):
         d = deps(registry, store, proposed=("markdown_docs", "python_code", "pdfs"),
@@ -924,6 +987,7 @@ class TestPdfFailures:
         d.pipeline.pdf_failures = [("stale.pdf", "converted to no text")]   # left over from some earlier ingest
         state, _ = execute(registry, queued(registry), d)
         assert state == "succeeded"
+        assert reindex.progress(registry, SLUG)["notes"] == []
 
 
 class TestTimingAndHeartbeat:

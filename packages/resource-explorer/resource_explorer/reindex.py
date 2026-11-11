@@ -358,20 +358,29 @@ def _build(r: _Run) -> None:
                                                 **kw)
             old = d.store.count(name) if name in live and d.store.collection_exists(name) else 0
             counts[name] = {"old": old, "new": int(new or 0)}
-            if ct.name == "pdfs" and getattr(d.pipeline, "pdf_failures", None):
-                counts[name]["failed_files"] = [f"{f}: {why}" for f, why in d.pipeline.pdf_failures]
+            if ct.name == "pdfs":
+                counts[name].update(_pdf_files(d, name, live))
     for name in live:
         if name not in proposed:
             counts[name] = {"old": d.store.count(name) if d.store.collection_exists(name) else 0, "new": None}
     refused = [f"{n} had {c['old']} chunk(s) and now has none" for n, c in counts.items()
                if c["new"] == 0 and c["old"] > 0]
-    # A PDF that yielded no text would replace its chunks with none (laz 2026-11-10: Docling returned empty
-    # documents without raising). The rebuild refuses rather than swap a smaller index in quietly.
+    # A PDF that HAS live chunks and now yields no text would replace them with none (laz 2026-11-10: Docling
+    # returned empty documents without raising): that is a regression, and the rebuild refuses rather than swap a
+    # smaller index in quietly. A PDF that had no live chunks either (image-only, corrupt) loses nothing, so it is a
+    # note, not a refusal: otherwise one such file would block every rebuild of its repository (Architect read-back
+    # of #1055, 2026-11-11). So is a file whose chunks were all dropped as copies of another file's.
+    notes: list[str] = []
     for n, c in counts.items():
         if c.get("failed_files"):
-            shown = "; ".join(c["failed_files"][:3]) + (f" and {len(c['failed_files']) - 3} more"
-                                                        if len(c["failed_files"]) > 3 else "")
-            refused.append(f"{n}: {len(c['failed_files'])} PDF(s) yielded no text ({shown})")
+            refused.append(f"{n}: {len(c['failed_files'])} PDF(s) with live chunks now yield no text "
+                           f"({_shown(c['failed_files'])})")
+        if c.get("no_text_before"):
+            notes.append(f"{n}: {len(c['no_text_before'])} PDF(s) gave no text, as before "
+                         f"({_shown(c['no_text_before'])})")
+        if c.get("duplicates"):
+            notes.append(f"{n}: {len(c['duplicates'])} PDF(s) left with no chunks, all duplicates "
+                         f"({_shown(c['duplicates'])})")
     unindexed = [n for n, c in counts.items() if c["new"] and not d.store.has_vector_index(aside(n))]
     if unindexed:
         refused.append("these rebuilt tables have no vector index: " + ", ".join(unindexed))
@@ -380,8 +389,41 @@ def _build(r: _Run) -> None:
     kept = sorted(n for n, c in counts.items() if c["new"] and n in live)
     words = "; ".join(f"{n}: {c['old']} → {c['new'] if c['new'] is not None else 'dropped'}"
                       for n, c in sorted(counts.items()))
+    if notes:
+        words += "; note: " + "; ".join(notes)
     r.step("built", f"built: {words}", sha=sha, counts=counts, added=added, dropped=dropped, kept=kept,
-           built_seconds=round(time.monotonic() - started, 1), refused="; ".join(refused))
+           built_seconds=round(time.monotonic() - started, 1), refused="; ".join(refused), notes=notes)
+
+
+def _shown(items: list[str], n: int = 3) -> str:
+    return "; ".join(items[:n]) + (f" and {len(items) - n} more" if len(items) > n else "")
+
+
+def _live_chunks_of(file: str, live_files: dict[str, int]) -> int:
+    """A file's chunks in the live index. Rows written before PDFs stored their repository-relative path carry the
+    absolute path of that run's download folder, which ends with the relative one."""
+    return sum(n for k, n in live_files.items() if k == file or k.endswith("/" + file))
+
+
+def _pdf_files(d: Deps, name: str, live: list[str]) -> dict:
+    """Per file, for a rebuilt PDF collection: which no-text files lose live chunks (`failed_files`, refused), which
+    never had any (`no_text_before`, a note), and which were left with none because every chunk was a copy of another
+    file's (`duplicates`, a note)."""
+    live_files = (d.store.count_by_metadata(name, "file_path")
+                  if name in live and d.store.collection_exists(name) else {})
+    out: dict[str, list[str]] = {}
+    for f, why in getattr(d.pipeline, "pdf_failures", None) or []:
+        had = _live_chunks_of(f, live_files)
+        if had:
+            out.setdefault("failed_files", []).append(f"{f}: {why} (had {had} live chunk(s))")
+        else:
+            out.setdefault("no_text_before", []).append(f"{f}: {why}")
+    kept = getattr(d.pipeline, "last_kept_per_file", None) or {}
+    for f, by in sorted((getattr(d.pipeline, "last_duplicate_of", None) or {}).items()):
+        if not kept.get(f):
+            copies = ", ".join(f"{n} of {other}" for other, n in sorted(by.items()))
+            out.setdefault("duplicates", []).append(f"{f}: dropped as duplicates ({copies})")
+    return out
 
 
 def accept(registry, run_id: str, *, requested_by: str) -> dict:
@@ -922,6 +964,7 @@ def progress(registry, slug: str) -> dict:
                     # The build's own timing (set on success and on failure), and the run row's heartbeat: a
                     # running row whose heartbeat is older than 3 intervals is what crash recovery looks at.
                     "built_seconds": t.get("built_seconds"), "build_started_at": t.get("build_started_at", ""),
+                    "notes": t.get("notes") or [],
                     "heartbeat_at": r.get("heartbeat_at") or "", "started_at": r.get("started_at") or "",
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

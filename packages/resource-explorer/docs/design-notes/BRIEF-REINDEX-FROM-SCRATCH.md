@@ -159,6 +159,18 @@ Fixed by running Docling on the CPU wherever it would pick MPS (`keep_off_mps`, 
 (`pipeline.pdf_failures`): a rebuild refuses and names the files, and a refresh says so in its output. Progress now
 carries `built_seconds` on failure too, and the run row's `heartbeat_at`.
 
+**The PDF rule refuses only a regression (Architect read-back of #1055, 2026-11-11).** Refusing on any PDF that
+yields no text meant one image-only or corrupt file would block every rebuild of its repository. The check now
+compares each such file with its chunks in the live index (`count_by_metadata(name, "file_path")`): a file that had
+live chunks and now has none refuses the swap (`failed_files`); a file that had none either is a note in the built
+step (`no_text_before`, "gave no text, as before"). The collection-to-zero refusal stays. A file left with no chunks
+because data preparation dropped every one as a copy of another file's is a note too (`duplicates`, naming the
+file it copied): the three egeria_docs PDFs with no chunks on laz were exactly that. To compare per file, PDF chunks
+now store their repository-relative `file_path`, as every other collection does; they used to store the run's
+temporary download path, so live rows written before this are matched by path suffix. That also lets a refresh's
+per-file replace find a changed PDF at last: until the repository's next rebuild, its old absolute-path rows stay
+beside the new ones.
+
 ## 8. Questions for the project owner
 
 **Decision (project owner, 2026-11-10):** Q2, Q3 and Q5 as recommended: swap at once when the check passes, keeping the
