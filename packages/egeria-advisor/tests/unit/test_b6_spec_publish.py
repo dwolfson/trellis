@@ -201,6 +201,12 @@ def my_spec(monkeypatch):
 
 
 @pytest.fixture
+def proven(monkeypatch):
+    """D5: restricted publish is on only once the live zone proof is recorded."""
+    monkeypatch.setenv(pub.RESTRICTED_PROOF_ENV, "READBACK-b6-zone-proof (test)")
+
+
+@pytest.fixture
 def sync_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(ess, "start_sync", lambda **k: calls.append(1) or {"message": "Syncing report specs."})
@@ -219,7 +225,7 @@ class TestPublish:
         assert "Zone Membership" not in md and "Parent ID" not in md
         assert md.count("## Add Member to Collection") == 1 and f"### Collection Id\n{ADVISOR}" in md
 
-    def test_restricted_carries_zones_and_portal_is_optional(self, my_spec):
+    def test_restricted_carries_zones_and_portal_is_optional(self, my_spec, proven):
         out = pub.publish(ERIN, my_spec, step="preview", visibility="restricted", zones=["finance", "hr"],
                           also_portal=True, agent=FakeAgent())
         assert "### Zone Membership\nfinance, hr" in out["markdown"]
@@ -525,3 +531,165 @@ class TestDocsList:
         assert rows["b6-good-doc"]["registered"] is True
         assert rows["b6-bad-doc"]["registered"] is False
         assert "no Create Report Spec command" in rows["b6-bad-doc"]["not_runnable_reason"]
+
+
+
+# ── read-back changes (Architect, 2026-11-11) ──────────────────────────────────
+
+def _commands(markdown):
+    from md_processing.v2 import UniversalExtractor
+    return [c for c in UniversalExtractor(markdown).extract_commands() if c.verb]
+
+
+class TestRestrictedIsOffUntilProven:
+    """D5: until the live zone proof is recorded, restricted publish is refused and the UI says why."""
+
+    def test_refused_without_the_proof(self, my_spec, monkeypatch):
+        monkeypatch.delenv(pub.RESTRICTED_PROOF_ENV, raising=False)
+        with pytest.raises(pub.PublishRefused, match="not yet proven on this platform"):
+            pub.publish(ERIN, my_spec, step="preview", visibility="restricted", zones=["finance"], agent=FakeAgent())
+        assert pub.publish(ERIN, my_spec, step="preview", agent=FakeAgent())["visibility"] == "public"
+
+    def test_the_catalog_carries_the_state_for_the_dialog(self, monkeypatch):
+        monkeypatch.delenv(pub.RESTRICTED_PROOF_ENV, raising=False)
+        from advisor.web.reports import list_reports
+        data = asyncio.run(list_reports(None))
+        assert data["publish"]["restricted"]["enabled"] is False
+        assert "not yet proven" in data["publish"]["restricted"]["message"]
+        monkeypatch.setenv(pub.RESTRICTED_PROOF_ENV, "proof")
+        assert asyncio.run(list_reports(None))["publish"]["restricted"] == {"enabled": True, "message": None,
+                                                                            "proof": "proof"}
+
+
+#: Everything str.splitlines() breaks on, besides \n and \r.
+LINE_BREAKS = ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+
+
+class TestNoInjectionIntoTheDocument:
+    """A user string must never start its own Dr.Egeria line: a "## Command" could run, and a lone rule
+    or a "### Zone Membership" line could strip the zones (restricted published as public)."""
+
+    @pytest.mark.parametrize("brk", ["\n"] + LINE_BREAKS, ids=lambda b: f"U+{ord(b):04X}")
+    def test_a_name_with_any_line_break_is_refused(self, brk):
+        with pytest.raises(pub.PublishRefused, match="single line"):
+            pub.build_withdraw_document(f"Spec{brk}## Delete Report Spec")
+
+    @pytest.mark.parametrize("brk", ["\n"] + LINE_BREAKS, ids=lambda b: f"U+{ord(b):04X}")
+    def test_a_zone_with_any_line_break_is_refused(self, my_spec, proven, brk):
+        with pytest.raises(pub.PublishRefused, match="Not a zone name"):
+            pub.publish(ERIN, my_spec, step="preview", visibility="restricted",
+                        zones=[f"finance{brk}### Zone Membership"], agent=FakeAgent())
+
+    @pytest.mark.parametrize("label", ["---", "___", "> quoted", "# heading", "   "])
+    def test_rules_quotes_and_headings_are_refused(self, label):
+        with pytest.raises(pub.PublishRefused):
+            pub.build_withdraw_document(label)
+
+    def test_bad_zone_with_public_is_still_refused(self, my_spec):
+        with pytest.raises(pub.PublishRefused, match="Not a zone name"):
+            pub.publish(ERIN, my_spec, step="preview", zones=["x\u2028y"], agent=FakeAgent())
+
+    @pytest.mark.parametrize("field, value, words", [
+        ("aliases", ["ok", "two\u2028## Delete Report Spec"], "single line"),
+        ("aliases", ["a, b"], "cannot contain a comma"),
+        ("aliases", ["---"], "cannot be a rule"),
+        ("target_type", "Glossary\x1c### Zone Membership", "single line"),
+    ])
+    def test_spec_fields_are_checked_too(self, my_spec, monkeypatch, field, value, words):
+        from pyegeria.view.base_report_formats import get_report_registry
+        fs = get_report_registry().get(my_spec)
+        monkeypatch.setattr(fs, field, value, raising=False)
+        with pytest.raises(pub.PublishRefused, match=words):
+            pub.publish(ERIN, my_spec, step="preview", agent=FakeAgent())
+
+    def test_a_multi_line_description_is_folded_onto_one_line(self, my_spec, proven, monkeypatch):
+        from pyegeria.view.base_report_formats import get_report_registry
+        fs = get_report_registry().get(my_spec)
+        monkeypatch.setattr(fs, "description", "Line one\u2028## Delete Report Spec\n### Zone Membership\n---")
+        out = pub.publish(ERIN, my_spec, step="preview", visibility="restricted", zones=["finance"], agent=FakeAgent())
+        cmds = _commands(out["markdown"])
+        assert [(c.verb, c.object_type) for c in cmds] == [("Create", "Report Spec"), ("Add", "Member to Collection")]
+        assert cmds[0].attributes["Zone Membership"] == "finance"
+
+    def test_a_line_break_in_a_column_label_is_escaped_in_the_microflow(self, my_spec, proven):
+        from pyegeria.view.base_report_formats import get_report_registry
+        fs = get_report_registry().get(my_spec)
+        fs.formats[0].attributes[0].name = "Name\u2028## Delete Report Spec"
+        out = pub.publish(ERIN, my_spec, step="preview", visibility="restricted", zones=["finance"], agent=FakeAgent())
+        assert "\u2028" not in out["markdown"] and "\\u2028" in out["markdown"]
+        cmds = _commands(out["markdown"])
+        assert [(c.verb, c.object_type) for c in cmds] == [("Create", "Report Spec"), ("Add", "Member to Collection")]
+
+
+class TestDrEgeriaParsesTheDocument:
+    """Offline, through Dr.Egeria's own extractor and attribute parser (no client, no writes): every
+    attribute is one the command spec knows, so a renamed attribute cannot silently drop the zones."""
+
+    @staticmethod
+    def _parse(markdown):
+        from md_processing.dr_egeria import setup_dispatcher
+        from md_processing.v2.parsing import AttributeFirstParser
+        setup_dispatcher(None)   # loads the compact command specs
+        out = []
+        for c in _commands(markdown):
+            got = asyncio.run(AttributeFirstParser(c, None, "validate").parse())
+            out.append((f"{c.verb} {c.object_type}", got))
+        return out
+
+    def test_restricted_publish(self, my_spec, proven, monkeypatch):
+        from pyegeria.view.base_report_formats import get_report_registry
+        monkeypatch.setattr(get_report_registry().get(my_spec), "aliases", ["My Gloss"], raising=False)
+        doc = pub.publish(ERIN, my_spec, step="preview", visibility="restricted", zones=["finance", "hr"],
+                          also_portal=True, agent=FakeAgent())["markdown"]
+        parsed = self._parse(doc)
+        assert [n for n, _ in parsed] == ["Create Report Spec", "Add Member to Collection", "Add Member to Collection"]
+        for name, got in parsed:
+            assert got["valid"] and not got["errors"], (name, got["errors"])
+            assert not [w for w in got["warnings"] if "Unknown attribute" in w], (name, got["warnings"])
+        spec = parsed[0][1]["attributes"]
+        assert spec["Zone Membership"]["value"] == ["finance", "hr"]
+        assert spec["Aliases"]["value"] == ["My Gloss"] and spec["Output Types"]["value"]
+        assert spec["Qualified Name"]["value"] == "ReportSpec::b6-my-glossaries"
+        members = [g["attributes"] for _, g in parsed[1:]]
+        assert [m["Element Id"]["value"] for m in members] == ["ReportSpec::b6-my-glossaries"] * 2
+        assert [m["Collection Id"]["value"] for m in members] == [ADVISOR, pub.PORTAL_FOLDER]
+
+    def test_update_declassify_and_withdraw(self, my_spec, monkeypatch):
+        monkeypatch.setattr(pub, "held_in_egeria", lambda c, l: {"held": True, "zones": ["finance"], "how": "held"})
+        doc = pub.publish(ERIN, my_spec, step="preview", agent=FakeAgent())["markdown"]
+        doc += pub.build_withdraw_document(my_spec)["markdown"]
+        parsed = self._parse(doc)
+        assert [n for n, _ in parsed] == ["Update Report Spec", "Declassify Zone Membership",
+                                          "Add Member to Collection", "Remove Member from Collection"]
+        for name, got in parsed:
+            assert got["valid"] and not got["errors"] and not got["warnings"], (name, got)
+        assert "Zone Membership" not in parsed[0][1]["attributes"]
+        assert parsed[1][1]["attributes"]["Target Element"]["value"] == "ReportSpec::b6-my-glossaries"
+
+
+class TestUpdateDeclassifyThroughTheRestrictedReader:
+    """End to end through EA's own restricted listing (pyegeria's result shape, read as the user): a spec
+    Egeria holds restricted is re-published as an Update, and making it public removes its zones."""
+
+    def test_held_restricted_becomes_update_and_declassify(self, my_spec, monkeypatch, sync_calls):
+        held = dict(FIN, label=my_spec, qualified_name=f"ReportSpec::{my_spec}", zones=["finance", "hr"])
+        reader = Reader({"erin-token-1": _restricted_result("erinoverview", [held])})
+        _use_reader(monkeypatch, reader)
+        agent = FakeAgent()
+        prev = pub.publish(ERIN, my_spec, step="preview", agent=agent)
+        assert prev["verb"] == "Update" and prev["held"]["how"] == "held in Egeria, restricted"
+        names = [f"{c.verb} {c.object_type}" for c in _commands(prev["markdown"])]
+        assert names == ["Update Report Spec", "Declassify Zone Membership", "Add Member to Collection"]
+        assert any("remove its zones (finance, hr)" in s for s in prev["steps"])
+        out = pub.publish(ERIN, my_spec, step="process", confirmed=True, digest=prev["digest"], agent=agent)
+        assert agent.calls[0]["creds"] == ERIN and out["after"]["started"]
+        # the per-user listing was dropped, so the next read goes back to Egeria as the user
+        rs.restricted_specs(ERIN)
+        assert [t for t, _ in reader.calls].count("erin-token-1") == 2
+
+    def test_another_users_session_does_not_see_it_as_held(self, my_spec, monkeypatch):
+        held = dict(FIN, label=my_spec, qualified_name=f"ReportSpec::{my_spec}")
+        _use_reader(monkeypatch, Reader({"erin-token-1": _restricted_result("erinoverview", [held]),
+                                         "peter-token": _restricted_result("peterprofile", [])}))
+        assert pub.publish(ERIN, my_spec, step="preview", agent=FakeAgent())["verb"] == "Update"
+        assert pub.publish(PETER, my_spec, step="preview", agent=FakeAgent())["verb"] == "Create"

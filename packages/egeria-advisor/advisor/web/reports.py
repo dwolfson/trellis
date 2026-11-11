@@ -100,7 +100,14 @@ async def list_reports(request: Request, include_dre: bool = False, refresh: boo
         "catalog_status": catalog_status,
         "restricted": restricted,
         "used_by": rs.used_by_index(),
+        "publish": _publish_status(),
     }
+
+
+def _publish_status() -> Dict[str, Any]:
+    """What the publish dialog may offer: restricted publish stays off until the live zone proof (D5)."""
+    from advisor.egeria_spec_publish import restricted_publish_status
+    return {"restricted": restricted_publish_status()}
 
 
 def _user_creds(request: Optional[Request]) -> Optional[Dict[str, str]]:

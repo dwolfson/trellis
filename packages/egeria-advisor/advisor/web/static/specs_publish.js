@@ -16,6 +16,7 @@
   const ADVISOR = 'ReportSpecFolder::Consumer::EgeriaAdvisor';
   const PORTAL = 'ReportSpecFolder::Consumer::Portal';
   let usedByFilter = '';
+  let lastData = null;   // the last /api/reports answer: publish status, restricted rows
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -72,6 +73,11 @@
 
   function applyUsedBy(data, catalogEl) {
     const index = (data.used_by || {}).index || {};
+    // Restricted rows carry their own consumer folders (the shared consumer index leaves zoned labels out).
+    document.querySelectorAll('[data-restricted-row]').forEach(row => {
+      const folders = JSON.parse(row.getAttribute('data-folders') || '[]');
+      row.style.display = (!usedByFilter || folders.includes(usedByFilter)) ? '' : 'none';
+    });
     catalogEl.querySelectorAll('button[data-spec]').forEach(btn => {
       const name = btn.getAttribute('data-spec');
       const users = index[name] || [];
@@ -120,7 +126,8 @@
         title: `Read from Egeria as you; folders: ${(s.folders || []).map(consumerName).join(', ')}`,
         onclick: () => runRestricted(s.label) },
         s.label, h('span', { class: 'ml-1 px-1 rounded text-[10px] bg-rose-900/50 text-rose-300', text: `restricted: ${zones}` }));
-      list.appendChild(h('div', { class: 'flex items-center gap-1 group', 'data-restricted-row': '' }, btn,
+      list.appendChild(h('div', { class: 'flex items-center gap-1 group', 'data-restricted-row': '',
+        'data-folders': JSON.stringify(s.folders || []) }, btn,
         h('button', { class: 'opacity-0 group-hover:opacity-100 text-[10px] px-1 rounded bg-slate-700 text-slate-300',
           text: 'withdraw', title: `Withdraw '${s.label}'`, onclick: () => openWithdraw(s.label) })));
     });
@@ -142,11 +149,13 @@
 
   function onCatalog(data, catalogEl) {
     if (!data || !catalogEl) return;
+    lastData = data;
     try {
       decorateRows(data, catalogEl);
       renderCatalogStatus(data, catalogEl);
       renderUsedBy(data, catalogEl);
       renderRestricted(data, catalogEl);
+      applyUsedBy(data, catalogEl);   // again, now the restricted rows exist
     } catch (e) {
       console.error('SpecsPublish.onCatalog', e);
     }
@@ -237,8 +246,11 @@
     const zonesBox = h('div', { class: 'flex flex-col gap-1 ml-5' });
     const { controls, reset } = stepper('publish', label, () => ({
       visibility, zones: visibility === 'restricted' ? [...chosen] : [], also_portal: portal.checked }));
+    const restrictedStatus = ((lastData || {}).publish || {}).restricted
+      || { enabled: false, message: 'Restricted publish is not yet proven on this platform.' };
     const radio = (value, text) => {
-      const r = h('input', { type: 'radio', name: 'specs-visibility', value, checked: value === visibility });
+      const off = value === 'restricted' && !restrictedStatus.enabled;
+      const r = h('input', { type: 'radio', name: 'specs-visibility', value, checked: value === visibility, disabled: off });
       r.addEventListener('change', () => { visibility = value; zonesBox.style.display = value === 'restricted' ? '' : 'none'; reset(); });
       return h('label', { class: 'flex items-center gap-2 text-xs' }, r, text);
     };
@@ -246,18 +258,30 @@
       h('div', { class: 'text-xs text-slate-400', text: 'Visibility' }),
       radio('public', 'Public (default): every EA user sees it; no zones.'),
       radio('restricted', 'Restricted to zones: only people Egeria grants one of these zones see it.'),
+      restrictedStatus.enabled ? null : h('div', { class: 'ml-5 text-xs text-amber-300', 'data-restricted-off': '',
+        text: restrictedStatus.message }),
       zonesBox,
       h('div', { class: 'text-xs text-slate-400', text: `Where: ${ADVISOR}` }),
       h('label', { class: 'flex items-center gap-2 text-xs' }, portal, `Also in ${PORTAL}`));
     portal.addEventListener('change', reset);
     zonesBox.style.display = 'none';
+    if (!restrictedStatus.enabled) return;   // D5: no zone picker until the zone proof is recorded
     zonesBox.textContent = 'Loading zones…';
     try {
       const r = await fetch('/api/egeria/zones', { headers: headers() });
-      const z = await r.json();
+      let z = null;
+      try { z = await r.json(); } catch { z = null; }
       zonesBox.textContent = '';
+      if (!r.ok) {
+        const why = (z && (z.detail || z.message)) || `HTTP ${r.status}`;
+        zonesBox.appendChild(h('div', { class: 'text-xs text-rose-300', text: `Zones could not be read: ${typeof why === 'string' ? why : JSON.stringify(why)}` }));
+        return;
+      }
+      z = z || {};
       const zones = (z.zones || []).map(x => (typeof x === 'string' ? { name: x } : x));
-      if (!zones.length) zonesBox.appendChild(h('div', { class: 'text-xs text-slate-500',
+      if (z.state && z.state !== 'ok' && z.message) {
+        zonesBox.appendChild(h('div', { class: 'text-xs text-slate-500', text: z.message }));   // A-P's {state, message}
+      } else if (!zones.length) zonesBox.appendChild(h('div', { class: 'text-xs text-slate-500',
         text: z.message || z.error || 'Egeria returned no governance zones, so a restricted publish has nothing to pick.' }));
       zones.forEach(zone => {
         const cb = h('input', { type: 'checkbox', value: zone.name });

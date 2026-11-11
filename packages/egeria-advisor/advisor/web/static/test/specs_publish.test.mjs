@@ -37,7 +37,7 @@ const ADVISOR = 'ReportSpecFolder::Consumer::EgeriaAdvisor';
 const PORTAL = 'ReportSpecFolder::Consumer::Portal';
 const HOSTILE = '<img src=x onerror=alert(1)>';
 
-function setup(posts = []) {
+function setup(posts = [], zonesReply = { ok: true, status: 200, data: { zones: ['finance', 'hr'], count: 2 } }) {
   const dom = new jsdom.JSDOM('<!doctype html><html><body><div id="side"><div id="report-catalog"></div></div></body></html>',
     { runScripts: 'outside-only' });
   const w = dom.window;
@@ -46,7 +46,7 @@ function setup(posts = []) {
     const body = init.body ? JSON.parse(init.body) : null;
     posts.push({ url, body });
     let data = {};
-    if (url === '/api/egeria/zones') data = { zones: ['finance', 'hr'], count: 2 };
+    if (url === '/api/egeria/zones') return { ok: zonesReply.ok, status: zonesReply.status, json: async () => zonesReply.data };
     else if (body && body.step === 'preview') data = { step: 'preview', digest: 'd1', markdown: '## Create Report Spec', steps: ['create it'], held: { how: 'not held' } };
     else if (body) data = { step: body.step, digest: 'd1', result: { success: true, commands_detail: [] }, after: { message: 'Syncing.' } };
     return { ok: true, status: 200, json: async () => data };
@@ -145,4 +145,61 @@ test('publish: preview, then confirm, then process with the previewed digest', o
   assert.equal(proc.url, '/api/reports/specs/Mine/publish');
   assert.deepEqual([proc.body.digest, proc.body.confirmed, proc.body.visibility], ['d1', true, 'public']);
   assert.match(dlg.textContent, /Done\./);
+});
+
+const PROVEN = { publish: { restricted: { enabled: true, message: null, proof: 'p' } } };
+const UNPROVEN = { publish: { restricted: { enabled: false, message: 'Restricted publish is not yet proven on this platform.' } } };
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+test('D5: restricted is disabled with the reason until the zone proof is recorded; no zone read', opts, async () => {
+  const posts = [];
+  const w = setup(posts);
+  w.SpecsPublish.onCatalog({ ...DATA, ...UNPROVEN }, catalog(w, [['Mine', 'user']]));
+  await w.SpecsPublish.openPublish('Mine');
+  const dlg = w.document.querySelector('[role=dialog]');
+  assert.equal(dlg.querySelector('input[value=restricted]').disabled, true);
+  assert.match(dlg.querySelector('[data-restricted-off]').textContent, /not yet proven on this platform/);
+  assert.equal(posts.filter(p => p.url === '/api/egeria/zones').length, 0);
+});
+
+test('zones: an HTTP error shows its detail, not "no zones"', opts, async () => {
+  const w = setup([], { ok: false, status: 401, data: { detail: 'Sign in to read from Egeria.' } });
+  w.SpecsPublish.onCatalog({ ...DATA, ...PROVEN }, catalog(w, [['Mine', 'user']]));
+  await w.SpecsPublish.openPublish('Mine');
+  const text = w.document.querySelector('[role=dialog]').textContent;
+  assert.match(text, /Zones could not be read: Sign in to read from Egeria\./);
+  assert.doesNotMatch(text, /returned no governance zones/);
+});
+
+test("zones: A-P's {state, message} is shown when the state is not ok", opts, async () => {
+  const w = setup([], { ok: true, status: 200, data: { zones: [], state: 'unreachable', message: 'Egeria not reached: timeout.' } });
+  w.SpecsPublish.onCatalog({ ...DATA, ...PROVEN }, catalog(w, [['Mine', 'user']]));
+  await w.SpecsPublish.openPublish('Mine');
+  assert.match(w.document.querySelector('[role=dialog]').textContent, /Egeria not reached: timeout\./);
+});
+
+test('a hostile zone name in the picker is text, never markup', opts, async () => {
+  const w = setup([], { ok: true, status: 200, data: { zones: [HOSTILE], count: 1 } });
+  w.SpecsPublish.onCatalog({ ...DATA, ...PROVEN }, catalog(w, [['Mine', 'user']]));
+  await w.SpecsPublish.openPublish('Mine');
+  await tick();
+  const dlg = w.document.querySelector('[role=dialog]');
+  assert.equal(dlg.querySelectorAll('img').length, 0);
+  assert.match(dlg.textContent, /onerror/);
+  assert.equal(dlg.querySelector('input[type=checkbox][value]').value, HOSTILE);
+});
+
+test('"Used by" filters the restricted rows by their own folders', opts, () => {
+  const w = setup();
+  const el = catalog(w, [['Spec-A', 'builtin']]);
+  const data = { ...DATA, restricted: { state: 'ok', specs: [
+    { label: 'Fin-EA', zones: ['finance'], folders: [ADVISOR] },
+    { label: 'Fin-Portal', zones: ['finance'], folders: [PORTAL] }] } };
+  w.SpecsPublish.onCatalog(data, el);
+  const sel = w.document.querySelector('#specs-used-by select');
+  sel.value = PORTAL;
+  sel.dispatchEvent(new w.Event('change'));
+  const shown = [...w.document.querySelectorAll('[data-restricted-row]')].filter(r => r.style.display !== 'none')
+    .map(r => r.querySelector('button').firstChild.textContent);
+  assert.deepEqual(shown, ['Fin-Portal']);
 });
