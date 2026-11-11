@@ -58,7 +58,9 @@ dependencies = [
     "openai>=1.54.0",
     "anthropic>=0.39.0",
     # Document ingestion
-    "docling>=2.0.0",
+    "docling>=2.150.0",
+    # 5.22.2 fixed RT-DETRv2 hard-coding float64 on Apple MPS (see keep_off_mps).
+    "transformers>=5.22.2",
     "nbconvert>=7.16.0",
     "PyGitHub>=2.5.0",
     "httpx>=0.27.0",

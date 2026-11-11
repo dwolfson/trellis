@@ -6,7 +6,8 @@ without raising. RE's `_ingest_pdfs` then swallowed the rest, so 36 chunks of PD
 drop-to-zero check noticed. Compile off was not enough: gate b354 (2026-11-11) ran the real-PDF test below on laz
 and transformers' RT-DETRv2 layout model still failed on MPS, since it hard-codes float64. So Docling runs on the CPU
 wherever it would pick MPS. These tests convert a real PDF through the same converter the pipeline uses; on laz that
-is the MPS check.
+is the MPS check. transformers 5.22.2 fixed the float64, so with it in the lock Docling runs on MPS again and the
+CPU fallback only guards an older lock.
 """
 from __future__ import annotations
 
@@ -66,13 +67,15 @@ def test_the_artifact_tree_adapter_turns_it_off_too():
     assert settings.inference.compile_torch_models is False
 
 
-def _mps_host(monkeypatch, *, cuda=False):
+def _mps_host(monkeypatch, *, cuda=False, mps_safe=False):
+    """A host with MPS; `mps_safe` says whether the installed transformers is taken to handle it."""
     torch = pytest.importorskip("torch")
+    monkeypatch.setenv("TRELLIS_DOCLING_ALLOW_MPS", "1" if mps_safe else "0")
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
 
 
-def test_the_converter_runs_on_the_cpu_where_it_would_pick_mps(monkeypatch):
+def test_the_converter_runs_on_the_cpu_where_it_would_pick_an_unsafe_mps(monkeypatch):
     pytest.importorskip("docling")
     from docling.datamodel.accelerator_options import AcceleratorDevice
     from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -99,7 +102,7 @@ def test_cuda_is_left_alone(monkeypatch):
     assert options.accelerator_options.device == AcceleratorDevice.AUTO
 
 
-def test_rebuilding_the_converter_on_an_mps_host_uses_the_cpu(monkeypatch):
+def test_the_converter_on_an_unsafe_mps_host_uses_the_cpu(monkeypatch):
     pytest.importorskip("docling")
     from docling.datamodel.accelerator_options import AcceleratorDevice
     from docling.datamodel.base_models import InputFormat
@@ -108,6 +111,59 @@ def test_rebuilding_the_converter_on_an_mps_host_uses_the_cpu(monkeypatch):
     converter = _converter_or_skip()
     options = converter.format_to_options[InputFormat.PDF].pipeline_options
     assert options.accelerator_options.device == AcceleratorDevice.CPU
+
+
+def test_a_safe_mps_is_left_to_docling(monkeypatch):
+    pytest.importorskip("docling")
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from trellis_artifact_tree.adapters_pdf import keep_off_mps
+
+    _mps_host(monkeypatch, mps_safe=True)
+    options = PdfPipelineOptions()
+    options.accelerator_options.device = AcceleratorDevice.AUTO
+    keep_off_mps(options)
+    assert options.accelerator_options.device == AcceleratorDevice.AUTO
+
+
+@pytest.mark.parametrize(
+    ("installed", "safe"), [("5.10.1", False), ("5.22.1", False), ("5.22.2", True), ("5.23.0", True), ("6.0.0", True)]
+)
+def test_the_transformers_version_decides_without_the_override(monkeypatch, installed, safe):
+    from trellis_artifact_tree import adapters_pdf
+
+    monkeypatch.delenv("TRELLIS_DOCLING_ALLOW_MPS", raising=False)
+    monkeypatch.setattr(adapters_pdf.metadata, "version", lambda name: installed)
+    assert adapters_pdf.mps_is_safe() is safe
+
+
+def test_no_transformers_is_taken_as_unsafe(monkeypatch):
+    from trellis_artifact_tree import adapters_pdf
+
+    def missing(name):
+        raise adapters_pdf.metadata.PackageNotFoundError(name)
+
+    monkeypatch.delenv("TRELLIS_DOCLING_ALLOW_MPS", raising=False)
+    monkeypatch.setattr(adapters_pdf.metadata, "version", missing)
+    assert adapters_pdf.mps_is_safe() is False
+
+
+@pytest.mark.parametrize(("value", "safe"), [("1", True), ("true", True), ("YES", True), ("0", False), ("no", False)])
+def test_the_override_wins_over_the_version(monkeypatch, value, safe):
+    from trellis_artifact_tree import adapters_pdf
+
+    monkeypatch.setenv("TRELLIS_DOCLING_ALLOW_MPS", value)
+    monkeypatch.setattr(adapters_pdf.metadata, "version", lambda name: "5.22.2" if not safe else "5.10.1")
+    assert adapters_pdf.mps_is_safe() is safe
+
+
+def test_the_lock_carries_an_mps_safe_transformers(monkeypatch):
+    """On laz this is what lets the real-PDF test below run on MPS rather than the CPU."""
+    pytest.importorskip("transformers")
+    from trellis_artifact_tree import adapters_pdf
+
+    monkeypatch.delenv("TRELLIS_DOCLING_ALLOW_MPS", raising=False)
+    assert adapters_pdf.mps_is_safe() is True
 
 
 def test_a_real_pdf_converts_to_its_text(tmp_path):
