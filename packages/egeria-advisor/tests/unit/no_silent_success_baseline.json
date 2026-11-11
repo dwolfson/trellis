@@ -6,7 +6,6 @@
   "advisor/agents/dre_template_agent.py::handle": 1,
   "advisor/agents/examples_agent.py::_search_report_specs": 1,
   "advisor/agents/examples_agent.py::handle": 1,
-  "advisor/agents/governance_plan_agent.py::_decompose_intent": 1,
   "advisor/agents/governance_plan_agent.py::_handle_legacy_generate": 2,
   "advisor/agents/governance_plan_agent.py::_infer_type_from_context": 1,
   "advisor/agents/governance_plan_agent.py::_parse_dr_egeria_response": 2,
@@ -40,7 +39,6 @@
   "advisor/governance_draft.py::list_drafts": 1,
   "advisor/mcp_config.py::get_pyegeria_platform_config": 1,
   "advisor/metrics_collector.py::collect_system_metrics": 1,
-  "advisor/perspective_manager.py::_load_from_csv": 1,
   "advisor/perspective_routing.py::get_feedback_adjustments": 1,
   "advisor/query_processor.py::process": 1,
   "advisor/rag_retrieval.py::_fetch_relational_metadata": 1,
@@ -52,7 +50,6 @@
   "advisor/report_draft.py::list_drafts": 1,
   "advisor/report_pipeline.py::_all_report_names": 2,
   "advisor/report_pipeline.py::_detail_to_masters": 1,
-  "advisor/report_pipeline.py::_execute_report": 1,
   "advisor/report_pipeline.py::_load_json_sources": 1,
   "advisor/report_pipeline.py::find_specs": 1,
   "advisor/report_spec_docs.py::list_inbox": 1,
@@ -63,11 +60,9 @@
   "advisor/web/admin.py::_system_health": 2,
   "advisor/web/admin.py::_vector_counts": 1,
   "advisor/web/app.py::_user_context_middleware": 1,
-  "advisor/web/app.py::system_status": 1,
   "advisor/web/drafts.py::patch_draft_commands": 1,
   "advisor/web/feedback.py::feedback_extended": 1,
   "advisor/web/reports.py::patch_report_draft_columns": 1,
   "advisor/web/shared.py::_load_report_catalog": 2,
-  "advisor/web/templates.py::get_column_fields": 1,
-  "advisor/web/templates.py::get_template_fields": 2
+  "advisor/web/templates.py::get_column_fields": 1
 }

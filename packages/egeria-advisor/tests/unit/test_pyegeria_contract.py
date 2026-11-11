@@ -20,9 +20,12 @@ before (DESIGN-EA-REVIEW-TO-RE-LEVEL-2026-11-10 §2):
     ``_LISTING_TOOL_BY_SPEC``) must be registered by pyegeria's own MCP server
     (``pyegeria/core/mcp_server.py``). A name only another configured MCP
     server could provide is reported separately as "needs another MCP server",
-    not failed here. (``egeria_list_glossaries`` / ``egeria_list_collections``
-    exist only in the dr-egeria server, whose configured path is a placeholder
-    on a normal checkout, so the listing fallback fails behind a debug log.)
+    not failed here. A tool EA means to get from another server is declared as
+    a ``("server", "tool")`` pair in a ``*TOOL*`` dict; it passes only when that
+    server is configured, enabled, and its description lists the tool, and it
+    is then reported as "needs another MCP server". (``egeria_list_glossaries``
+    / ``egeria_list_collections`` are dr-egeria's; ``report_pipeline`` now
+    declares them so, and says so at run time when that server is absent.)
 
 Deliberate dynamic access goes in ``pyegeria_contract_allow.json`` with a
 reason per entry. Today's known breaks are in KNOWN_BREAKS below as STRICT
@@ -51,17 +54,10 @@ MCP_CONFIG = EA_ROOT / "advisor" / "configdata" / "mcp_servers.json"
 #   import:<file>::<module>[:<name>]
 #   attr:<file>::<function>::<chain>
 #   mcp:<tool name>
-KNOWN_BREAKS = {
-    "attr:advisor/perspective_manager.py::_load_from_egeria::actor_mgr":
-        "Phase 3 EA-P1: perspective load uses client.actor_mgr; EgeriaTech has actor_manager",
-    "import:scripts/generate_report_specs.py::pyegeria.base_report_formats":
-        "Phase 3 EA-P3: dead pre-6.x path (now pyegeria.view.base_report_formats)",
-    "import:scripts/generate_report_specs.py::pyegeria._output_format_models":
-        "Phase 3 EA-P3: dead pre-6.x path (now pyegeria.view._output_format_models)",
-    "mcp:egeria_list_glossaries":
-        "Phase 3 EA-P3: needs another MCP server (dr-egeria); pyegeria's MCP server does not register it",
-    "mcp:egeria_list_collections":
-        "Phase 3 EA-P3: needs another MCP server (dr-egeria); pyegeria's MCP server does not register it",
+KNOWN_BREAKS: dict = {
+    # Emptied by Phase 3 A-P (2026-11-11): actor_mgr -> actor_manager (EA-P1); the dead
+    # generate_report_specs.py imports went with the script (EA-P3); the two dr-egeria listing
+    # tools are now declared as (server, tool) pairs and checked against that server (EA-P3).
 }
 
 
@@ -124,6 +120,17 @@ def _pyegeria_mcp_tools() -> frozenset:
                 else:
                     names.add(fn.name)
     return frozenset(names)
+
+
+def _configured_server_offers(server: str, tool: str) -> bool:
+    """The named server is configured, enabled, and its description lists ``tool``."""
+    try:
+        cfg = json.loads(MCP_CONFIG.read_text())
+    except Exception:
+        return False
+    s = cfg.get("mcpServers", cfg).get(server)
+    return (isinstance(s, dict) and bool(s.get("enabled"))
+            and re.search(rf"\b{re.escape(tool)}\b", s.get("description", "")) is not None)
 
 
 def _other_configured_servers_offering(tool: str) -> list[str]:
@@ -290,7 +297,13 @@ _TOOL_CALLS = {"_call_tool", "execute_tool", "call_tool"}
 
 
 def _tool_names_called(tree: ast.AST) -> dict:
-    """Literal MCP tool name -> first 'file:line' it is used at."""
+    """Literal MCP tool name -> first line it is used at."""
+    return {t: line for t, (line, _server) in _tool_uses(tree).items()}
+
+
+def _tool_uses(tree: ast.AST) -> dict:
+    """Literal MCP tool name -> (first line, declared server or None). A ``*TOOL*`` dict value may
+    be a ``("server", "tool")`` pair, declaring which MCP server provides the tool."""
     found = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -298,7 +311,7 @@ def _tool_names_called(tree: ast.AST) -> dict:
             name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
             if name in _TOOL_CALLS and node.args and isinstance(node.args[0], ast.Constant) \
                     and isinstance(node.args[0].value, str):
-                found.setdefault(node.args[0].value, node.lineno)
+                found.setdefault(node.args[0].value, (node.lineno, None))
         targets = []
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
@@ -308,7 +321,10 @@ def _tool_names_called(tree: ast.AST) -> dict:
             if isinstance(t, ast.Name) and "TOOL" in t.id.upper() and isinstance(value, ast.Dict):
                 for v in value.values:
                     if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                        found.setdefault(v.value, v.lineno)
+                        found.setdefault(v.value, (v.lineno, None))
+                    elif isinstance(v, ast.Tuple) and len(v.elts) == 2 and all(
+                            isinstance(e, ast.Constant) and isinstance(e.value, str) for e in v.elts):
+                        found.setdefault(v.elts[1].value, (v.lineno, v.elts[0].value))
     return found
 
 
@@ -325,12 +341,19 @@ def _scan() -> tuple[dict, dict]:
         rel = _rel(path)
         _check_imports(tree, rel, findings)
         _check_client_attrs(tree, rel, findings)
-        for t, line in _tool_names_called(tree).items():
-            tools.setdefault(t, f"{rel}:{line}")
+        for t, (line, server) in _tool_uses(tree).items():
+            tools.setdefault(t, (f"{rel}:{line}", server))
     registered = _pyegeria_mcp_tools()
     other = {}
-    for t, site in sorted(tools.items()):
+    for t, (site, server) in sorted(tools.items()):
         if t in registered:
+            continue
+        if server is not None:
+            if _configured_server_offers(server, t):
+                other[t] = [server]
+            else:
+                findings[f"mcp:{t}"] = (f"{site} tool {t!r} is declared as {server}'s, but {server} is not a "
+                                        "configured, enabled MCP server whose description lists it")
             continue
         servers = _other_configured_servers_offering(t)
         findings[f"mcp:{t}"] = f"{site} tool {t!r} not registered by pyegeria's MCP server"
@@ -385,12 +408,14 @@ def test_allow_list_entries_are_live_and_reasoned():
 @pytest.mark.parametrize(
     "finding_id",
     [pytest.param(k, marks=pytest.mark.xfail(strict=True, reason=v), id=k)
-     for k, v in KNOWN_BREAKS.items()],
+     for k, v in KNOWN_BREAKS.items()] or [pytest.param(None, id="none-known")],
 )
 def test_known_break_is_fixed(finding_id):
     """Each KNOWN_BREAKS entry fails today (xfail). When its Phase 3 fix
     lands it passes, and strict xfail turns that into a failure: remove the
     entry in the same change."""
+    if finding_id is None:
+        return  # no known breaks today
     findings, _ = _scan()
     assert finding_id not in findings, findings.get(finding_id)
 
@@ -469,3 +494,16 @@ class TestDetector:
             "        return self._call_tool('list_reports', {})\n"
         )
         assert set(_tool_names_called(ast.parse(src))) == {"egeria_list_glossaries", "list_reports"}
+
+    def test_declared_server_tool_pairs(self):
+        src = (
+            "class P:\n"
+            "    _LISTING_TOOL_BY_SPEC = {'glossaries': ('dr-egeria', 'egeria_list_glossaries')}\n"
+        )
+        assert _tool_uses(ast.parse(src))["egeria_list_glossaries"][1] == "dr-egeria"
+
+    def test_declared_pair_passes_only_for_a_server_that_offers_it(self):
+        assert _configured_server_offers("dr-egeria", "egeria_list_glossaries")
+        assert not _configured_server_offers("dr-egeria", "no_such_tool")
+        assert not _configured_server_offers("no-such-server", "egeria_list_glossaries")
+        assert not _configured_server_offers("_example_remote_sse", "egeria_list_glossaries")  # disabled

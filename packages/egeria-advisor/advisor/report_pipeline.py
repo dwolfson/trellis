@@ -878,8 +878,7 @@ class ReportPipeline:
                 markdown_lines.append("| " + " | ".join(headers) + " |")
                 markdown_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
 
-                # Extract _get_element_value and materialize_egeria_summary from pyegeria
-                from pyegeria.view.output_formatter import _get_element_value, materialize_egeria_summary
+                from pyegeria.view.output_formatter import materialize_egeria_summary
 
                 for raw_el in elements_list:
                     # Materialize headers (like status, versions, created_by, etc.)
@@ -891,7 +890,7 @@ class ReportPipeline:
                         if col.key in el_flat:
                             val = el_flat[col.key]
                         else:
-                            val = _get_element_value(raw_el, col.key)
+                            val = element_value(raw_el, col.key)
                             
                         if isinstance(val, list):
                             val = ", ".join(str(x) for x in val)
@@ -954,31 +953,45 @@ class ReportPipeline:
     # report specs — never to a sub-type report (e.g. Glossary-Terms, which lists
     # terms, not glossaries). Match the exact spec name, normalised, so a failed
     # sub-type report is never silently answered with an unrelated listing.
+    # Each value is (MCP server, tool): pyegeria's own MCP server does not register
+    # these; only the dr-egeria server does (tests/unit/test_pyegeria_contract.py
+    # checks the pair against that server's configured description).
     _LISTING_TOOL_BY_SPEC = {
-        "glossaries": "egeria_list_glossaries",
-        "collections": "egeria_list_collections",
+        "glossaries": ("dr-egeria", "egeria_list_glossaries"),
+        "collections": ("dr-egeria", "egeria_list_collections"),
     }
 
-    def _try_listing_tool(self, report_name: str) -> Optional[str]:
+    def _try_listing_tool(self, report_name: str) -> tuple[Optional[str], Optional[str]]:
         """
         When a plain "list all X" report spec returns *no records*, fall back to the
         equivalent convenience MCP tool. Only fires for the exact all-listing specs
-        (Glossaries, Collections) — sub-type reports get None so the caller reports
-        the empty/failed result honestly instead of showing irrelevant data.
+        (Glossaries, Collections) — sub-type reports get (None, None) so the caller
+        reports the empty result honestly instead of showing irrelevant data.
+
+        Returns (output, None) when the tool answered, or (None, reason) when the
+        fallback could not run: the tool needs another MCP server that is not
+        connected, or the call failed. The reason is shown with the empty result.
         """
         key = re.sub(r"[-_\s]", "", report_name).lower()
-        tool = self._LISTING_TOOL_BY_SPEC.get(key)
-        if tool is None:
-            return None
-
+        entry = self._LISTING_TOOL_BY_SPEC.get(key)
+        if entry is None:
+            return None, None
+        server, tool = entry
+        agent = self._agent
+        if agent is None or agent.get_tool(tool) is None:
+            connected = sorted(getattr(agent, "clients", {}) or {}) if agent is not None else []
+            return None, (
+                f"The {tool} listing needs the {server} MCP server, which is not connected"
+                + (f" (connected: {', '.join(connected)})." if connected else ".")
+            )
         try:
             raw = self._call_tool(tool, {})
-            if raw is None:
-                return None
-            return raw if isinstance(raw, str) else str(raw)
         except Exception as exc:
-            logger.debug(f"_try_listing_tool({tool}) failed: {exc}")
-            return None
+            logger.info(f"_try_listing_tool({tool}) failed: {exc}")
+            return None, f"The {tool} listing on the {server} MCP server failed: {exc}"
+        if raw is None:
+            return None, None
+        return (raw if isinstance(raw, str) else str(raw)), None
 
     # DrE specs are designed for Dr.Egeria operators and contain operator-facing
     # fields (Journal, Term, Search Keywords) irrelevant to general users.
@@ -1440,11 +1453,9 @@ class ReportPipeline:
         # Only fall back to a convenience listing tool when the report ran cleanly
         # but returned no records — never to paper over an error/timeout, and only
         # for the exact all-listing specs (handled inside _try_listing_tool).
+        listing_note: Optional[str] = None
         if raw_output is None and egeria_reachable and not run_error:
-            try:
-                raw_output = self._try_listing_tool(report_name)
-            except Exception as exc:
-                logger.debug(f"listing-tool fallback skipped: {exc}")
+            raw_output, listing_note = self._try_listing_tool(report_name)
 
         output = self._format_output(raw_output, fmt, report_name) if raw_output is not None else None
 
@@ -1478,7 +1489,8 @@ class ReportPipeline:
                 filt = "" if search_string in (None, "", "*") else f" matching *{search_string}*"
                 err_response = (
                     f"**{report_name}** ran successfully but found no records{filt}.\n\n"
-                    "Tips:\n"
+                    + (f"*{listing_note}*\n\n" if listing_note else "")
+                    + "Tips:\n"
                     "- Broaden or clear the search filter\n"
                     "- Confirm there is data of this type in the connected Egeria instance"
                 )
@@ -1510,6 +1522,38 @@ class ReportPipeline:
             "avg_relevance_score": 0.0,
             "context_length": len(output),
         }
+
+
+def _dot_path(obj: Any, path: str) -> Any:
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def element_value(element: Dict[str, Any], key: str) -> Any:
+    """A report column's value from a raw Egeria element: the element itself, then its
+    ``properties``, by the key as written or its camelCase form; dotted keys are paths.
+
+    EA's own reader (A-P3), replacing a private pyegeria output_formatter helper, which is not part
+    of pyegeria's API and may change in any release. Same lookup order.
+    """
+    if not isinstance(element, dict) or not key:
+        return None
+    props = element.get("properties") if isinstance(element.get("properties"), dict) else {}
+    if "." in key:
+        val = _dot_path(element, key)
+        return val if val is not None else _dot_path(props, key)
+    if key in element:
+        return element[key]
+    from pyegeria.models import to_camel_case  # public; the same converter pyegeria's formatter uses
+    camel = to_camel_case(key)
+    for src, k in ((props, key), (props, camel), (element, camel)):
+        if k in src:
+            return src[k]
+    return None
 
 
 def _detail_to_masters() -> Dict[str, List[str]]:
