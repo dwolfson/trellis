@@ -180,7 +180,8 @@ def to_item(line: Line, app: str):
     from trellis_feedback import FeedbackItem
     rec = line.record
     extra = {k: v for k, v in rec.items() if k not in _COLUMNS and v not in (None, "", [])}
-    extra.update(imported_from=line.file, line=line.number)
+    extra.update(imported_from=line.file, line=line.number, intent_selected=rec.get("intent_override") or "")
+    extra.pop("query_type", None)
     status = (rec.get("triage_status") or "new").strip() if line.file == EXTENDED else "new"
     if status == "new" and rec.get("analysis_comments"):
         extra["analysis_comments"] = rec["analysis_comments"]
@@ -188,7 +189,9 @@ def to_item(line: Line, app: str):
         app=app, kind="answer", vote=line.vote, query_text=rec["query"].strip(),
         response_text=rec.get("response_text") or "", user_id=rec.get("user_id") or "",
         session_id=rec.get("session_id") or "", perspective=rec.get("perspective") or "",
-        routing_agent=rec.get("routing_agent") or "", intent_label=rec.get("intent_override") or "",
+        # A-F1 N2: intent_label is the ROUTED intent (the line's query_type); the UI selector is
+        # extra.intent_selected.
+        routing_agent=rec.get("routing_agent") or "", intent_label=rec.get("query_type") or "",
         id=line.item_id, created_at=line.created_at, extra=extra,
     ), status
 

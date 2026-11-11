@@ -63,7 +63,7 @@ def _record_vote(req: FeedbackRequest, user_id: Optional[str]) -> Dict[str, Any]
         intent_override=req.intent_override or None,
         user_id=user_id,
         response_text=req.response_text or "",
-        idempotency_key=vote_key(req.session_id, req.exchange_id, req.vote),
+        idempotency_key=vote_key(req.session_id, req.exchange_id, req.vote, req.vote_seq),
         exchange_id=req.exchange_id or None,
     )
     return {

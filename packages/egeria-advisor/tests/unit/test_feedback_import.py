@@ -95,7 +95,8 @@ def test_imported_items_keep_their_fields_time_and_status(store, data_dir):
     rows = {r["query_text"] + "|" + r["extra"]["imported_from"]: r for r in store.list(kind="answer")}
     first = rows[f"what is a glossary?|{EXTENDED}"]
     assert first["created_at"] == "2026-11-01T10:00:00.500000+00:00"
-    assert (first["vote"], first["user_id"], first["intent_label"]) == (-1, "peterprofile", "explain")
+    assert (first["vote"], first["user_id"], first["intent_label"]) == (-1, "peterprofile", "explanation")
+    assert first["extra"]["intent_selected"] == "explain" and "query_type" not in first["extra"]
     assert first["response_text"] == "An answer." and first["extra"]["line"] == 1
     assert first["triage"]["status"] == "known_issue"
     (event,) = store.history(first["id"])
@@ -104,7 +105,7 @@ def test_imported_items_keep_their_fields_time_and_status(store, data_dir):
     assert kept["triage"]["status"] == "new" and kept["extra"]["analysis_comments"] == "fine, kept as a note"
     cli = rows[f"cli question|{USER}"]
     assert (cli["vote"], cli["user_id"], cli["response_text"]) == (1, "", "")
-    assert cli["extra"]["query_type"] == "agent"
+    assert cli["intent_label"] == "agent"
     assert rows[f"old status|{EXTENDED}"]["extra"]["legacy_triage_status"] == "wontfix"
 
 

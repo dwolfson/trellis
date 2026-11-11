@@ -52,7 +52,33 @@
     return `${t.events} event(s); latest ${t.status}${who}${when}${note}`;
   }
 
-  function row(item, headers) {
+  /** The routed intent and the UI selector (A-F1 N2). From N2 on, intent_label is the routed intent and
+   *  extra.intent_selected the selector; before N2, intent_label was the selector and extra.query_type
+   *  the routed intent. The presence of intent_selected tells the two apart. */
+  function intents(item) {
+    const extra = item.extra || {};
+    if ('intent_selected' in extra) return { selected: extra.intent_selected || 'auto', routed: item.intent_label || '—' };
+    return { selected: item.intent_label || 'auto', routed: extra.query_type || '—' };
+  }
+
+  /** Ids of listed votes a later vote by the same user on the same answer replaces (A-F1 N1): one judgement
+   *  per answer, the latest, as /api/feedback/analysis counts it. Only votes carrying a session and an
+   *  exchange id can be matched; the rest stand alone. */
+  function supersededIds(items) {
+    const latest = new Map();
+    const key = i => {
+      const ex = (i.extra || {}).exchange_id;
+      return ex && i.session_id ? `${i.user_id || ''}\u0000${i.session_id}\u0000${ex}` : null;
+    };
+    const later = (a, b) => `${a.created_at || ''}\u0000${a.id}` > `${b.created_at || ''}\u0000${b.id}`;
+    for (const i of items) {
+      const k = key(i);
+      if (k && (!latest.has(k) || later(i, latest.get(k)))) latest.set(k, i);
+    }
+    return new Set(items.filter(i => { const k = key(i); return k && latest.get(k) !== i; }).map(i => i.id));
+  }
+
+  function row(item, headers, superseded) {
     const id = item.id;                      // the ONLY triage target this row ever posts
     const t = item.triage || { status: 'new', events: 0 };
     const extra = item.extra || {};
@@ -87,7 +113,7 @@
     const query = h('td', { class: 'px-3 py-2 text-xs' },
       h('div', { class: 'font-medium text-slate-200 max-w-xs', 'data-query': true, text: item.query_text || '' }),
       h('div', { class: 'text-slate-500 mt-0.5',
-        text: `${item.perspective || '—'} / ${item.intent_label || 'auto'} → ${extra.query_type || '—'} [${item.routing_agent || '—'}]`
+        text: `${item.perspective || '—'} · selected ${intents(item).selected} → routed ${intents(item).routed} [${item.routing_agent || '—'}]`
           + (item.user_id ? ` · ${item.user_id}` : ' · anonymous') }));
     if (item.response_text) {
       query.append(h('details', { class: 'mt-1' },
@@ -95,7 +121,11 @@
         h('pre', { class: 'mt-1 text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto bg-slate-900/60 rounded p-2',
           text: item.response_text })));
     }
-    return h('tr', { class: 'border-t border-slate-700/50 align-top', dataset: { itemId: id } },
+    if (superseded) {
+      query.append(h('div', { class: 'text-amber-300/80 mt-0.5', 'data-superseded': true,
+        text: 'Superseded: this user voted again on the same answer later; only the latest vote is counted.' }));
+    }
+    return h('tr', { class: `border-t border-slate-700/50 align-top${superseded ? ' opacity-60' : ''}`, dataset: { itemId: id } },
       h('td', { class: 'px-3 py-2 text-sm', text: vote }),
       h('td', { class: 'px-3 py-2 text-xs text-slate-400 whitespace-nowrap',
         text: item.created_at ? String(item.created_at).slice(0, 19).replace('T', ' ') : '—' }),
@@ -130,7 +160,8 @@
     }
     const head = h('tr', { class: 'border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider' },
       ...['', 'Time', 'Query / Routing', 'Status', 'Note'].map(t => h('th', { class: 'text-left px-3 py-2', text: t })));
-    const body = h('tbody', {}, ...items.map(i => row(i, headers)));
+    const replaced = supersededIds(data.items || []);
+    const body = h('tbody', {}, ...items.map(i => row(i, headers, replaced.has(i.id))));
     const shown = data.matched > (data.items || []).length
       ? `${items.length} shown; ${data.matched} match the status filter, newest ${LIMIT} listed (${data.total} in all)`
       : `${items.length} of ${data.total} votes`;
@@ -139,5 +170,5 @@
       h('div', { class: 'px-3 py-2 text-xs text-slate-500 border-t border-slate-700/50', text: shown }));
   }
 
-  window.FeedbackReview = { load, STATUSES };
+  window.FeedbackReview = { load, STATUSES, intents, supersededIds };
 })();

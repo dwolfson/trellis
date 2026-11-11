@@ -75,6 +75,9 @@ class FeedbackRequest(BaseModel):
     # so a retried send is one item. A client that sends neither gets a plain submit.
     session_id: Optional[str] = Field(default=None, max_length=64)
     exchange_id: Optional[str] = Field(default=None, max_length=64)
+    # A-F1 N1: which click on this row this is (1, 2, ...). A changed vote is a new click and is stored;
+    # the latest per answer is the one counted. A network re-send of one click keeps its number.
+    vote_seq: Optional[int] = Field(default=None, ge=1, le=10_000)
 
 
 # ── intent → badge metadata ────────────────────────────────────────────────────

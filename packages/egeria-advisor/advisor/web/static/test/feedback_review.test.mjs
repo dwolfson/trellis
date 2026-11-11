@@ -133,3 +133,27 @@ test('hostile question and answer text are text, never markup', opts, async () =
   assert.equal(el.querySelectorAll('img').length, 0);
   assert.equal(el.querySelector('[data-query]').textContent, HOSTILE);
 });
+
+test('N1: an earlier vote on the same answer by the same user is marked superseded, the latest is not', opts, async () => {
+  const at = (id, vote, t, ex = 'x1', user = 'peterprofile') => ({ ...item(id, 'same answer', vote), user_id: user,
+    session_id: 's1', created_at: t, extra: { exchange_id: ex, intent_selected: 'auto' }, intent_label: 'explanation' });
+  const items = [at('n2', -1, '2026-11-11T10:00:02+00:00'), at('n1', 1, '2026-11-11T10:00:01+00:00'),
+    at('o1', 1, '2026-11-11T10:00:01+00:00', 'x2'), at('u1', 1, '2026-11-11T10:00:00+00:00', 'x1', 'garygeeke')];
+  const w = setup({ ok: true, status: 200, data: { items, total: 4, matched: 4 } });
+  const el = w.document.getElementById('fb');
+  await w.FeedbackReview.load(el, {});
+  const marked = [...el.querySelectorAll('tr[data-item-id]')].filter(r => r.querySelector('[data-superseded]'))
+    .map(r => r.dataset.itemId);
+  assert.deepEqual(marked, ['n1']);
+});
+
+test('N2: the row says which intent was selected and which was routed, for old and new items', opts, async () => {
+  const fresh = { ...item('a', 'q', 1), intent_label: 'explanation', extra: { intent_selected: 'auto' } };
+  const old = { ...item('b', 'q', 1), intent_label: 'explain', extra: { query_type: 'code_search' } };
+  const w = setup({ ok: true, status: 200, data: { items: [fresh, old], total: 2, matched: 2 } });
+  const el = w.document.getElementById('fb');
+  await w.FeedbackReview.load(el, {});
+  const [a, b] = [...el.querySelectorAll('tr[data-item-id]')].map(r => r.textContent);
+  assert.match(a, /selected auto → routed explanation/);
+  assert.match(b, /selected explain → routed code_search/);
+});
