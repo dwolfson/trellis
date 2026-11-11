@@ -43,6 +43,30 @@ except ImportError as e:
     raise
 
 
+def _split_top_level(text: str) -> List[str]:
+    """Split on commas that are not inside [...], {...}, or a quoted string within them."""
+    parts, buf, depth, quote = [], [], 0, None
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'" and depth:  # quotes count only inside a list/object (an apostrophe in a bare value is text)
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return [p for p in parts if p.strip()]
+
+
 def _parse_spec_params(param_str: str) -> Dict[str, Any]:
     """Parse key=value parameters from a spec parameter string.
 
@@ -53,8 +77,8 @@ def _parse_spec_params(param_str: str) -> Dict[str, Any]:
         return result
     # Normalise: replace newlines with commas so both formats go through the same splitter
     normalised = re.sub(r'\r?\n', ',', param_str)
-    # Split on commas but ignore commas inside square brackets e.g. ['A', 'B']
-    parts = re.split(r',\s*(?=[^\]]*(?:\[|$))', normalised)
+    # Split on commas outside brackets/braces, e.g. ['A', 'B'] or {"k": 1, "j": 2} stay whole
+    parts = _split_top_level(normalised)
     for part in parts:
         if '=' in part:
             k, v = part.split('=', 1)
@@ -66,6 +90,12 @@ def _parse_spec_params(param_str: str) -> Dict[str, Any]:
                 v = True
             elif v.lower() == 'false':
                 v = False
+            elif v.startswith('{') and v.endswith('}'):
+                # A JSON object (e.g. saved_query's `params`); left as text when it is not JSON
+                try:
+                    v = json.loads(v)
+                except ValueError:
+                    pass
             elif v.startswith('[') and v.endswith(']'):
                 try:
                     # Clean up JSON formatting or evaluate list
@@ -259,36 +289,37 @@ def ea_registered_specs() -> set:
     return set(_EA_REGISTERED)
 
 
+#: The RUNTIME-tier source label EA registers under (pyegeria `register_report_specs(source=...)`).
+EA_REGISTRY_SOURCE = "egeria-advisor"
+
+
+class ReportSpecNameTaken(ValueError):
+    """The name is already a spec from another source (a config/user specs directory, or another
+    app's runtime specs): EA cannot register its own spec under it."""
+
+
 def register_report_spec(name: str, spec: FormatSet) -> None:
-    """Register a custom FormatSet in the base report specs dictionary."""
-    import sys
-    registered = False
+    """Register an EA spec (document store, draft, Spec Builder) in pyegeria's RUNTIME tier.
+
+    Goes through pyegeria's public `register_report_specs(..., source="egeria-advisor")`, never by
+    writing pyegeria's private dicts (it used to set `report_specs[name]` and
+    `_RUNTIME_REPORT_FORMATS[name]` in every loaded copy of the module, which made an EA spec look
+    built-in and bypassed the collision check). Re-registering a name EA registered replaces it. A
+    name another source holds raises ReportSpecNameTaken with words; a built-in or Egeria-held spec
+    of the same name is shadowed, not a clash (pyegeria's tier order: local > egeria > builtin).
+    """
+    from pyegeria.view.base_report_formats import register_report_specs
+    try:
+        from pyegeria.view.base_report_formats import ReportFormatCollision
+    except ImportError:  # pragma: no cover -- every supported pyegeria has it
+        ReportFormatCollision = ValueError  # type: ignore[assignment,misc]
+    try:
+        register_report_specs({name: spec}, source=EA_REGISTRY_SOURCE)
+    except ReportFormatCollision as exc:
+        raise ReportSpecNameTaken(
+            f"A report spec named '{name}' already comes from another source, so this one was not "
+            f"registered; rename it: {exc}") from exc
     _EA_REGISTERED.add(name)
-    
-    # 1. Update all copies in sys.modules to prevent path/import mismatch issues
-    for mod_name, module in list(sys.modules.items()):
-        if mod_name.endswith("base_report_formats"):
-            for attr in ("report_specs", "_RUNTIME_REPORT_FORMATS"):
-                if hasattr(module, attr):
-                    try:
-                        d = getattr(module, attr)
-                        if isinstance(d, dict):
-                            d[name] = spec
-                            registered = True
-                    except Exception:
-                        pass
-                
-    # 2. Fallback to direct import if not registered in sys.modules yet
-    if not registered:
-        try:
-            from pyegeria.view.base_report_formats import report_specs, _RUNTIME_REPORT_FORMATS
-            for d in (report_specs, _RUNTIME_REPORT_FORMATS):
-                try:
-                    d[name] = spec
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
 
 

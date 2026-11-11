@@ -45,7 +45,7 @@ import {
   activityFailure, failureText, getSchedules, saveSchedule, addAlias, listAliases, writeJournalTurn,
 } from '/static/re-api.js';
 import { stateEntry } from '/static/next/glyphs.js';
-import { showMarkdown } from '/static/next/markdown.js';
+import { showMarkdown } from '/static/trellis-ui/markdown.js';
 import {
   state, esc, icon, tnum, $, selectResourceFromChat,
   ensureRailShowing, railFrame, railClaim, openMembers,

@@ -1761,13 +1761,8 @@ class RAGSystem:
     def _add_perspective_prefix(query: str, perspective: Optional[str]) -> str:
         if not perspective:
             return query
-        labels = {
-            "developer": "Software Developer",
-            "data_engineer": "Data Engineer",
-            "data_steward": "Data Steward",
-            "governance_officer": "Governance Officer",
-        }
-        label = labels.get(perspective, perspective.replace("_", " ").title())
+        from advisor.perspective_manager import display_name_for_key
+        label = display_name_for_key(perspective) or perspective.replace("_", " ").title()
         return f"[User role: {label}]\n{query}"
 
     # ---------------------------------------------------------------------- #
@@ -2022,24 +2017,26 @@ Answer the question using ONLY the code context above. Follow these rules:
 6. Focus on conceptual explanation first, then offer code examples{followup}
 
 Example good response:
-"To create a glossary, use the GlossaryManager class from pyegeria.glossary_manager.py:
+"To create a glossary, use the GlossaryManager class from pyegeria/omvs/glossary_manager.py:
 
 ```python
 from pyegeria import GlossaryManager
 
 glossary_mgr = GlossaryManager(
-    server_name="view-server",
+    view_server="qs-view-server",
     platform_url="https://localhost:9443",
-    user_id="garygeeke"
+    user_id="garygeeke",
+    user_pwd="<password>",
 )
+glossary_mgr.create_egeria_bearer_token()
 
-glossary = glossary_mgr.create_glossary(
+glossary_guid = glossary_mgr.create_glossary(
     display_name="My Glossary",
-    description="Business vocabulary"
+    description="Business vocabulary",
 )
 ```
 
-Source: pyegeria/glossary_manager.py - GlossaryManager.create_glossary()"
+Source: pyegeria/omvs/glossary_manager.py - GlossaryManager.create_glossary()"
 
 Now answer the user's question following this format."""
         else:

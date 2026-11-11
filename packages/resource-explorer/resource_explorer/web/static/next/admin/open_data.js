@@ -22,7 +22,7 @@ import {
 } from '/static/re-api.js';
 import { esc } from '/static/next/app.js';
 import { ago } from '/static/next/format.js';
-import { watchTables } from '/static/next/colresize.js';
+import { watchTables } from '/static/trellis-ui/colresize.js';
 
 export const NOT_REPORTED = 'not_reported';
 export const NOT_REPORTED_WORDS = 'not reported by this source';

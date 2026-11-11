@@ -49,6 +49,7 @@ COPY packages/trellis-artifact-tree/pyproject.toml packages/trellis-artifact-tre
 COPY packages/trellis-context/pyproject.toml packages/trellis-context/pyproject.toml
 COPY packages/trellis-querycache/pyproject.toml packages/trellis-querycache/pyproject.toml
 COPY packages/trellis-auth/pyproject.toml packages/trellis-auth/pyproject.toml
+COPY packages/trellis-ui/pyproject.toml packages/trellis-ui/pyproject.toml
 COPY packages/trellis-feedback/pyproject.toml packages/trellis-feedback/pyproject.toml
 COPY packages/trellis-analytics/pyproject.toml packages/trellis-analytics/pyproject.toml
 
@@ -67,6 +68,7 @@ COPY packages/trellis-artifact-tree packages/trellis-artifact-tree
 COPY packages/trellis-context packages/trellis-context
 COPY packages/trellis-querycache packages/trellis-querycache
 COPY packages/trellis-auth packages/trellis-auth
+COPY packages/trellis-ui packages/trellis-ui
 COPY packages/trellis-feedback packages/trellis-feedback
 COPY packages/trellis-analytics packages/trellis-analytics
 
@@ -161,6 +163,7 @@ COPY --chown=trellis:trellis packages/trellis-artifact-tree packages/trellis-art
 COPY --chown=trellis:trellis packages/trellis-context packages/trellis-context
 COPY --chown=trellis:trellis packages/trellis-querycache packages/trellis-querycache
 COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
+COPY --chown=trellis:trellis packages/trellis-ui packages/trellis-ui
 COPY --chown=trellis:trellis packages/trellis-feedback packages/trellis-feedback
 COPY --chown=trellis:trellis packages/trellis-analytics packages/trellis-analytics
 COPY --chown=trellis:trellis docker/entrypoint-resource-explorer.sh /usr/local/bin/entrypoint.sh

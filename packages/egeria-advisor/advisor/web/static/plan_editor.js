@@ -443,11 +443,11 @@ function _buildCommandCard(cmd, idx) {
     const noteHdr = document.createElement('div');
     noteHdr.className = 'flex items-center gap-2 px-4 py-2 select-none';
     noteHdr.innerHTML =
-      (_ped.isInbox ? `<span class="text-slate-600 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
+      (_ped.isInbox ? `<span class="text-slate-500 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
       `<span class="text-amber-400/80 text-xs font-semibold flex-1">📝 Note</span>`;
     if (_ped.isInbox) {
       const rmBtn = document.createElement('button');
-      rmBtn.className = 'text-slate-600 hover:text-red-400 text-xs px-1 transition-colors shrink-0';
+      rmBtn.className = 'text-slate-500 hover:text-red-400 text-xs px-1 transition-colors shrink-0';
       rmBtn.title = 'Remove this note';
       rmBtn.textContent = '✕';
       rmBtn.onclick = (e) => { e.stopPropagation(); _pedRemoveStep(idx); };
@@ -486,14 +486,14 @@ function _buildCommandCard(cmd, idx) {
   hdr.className = 'flex items-center gap-2 px-4 py-2 cursor-pointer select-none border-b border-slate-700';
   hdr.style.background = '#1e293b';
   hdr.innerHTML =
-    (_ped.isInbox ? `<span class="text-slate-600 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
+    (_ped.isInbox ? `<span class="text-slate-500 cursor-grab shrink-0" title="Drag to reorder">⠿</span>` : '') +
     `<span class="text-xs font-semibold text-violet-400 shrink-0">Step ${cmd.stepNum}</span>` +
     `<span class="text-sm font-semibold text-slate-100 flex-1">${_esc(cmd.action)}</span>` +
     `<span class="ped-cmd-status text-xs"></span>` +
     `<span class="ped-cmd-toggle text-slate-500 text-xs ml-1">▼</span>`;
   if (_ped.isInbox) {
     const rmBtn = document.createElement('button');
-    rmBtn.className = 'text-slate-600 hover:text-red-400 text-xs px-1 ml-1 transition-colors shrink-0';
+    rmBtn.className = 'text-slate-500 hover:text-red-400 text-xs px-1 ml-1 transition-colors shrink-0';
     rmBtn.title = 'Remove this step';
     rmBtn.textContent = '✕';
     rmBtn.onclick = (e) => { e.stopPropagation(); _pedRemoveStep(idx); };

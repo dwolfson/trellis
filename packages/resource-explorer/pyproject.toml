@@ -43,6 +43,10 @@ dependencies = [
     # Page feedback and its triage (feedback_store.py), shared with Egeria Advisor —
     # packages/trellis-feedback, docs/trellis-feedback-extraction.md.
     "trellis-feedback>=0.2,<0.4",  # stats() reads its items table directly
+    # The browser pieces shared with Egeria Advisor (the looks, column resizing, markdown, the envelope
+    # renderer) -- packages/trellis-ui, served at /static/trellis-ui/ (web/app.py). Declared for the reason
+    # trellis-auth is: a root sources entry makes it available, not required.
+    "trellis-ui",
     # The Analytic Library: Curate's By-analysis tab calls
     # trellis_analytics.routines.curation_coverage (brief 2b). Since LS2 it is its own
     # distribution (odpi/egeria-trellis-analytics); the readers it asks for are RE's, in
@@ -197,7 +201,7 @@ dependencies = [
     # changed report-spec seeding, Dashboard Sheet wording and Ownership, and added semantic_grounding fields.
     # Raised to 6.2.32 (2026-11-10, B2): the rendered Dr.Egeria templates ship in the wheel (md_processing.templates);
     # Egeria Advisor reads them from there so its templates match the installed Dr.Egeria executor.
-    "pyegeria>=6.2.32",
+    "pyegeria>=6.2.34",
     "mcp>=2.0.0",
     # nest-asyncio removed 2026-09-04 with the shared-pool refactor: RE no
     # longer imports it anywhere. Its one site, surveyors/prefect_adapter.py's

@@ -495,6 +495,11 @@ Do not output any introductory or summary text. Just the markdown document:
             lines.append("### Questions")
             lines.append(", ".join(spec.get("questions")))
             lines.append("")
+        if spec.get("saved_query"):
+            # Route B (B6/N6): an analytic-only spec; no find method, no find params, no columns
+            from advisor.spec_saved_query import spec_md_lines
+            lines.extend(spec_md_lines(spec["saved_query"]))
+            return "\n".join(lines)
         if spec.get("action_function"):
             lines.append("### Action Function")
             lines.append(spec.get("action_function"))

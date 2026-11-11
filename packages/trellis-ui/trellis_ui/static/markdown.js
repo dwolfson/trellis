@@ -3,7 +3,22 @@
  *  the real guard: only these tags survive, only `href`/`title`/`colspan`/`rowspan` on them, and a link only if
  *  its scheme is http, https or mailto. Images, scripts, styles and event attributes never reach the page.
  *  If the library cannot load, the text is shown as written (escaped, line breaks kept) -- never as raw HTML. */
-import { loadScript } from '/static/next/app.js';
+
+// Shared by RE and EA (packages/trellis-ui), so it loads the library itself rather than through either app's
+// module graph. Both apps vendor marked at /static/vendor/marked.min.js.
+const _loading = new Map();
+function loadScript(src) {
+  if (_loading.has(src)) return _loading.get(src);
+  const p = new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.appendChild(el);
+  });
+  _loading.set(src, p);
+  return p;
+}
 
 const ALLOWED = new Set(['p', 'br', 'strong', 'b', 'em', 'i', 'del', 's', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td']);
