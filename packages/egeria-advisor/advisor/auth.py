@@ -664,6 +664,12 @@ def check_portal_egeria_token(token: str) -> tuple[str, str]:
     - get_my_profile answers, or 404s (the token authenticated; the person has no profile): accepted;
     - 401 / 403: rejected;
     - connection error or timeout, or no Egeria configured: unreachable;
+    - Egeria failing (5xx, A-I1 N1): unreachable. That is an HTTP 5xx (PyegeriaClientException,
+      http_status_code) or a 200 whose body carries relatedHTTPCode >= 500 (PyegeriaAPIException,
+      related_http_code), e.g. Egeria's PropertyServerException when its repository's database is out of
+      connections. A broken connection mid-answer (httpx.TransportError under PyegeriaClientException) is
+      unreachable too. Egeria failing says nothing about the token, so refusing it would turn an Egeria
+      outage into an EA sign-in outage;
     - anything else: rejected ("could not be verified"): sign-in fails closed.
     """
     from datetime import datetime, timezone
@@ -695,10 +701,34 @@ def check_portal_egeria_token(token: str) -> tuple[str, str]:
     except (PyegeriaConnectionException, PyegeriaTimeoutException, ConnectionError, TimeoutError) as exc:
         return PORTAL_TOKEN_UNREACHABLE, f"{type(exc).__name__}"
     except Exception as exc:  # noqa: BLE001 - fail closed: an unverifiable token is not a sign-in
-        code = getattr(exc, "related_http_code", None)
+        code = _egeria_http_code(exc)
         if code in (401, 403):
             return PORTAL_TOKEN_REJECTED, f"Egeria rejected its token (HTTP {code})"
+        if code is not None and code >= 500:
+            return PORTAL_TOKEN_UNREACHABLE, f"Egeria failed while checking it (HTTP {code})"
+        if _is_transport_failure(exc):
+            return PORTAL_TOKEN_UNREACHABLE, f"the connection to Egeria failed ({type(exc.e).__name__})"
         return PORTAL_TOKEN_REJECTED, f"its Egeria token could not be verified ({type(exc).__name__})"
+
+
+def _egeria_http_code(exc: BaseException) -> int | None:
+    """The HTTP code a pyegeria exception carries: Egeria's relatedHTTPCode (a 200 wrapping an error),
+    else the transport's own status (an HTTP 4xx/5xx). None when it carries neither."""
+    for attr in ("related_http_code", "http_status_code"):
+        code = getattr(exc, attr, None)
+        if isinstance(code, int) and code:
+            return code
+    return None
+
+
+def _is_transport_failure(exc: BaseException) -> bool:
+    """A pyegeria exception wrapping an httpx transport error (the connection dropped mid-answer,
+    a protocol error): pyegeria raises PyegeriaClientException for those, not PyegeriaConnectionException."""
+    try:
+        import httpx
+    except ImportError:
+        return False
+    return isinstance(getattr(exc, "e", None), httpx.TransportError)
 
 
 def validate_egeria_credentials(user_id: str, password: str) -> bool:

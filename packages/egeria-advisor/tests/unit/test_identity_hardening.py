@@ -189,6 +189,92 @@ class TestPortalTokenCheck:
         assert SSO["valid_erinoverview"]["ok"] is True
 
 
+# ── 3a. N1: Egeria failing is "unreachable", not "rejected" ──────────────────────
+# Each exception is the one pyegeria's own _async_make_request raises: a real MyProfile client calls
+# get_my_profile, and only its HTTP session is replaced. The bodies use the FFDC field names Egeria
+# sends (as in laz's 401 capture and pyegeria's tests/micro-tests/test_issue_142_*); the exception class
+# is Egeria's frameworks.openmetadata.ffdc.PropertyServerException and the message id is a real
+# OMAG-REPOSITORY-HANDLER-500 id from Egeria's source.
+
+EGERIA_500_WRAPPED = {
+    "class": "PersonalProfileResponse", "relatedHTTPCode": 500,
+    "exceptionClassName": "org.odpi.openmetadata.frameworks.openmetadata.ffdc.PropertyServerException",
+    "exceptionErrorMessageId": "OMAG-REPOSITORY-HANDLER-500-001",
+    "exceptionErrorMessage": "OMAG-REPOSITORY-HANDLER-500-001 An unexpected error occurred in the repository",
+}
+SPRING_503 = {"timestamp": "2026-11-11T12:00:00.000+00:00", "status": 503, "error": "Service Unavailable",
+              "path": "/servers/qs-view-server/api/open-metadata/my-profile"}
+
+
+def _raised_by_pyegeria(monkeypatch, answer):
+    """Run pyegeria's real get_my_profile with the session answering `answer` (an httpx.Response
+    builder, or an exception for the transport to raise) and return what pyegeria raised."""
+    import httpx
+    from pyegeria.omvs.my_profile import MyProfile
+    monkeypatch.setattr(MyProfile, "check_connection", lambda self: "test")
+    client = MyProfile("qs-view-server", "https://localhost:1", "erinoverview")
+
+    def handler(request):
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer(request)
+
+    client.session = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # pinned: used on every loop
+    with pytest.raises(Exception) as caught:
+        client.get_my_profile()
+    return caught.value
+
+
+class TestEgeriaFailingIsUnreachable:
+    @pytest.mark.parametrize("answer, words", [
+        (lambda req: __import__("httpx").Response(200, json=EGERIA_500_WRAPPED, request=req),
+         "Egeria failed while checking it (HTTP 500)"),
+        (lambda req: __import__("httpx").Response(500, text="Internal Server Error", request=req),
+         "Egeria failed while checking it (HTTP 500)"),
+        (lambda req: __import__("httpx").Response(503, json=SPRING_503, request=req),
+         "Egeria failed while checking it (HTTP 503)"),
+    ], ids=["wrapped-500", "http-500", "http-503"])
+    def test_5xx(self, monkeypatch, egeria, answer, words):
+        exc = _raised_by_pyegeria(monkeypatch, answer)
+        egeria["answer"] = exc
+        assert auth.check_portal_egeria_token(_jwt(4102444800)) == (auth.PORTAL_TOKEN_UNREACHABLE, words)
+
+    @pytest.mark.parametrize("error", ["ReadError", "RemoteProtocolError"])
+    def test_a_connection_dropped_mid_answer(self, monkeypatch, egeria, error):
+        import httpx
+        exc = _raised_by_pyegeria(monkeypatch, getattr(httpx, error)("connection reset by peer"))
+        assert type(exc).__name__ == "PyegeriaClientException"  # not PyegeriaConnectionException
+        egeria["answer"] = exc
+        assert auth.check_portal_egeria_token(_jwt(4102444800)) == (
+            auth.PORTAL_TOKEN_UNREACHABLE, f"the connection to Egeria failed ({error})")
+
+    def test_the_pyegeria_shapes(self, monkeypatch):
+        """Which attribute carries the code differs by path; pin both, so a pyegeria change shows here."""
+        import httpx
+        wrapped = _raised_by_pyegeria(monkeypatch, lambda r: httpx.Response(200, json=EGERIA_500_WRAPPED, request=r))
+        assert type(wrapped).__name__ == "PyegeriaAPIException" and wrapped.related_http_code == 500
+        bare = _raised_by_pyegeria(monkeypatch, lambda r: httpx.Response(500, text="x", request=r))
+        assert type(bare).__name__ == "PyegeriaClientException" and bare.http_status_code == 500
+        assert getattr(bare, "related_http_code", None) is None
+
+    @pytest.mark.parametrize("status, body", [
+        (200, {"class": "VoidResponse", "relatedHTTPCode": 401}),
+        (403, "Forbidden"),
+        (400, "Bad Request"),
+    ], ids=["wrapped-401", "http-403", "http-400"])
+    def test_a_4xx_still_refuses(self, monkeypatch, egeria, status, body):
+        import httpx
+        kw = {"json": body} if isinstance(body, dict) else {"text": body}
+        egeria["answer"] = _raised_by_pyegeria(monkeypatch, lambda r: httpx.Response(status, request=r, **kw))
+        assert auth.check_portal_egeria_token(_jwt(4102444800))[0] == auth.PORTAL_TOKEN_REJECTED
+
+    def test_a_404_from_pyegeria_is_accepted(self, monkeypatch, egeria):
+        import httpx
+        egeria["answer"] = _raised_by_pyegeria(monkeypatch, lambda r: httpx.Response(
+            200, json={"class": "PersonalProfileResponse", "relatedHTTPCode": 404}, request=r))
+        assert auth.check_portal_egeria_token(_jwt(4102444800)) == (auth.PORTAL_TOKEN_ACCEPTED, "")
+
+
 class TestPortalRoute:
     def _sign_in(self, monkeypatch, verdict):
         from advisor.web.auth import PortalTokenRequest, auth_portal
