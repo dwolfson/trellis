@@ -2332,7 +2332,8 @@ async function feedbackClick(e) {
     routing_agent: btn.dataset.routingAgent || null,
     intent_override: btn.dataset.intentOverride || null,
     response_text: _feedbackAnswerText(fb),
-    // A-F1: session + exchange + vote is the vote's idempotency key, so Retry on this row is the same vote.
+    // A-F1: session + exchange + vote_seq is the idempotency key: only a re-sent click replays. Retry is a
+    // new click (a new item); feedback analysis counts the latest vote per answer, so it is counted once.
     session_id: (window._eaFeedbackSession ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
     exchange_id: (fb.dataset.exchangeId ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
     // N1: each click on this row is its own vote; the latest on an answer is the one counted.

@@ -397,7 +397,7 @@ these changes.
 ### 4.2 Embeddings device
 
 The apps auto-detect `cuda`, `mps` or `cpu` for the sentence-transformer embeddings. Set
-`EMBEDDINGS__DEVICE` (RE) and `EMBEDDING_DEVICE` (EA) explicitly if detection picks the wrong one.
+`EMBEDDING_DEVICE` (RE, read by `explorer.yaml`) and `embeddings.device` in EA's `advisor.yaml` explicitly if detection picks the wrong one.
 
 ### 4.3 Expectations
 
