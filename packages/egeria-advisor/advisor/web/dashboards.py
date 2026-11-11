@@ -1,7 +1,7 @@
-"""Dashboard Sheets held in Egeria: list, show, run a placement as a tile, drill down (briefs B5, B7a; read only).
+"""Dashboard Sheets held in Egeria: list, show, run a placement as a tile, drill down (B5, B7a), and author (B7b).
 
 Every route reads as the signed-in user (their Egeria token); see advisor.egeria_dashboards for the
-visibility and cache rules. No route writes to Egeria.
+visibility and cache rules. Only the two /api/dashboards/author routes write, previewed then confirmed.
 """
 from __future__ import annotations
 
@@ -74,3 +74,26 @@ async def run_dashboard_detail(request: Request, name: str, position: int,
     body = body or {}
     return await _call(ed.run_detail, _viewer_creds(request), name, position,
                        perspective=body.get("perspective") or None, refresh=bool(body.get("refresh")))
+
+
+# ── authoring (brief B7b): preview, then confirm, then write, as this user ────
+
+@router.post("/api/dashboards/author/plan")
+async def plan_dashboard_change(request: Request, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Preview a change, writing nothing: every action it would make, as this user, plus a plan id.
+    Body: {"kind": "save" | "create_sheet" | "remove" | "move" | "delete_sheet", "request": {...}}."""
+    from advisor import egeria_dashboards_author as author
+    body = body or {}
+    req = body.get("request")
+    if not isinstance(body.get("kind"), str) or not isinstance(req, dict):
+        raise HTTPException(status_code=422, detail="kind (text) and request (an object) are required")
+    return await _call(author.plan, _viewer_creds(request), body["kind"], req)
+
+
+@router.post("/api/dashboards/author/apply")
+async def apply_dashboard_change(request: Request, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Write a previewed change, once. Body: {"plan_id", "confirm"}: true, or the sheet's name to delete it."""
+    from advisor import egeria_dashboards_author as author
+    body = body or {}
+    return await _call(author.apply, _viewer_creds(request), str(body.get("plan_id") or ""),
+                       confirm=body.get("confirm"))
