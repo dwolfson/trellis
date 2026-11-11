@@ -16,6 +16,9 @@ dependencies = [
     "trellis-vectorstore",
     "trellis-querycache",
     "trellis-auth[egeria]",
+    # The looks (Dark / Light / Paper) shared with Resource Explorer -- packages/trellis-ui, served at
+    # /static/trellis-ui/ (advisor/web/app.py).
+    "trellis-ui",
     "docling>=2.150.0",
     "click>=8.1.0",
     "rich>=13.7.0",

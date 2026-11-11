@@ -3,7 +3,7 @@
  * (The Classic UI had its own tailwind.config.js and tailwind.css; both were
  * deleted with Classic, 2026-10-21.)
  *
- * THE VALUES NOW LIVE IN static/next/themes.css (RULING-THEMES-PORTAL-DARK-LIGHT.md,
+ * THE VALUES NOW LIVE IN themes.css (packages/trellis-ui, shared with EA; RULING-THEMES-PORTAL-DARK-LIGHT.md,
  * 2026-10-20), one block per look (Dark, Light, Paper). This file holds the
  * token NAMES and points each at a CSS variable: a colour is
  * `rgb(var(--c-<name>) / <alpha-value>)` (channels, so `/20` opacity keeps
@@ -19,7 +19,9 @@
  * produced this split.
  */
 module.exports = {
-  content: ['../resource_explorer/web/static/next/**/*.{html,js}'],
+  // RE's files shared with EA (packages/trellis-ui) carry classes too (the look menu, markdown, tables): scanned,
+  // or those classes would silently drop out of this sheet.
+  content: ['../resource_explorer/web/static/next/**/*.{html,js}', '../../trellis-ui/trellis_ui/static/**/*.js'],
   theme: {
     extend: {
       colors: {

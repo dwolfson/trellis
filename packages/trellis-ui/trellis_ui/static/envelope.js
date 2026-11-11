@@ -15,7 +15,7 @@
  * problem — it lives in format.js, which nothing here or in app.js needs to
  * import back — so it is imported normally.
  */
-import { whenMs, houseTime } from '/static/next/format.js';
+import { whenMs, houseTime } from '/static/trellis-ui/format.js';
 
 /** Fact states, from surveyors/result_status.py. */
 export const MEASURED = 'measured';

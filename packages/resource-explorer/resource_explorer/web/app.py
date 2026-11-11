@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+import trellis_ui
 
 from resource_explorer.web.routes import work_lists as work_lists_routes
 from resource_explorer.web.routes import quality_batch as quality_batch_routes
@@ -487,6 +488,9 @@ app.include_router(work_lists_routes.router, prefix="/api/work-lists", tags=["wo
 app.include_router(quality_batch_routes.router, prefix="/api/quality-batch", tags=["quality-batch"])
 
 _STATIC = Path(__file__).parent / "static"
+# The files RE shares with EA (packages/trellis-ui: the looks, column resizing, markdown, the envelope renderer),
+# at /static/trellis-ui/. Mounted FIRST: Starlette matches mounts in order, and "/static" would answer these paths.
+trellis_ui.mount(app)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 
