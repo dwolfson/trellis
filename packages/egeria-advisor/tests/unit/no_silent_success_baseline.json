@@ -62,6 +62,5 @@
   "advisor/web/drafts.py::patch_draft_commands": 1,
   "advisor/web/feedback.py::feedback_extended": 1,
   "advisor/web/reports.py::patch_report_draft_columns": 1,
-  "advisor/web/shared.py::_load_report_catalog": 2,
   "advisor/web/templates.py::get_column_fields": 1
 }

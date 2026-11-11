@@ -132,6 +132,72 @@ function _renderSpecInfo(meta, draftId) {
 
   details.appendChild(body);
   container.insertAdjacentElement('afterbegin', details);
+  details.insertAdjacentElement('afterend', _renderSavedQuerySource(meta, draftId));
+}
+
+// Route B (brief B6, N6): a SavedQuery as the spec's source -> analytic_function: saved_query
+// with {name, mode, output, params}. The server checks the shape (400 with words); pyegeria checks
+// the values at run time, and a Smart Collection refuses values other than its stored ones (P-3).
+const _SMART_COLLECTION_NOTE = "A Smart Collection's cached answer stands only for the values its last " +
+  "refresh recorded; a different value is refused (Egeria re-runs the stored request itself). Use live " +
+  "mode to run it with other values.";
+
+function _renderSavedQuerySource(meta, draftId) {
+  const sq = meta.saved_query || null;
+  const wrap = document.createElement('details');
+  wrap.className = 'border-b border-slate-700/50';
+  wrap.open = !!sq;
+  const sum = document.createElement('summary');
+  sum.className = 'px-3 py-1.5 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer select-none list-none';
+  sum.textContent = 'Source: ' + (sq ? 'saved query' : 'find method (action function)');
+  wrap.appendChild(sum);
+  const box = document.createElement('div');
+  box.className = 'px-3 pb-2 flex flex-col gap-1 text-[11px] text-slate-300';
+  const field = (label, el) => {
+    const row = document.createElement('label');
+    row.className = 'grid grid-cols-[6rem_1fr] gap-2 items-center';
+    const t = document.createElement('span'); t.className = 'text-slate-500'; t.textContent = label;
+    row.append(t, el); return row;
+  };
+  const cls = 'bg-slate-700 border border-slate-600 rounded px-1.5 py-0.5 text-slate-200';
+  const use = document.createElement('input'); use.type = 'checkbox'; use.checked = !!sq;
+  const name = document.createElement('input'); name.className = cls; name.placeholder = 'the SavedQuery qualifiedName'; name.value = sq?.name || '';
+  const mode = document.createElement('select'); mode.className = cls;
+  [['cached', 'cached (its Results Set, as of the last refresh)'], ['live', 'live (run now, as the viewer)']]
+    .forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; o.selected = (sq?.mode || 'cached') === v; mode.appendChild(o); });
+  const output = document.createElement('select'); output.className = cls;
+  [['count', 'count (a KPI)'], ['list', 'list (the elements)']]
+    .forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; o.selected = (sq?.output || 'count') === v; output.appendChild(o); });
+  const params = document.createElement('textarea'); params.className = cls + ' font-mono'; params.rows = 2;
+  params.placeholder = '{"status": "ACTIVE"}  (values for the query\'s declared parameters)';
+  params.value = sq?.params && Object.keys(sq.params).length ? JSON.stringify(sq.params) : '';
+  const note = document.createElement('div'); note.className = 'text-slate-500'; note.textContent = _SMART_COLLECTION_NOTE;
+  const msg = document.createElement('div'); msg.className = 'text-rose-300';
+  const save = _debounce(async () => {
+    msg.textContent = '';
+    let body;
+    if (!use.checked) body = { saved_query: null };
+    else {
+      let p = {};
+      if (params.value.trim()) {
+        try { p = JSON.parse(params.value); } catch { msg.textContent = 'Params must be a JSON object, e.g. {"status": "ACTIVE"}.'; return; }
+      }
+      body = { saved_query: { name: name.value.trim(), mode: mode.value, output: output.value, params: p } };
+      if (!body.saved_query.name) { msg.textContent = 'Name the saved query (its qualifiedName).'; return; }
+    }
+    try {
+      const r = await fetch(`/api/reports/drafts/${encodeURIComponent(draftId)}/columns`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() }, body: JSON.stringify(body),
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); msg.textContent = d.detail || `Not saved: HTTP ${r.status}`; return; }
+      sum.textContent = 'Source: ' + (use.checked ? 'saved query' : 'find method (action function)');
+    } catch (e) { msg.textContent = `Not saved: ${e.message}`; }
+  }, 600);
+  [use, name, mode, output, params].forEach(el => el.addEventListener(el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input', save));
+  box.append(field('Use a saved query', use), field('Name', name), field('Mode', mode), field('Output', output),
+    field('Params', params), note, msg);
+  wrap.appendChild(box);
+  return wrap;
 }
 
 // Render all three parameter sections into #rcanvas-params
@@ -259,6 +325,7 @@ const _reportAdapter = {
         doc_id: spec.doc_id,
         answers: spec.answers || {},
         action_function: spec.action_function,
+        saved_query: spec.saved_query || null,
         target_type: spec.target_type,
         content_filters:   spec.content_filters   || { search_string: '*' },
         shape_defaults:    spec.shape_defaults     || {},

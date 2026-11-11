@@ -180,7 +180,19 @@ class SyncBusy(RuntimeError):
     """A sync is already running (in this process, or another holding the cache lock)."""
 
 
-def sync_now(*, client_factory: Optional[Callable[[], Any]] = None) -> Dict[str, Any]:
+SYNC_BUSY_MESSAGE = "A report spec sync is already running."
+
+
+def _claim() -> None:
+    """Mark a sync as running, or raise SyncBusy. Under the lock, so two starts never both run."""
+    with _lock:
+        if _state["state"] == "running":
+            raise SyncBusy(SYNC_BUSY_MESSAGE)
+        _state.update(state="running", started_at=_now(), finished_at=None, error=None)
+        _state["attempts"] += 1
+
+
+def sync_now(*, client_factory: Optional[Callable[[], Any]] = None, _claimed: bool = False) -> Dict[str, Any]:
     """Run one sync and return `egeria_held_status()` afterwards. Raises SyncBusy if one is running.
 
     Any other failure (Egeria unreachable, incomplete connection) is recorded, not raised: the
@@ -188,11 +200,8 @@ def sync_now(*, client_factory: Optional[Callable[[], Any]] = None) -> Dict[str,
     """
     from pyegeria.view.egeria_spec_cache import SyncAlreadyRunning, sync_report_specs
 
-    with _lock:
-        if _state["state"] == "running":
-            raise SyncBusy("a report spec sync is already running")
-        _state.update(state="running", started_at=_now(), finished_at=None, error=None)
-        _state["attempts"] += 1
+    if not _claimed:
+        _claim()
     folders = configured_folders()
     try:
         if client_factory is None:
@@ -238,6 +247,38 @@ def _after_sync() -> None:
         egeria_dashboards.invalidate()
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"dashboard cache not invalidated after sync: {exc}")
+
+
+def start_sync(*, client_factory: Optional[Callable[[], Any]] = None) -> Dict[str, Any]:
+    """Start one sync in a background thread and return at once (G2: the admin action no longer
+    holds the request open while Egeria is read). Raises SyncBusy ("a sync is already running")
+    when one is running; poll `sync_status()` for the outcome."""
+    _claim()
+
+    def _run():
+        try:
+            sync_now(client_factory=client_factory, _claimed=True)
+        except SyncBusy as exc:  # another *process* holds the cache lock; recorded by sync_now
+            logger.info(f"Report spec sync not run: {exc}")
+
+    threading.Thread(target=_run, name="ea-report-spec-sync-admin", daemon=True).start()
+    return sync_status()
+
+
+def sync_status() -> Dict[str, Any]:
+    """{"state": not_synced | running | ok | failed, "running": bool, "started_at", "finished_at",
+    "error", "message", "egeria_held"}: what to poll after `start_sync`."""
+    held = egeria_held_status()
+    with _lock:
+        st = dict(_state)
+    running = st["state"] == "running"
+    if running:
+        message = f"Syncing report specs from Egeria (started {st['started_at']})."
+    else:
+        message = held.get("message") or (f"{held['count']} report spec(s) held in Egeria, from "
+                                          f"{', '.join(held.get('folders') or [])}.")
+    return {"state": st["state"], "running": running, "started_at": st["started_at"],
+            "finished_at": st["finished_at"], "error": st["error"], "message": message, "egeria_held": held}
 
 
 def start_background_sync(*, backoff: tuple = STARTUP_BACKOFF_S,

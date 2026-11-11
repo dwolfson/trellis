@@ -146,10 +146,10 @@ def test_get_report_draft_schema_endpoint(monkeypatch):
     async def mock_discover(draft_id, egeria_credentials=None):
         captured["draft_id"] = draft_id
         captured["creds"] = egeria_credentials
-        return [{"attribute_path": "guid", "data_type": "string"}]
+        return {"state": "ok", "attributes": [{"attribute_path": "guid", "data_type": "string"}], "message": None}
 
     fake_creds = {"user_id": "test_user", "password": "", "token": "egeria-token"}
-    monkeypatch.setattr("advisor.web.reports.discover_draft_schema_internal", mock_discover)
+    monkeypatch.setattr("advisor.web.reports.discover_draft_schema_with_status", mock_discover)
     monkeypatch.setattr("advisor.auth.require_egeria_user", lambda request: {"user_id": "test_user"})
     monkeypatch.setattr("advisor.auth.get_egeria_credentials", lambda request: fake_creds)
 
