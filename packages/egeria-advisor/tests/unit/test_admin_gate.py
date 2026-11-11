@@ -82,8 +82,13 @@ def _nothing_real_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(shared, "_extended_feedback_path", lambda: ext, raising=False)
 
     class _Collector:
+        # S4's collector interface (feedback hotfix): the vote route calls record_vote and reads its
+        # query_metrics outcome; record_feedback is the CLI's bool wrapper.
+        def record_vote(self, **kw):
+            return {"query_metrics": "skipped"}
+
         def record_feedback(self, **kw):
-            pass
+            return True
 
         def get_feedback_stats(self):
             return {}
