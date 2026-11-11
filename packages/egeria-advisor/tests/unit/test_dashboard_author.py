@@ -160,6 +160,56 @@ def test_filing_says_so_when_the_folder_is_not_seeded(viewers, egeria):
     assert len(p["dr_egeria"]) == 1                         # no Add Member document was planned
 
 
+def test_a_dashes_or_line_break_value_cannot_strip_a_reports_zones(viewers, egeria):
+    """The dangerous case: a value that ends the Report's block before "### Zone Membership" would make a
+    restricted Report public. Refused before any Dr.Egeria run."""
+    for bad in ("---", "x\u2028---", "x\u2029### Zone Membership"):
+        req = {**SAVE, "zones": ["finance"], "report": {**SAVE["report"], "description": bad}}
+        assert author.plan(PETER, "save", req)["state"] == "refused", bad
+    assert egeria == []
+
+
+def test_two_plans_for_one_new_sheet_file_it_once(viewers, egeria):
+    """Read-back B7b #1: a double-clicked Preview, or two plans, used to file twice (Add Member does not
+    dedupe). Membership is read again at apply, so the second says "already filed"."""
+    peter = viewers[PETER_TOKEN]
+    folder = _folder(peter)
+    first, second = author.plan(PETER, "save", SAVE), author.plan(PETER, "save", SAVE)
+    assert first["filing"]["state"] == second["filing"]["state"] == "will_file"
+    one = author.apply(PETER, first["plan_id"], confirm=True)
+    two = author.apply(PETER, second["plan_id"], confirm=True)
+    assert one["filing"]["state"] == "filed"
+    assert two["state"] == "written" and two["filing"]["state"] == "already_filed"
+    dash = peter.by_qn("Dashboard::My Sheet")
+    assert sum(1 for r in peter.rels("CollectionMembership") if r["end1"] == folder and r["end2"] == dash) == 1
+    assert [w[0] for w in peter.writes].count("dr_egeria Add Member") == 1
+
+
+def test_a_filing_failure_says_why_and_never_fails_the_apply(viewers, egeria, monkeypatch):
+    peter = viewers[PETER_TOKEN]
+    _folder(peter)
+    real = author._run_dr_egeria
+
+    async def refusing(conn, markdown, directive):
+        if "## Add Member to Collection" in markdown and directive == "process":
+            raise RuntimeError("PROPERTY_SERVER_ERROR_500 the membership could not be stored")
+        return await real(conn, markdown, directive)
+    monkeypatch.setattr(author, "_run_dr_egeria", refusing)
+    out = _plan_and_apply(PETER, "save", SAVE)[1]
+    assert out["state"] == "written" and peter.by_qn("Dashboard::My Sheet")      # the sheet is written
+    assert out["filing"]["state"] == "not_filed"
+    assert "PROPERTY_SERVER_ERROR_500" in out["filing"]["message"] and "file it again" in out["filing"]["message"]
+
+
+def test_a_preview_of_an_already_filed_sheet_plans_no_filing(viewers, egeria):
+    peter = viewers[PETER_TOKEN]
+    _folder(peter)
+    _plan_and_apply(PETER, "save", SAVE)
+    import asyncio
+    state = asyncio.run(author._filing_state(peter, "My Sheet"))
+    assert state["state"] == "already_filed" and "dr_egeria" not in state
+
+
 def test_saving_to_an_existing_sheet_files_nothing(viewers, egeria):
     out = author.plan(PETER, "save", dict(SAVE, sheet=DEMO, new_sheet=None))
     assert out["state"] == "planned" and out["filing"] is None
@@ -188,6 +238,18 @@ def test_zones_are_only_set_on_a_new_sheet(viewers, egeria):
     ("description", "a | b"),
     ("description", "line\x00"),
     ("description", "x ___ y"),
+    # every line break str.splitlines() honours (pyegeria parses with it), read-back B7b #2
+    ("description", "a\u2028## Delete Collection X"),
+    ("description", "a\u2029## Delete Collection X"),
+    ("description", "a\x85## Delete Collection X"),
+    ("description", "a\x0b### Zone Membership"),
+    ("description", "a\x0c### Zone Membership"),
+    ("description", "a\x1c### Zone Membership"),
+    ("description", "a\x1e### Zone Membership"),
+    ("description", "---"),
+    ("description", "  -----  "),
+    ("description", "> quoted"),
+    ("description", " ### Zone Membership"),
 ])
 def test_user_text_cannot_become_dr_egeria_structure(viewers, egeria, field, value):
     req = {**SAVE, "report": {**SAVE["report"], field: value}}

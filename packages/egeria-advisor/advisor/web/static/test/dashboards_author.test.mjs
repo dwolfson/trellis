@@ -55,7 +55,8 @@ function makeWindow(answers) {
     const body = init && init.body ? JSON.parse(init.body) : null;
     w.calls.push({ url, body });
     const a = answers(url, body);
-    return { ok: true, status: 200, json: async () => a };
+    const status = (a && a.__status) || 200;     // an answer may carry an HTTP status, to test failures
+    return { ok: status < 400, status, json: async () => a };
   };
   w.eval(read('dashboards_view.js'));
   w.eval(read('dashboards_author.js'));
@@ -146,4 +147,28 @@ test('hooks: tiles get move / remove, the sheet gets delete, a report result get
   w.EADashAuthor.offerSave(failed, { query_type: 'general' });
   assert.equal(failed.querySelector('.dash-offer-save'), null);
   assert.doesNotMatch(read('dashboards_author.js'), /\son[a-z]+\s*=\s*["']/);
+});
+
+test('a sheet list that cannot be read says so, and is not passed off as "no sheets"', { skip: SKIP }, async () => {
+  const w = makeWindow((url) => url === '/api/dashboards' ? { __status: 503, detail: 'Egeria connection is not configured' } : {});
+  await w.EADashAuthor.openSave({ spec: 'S' });
+  const modal = w.document.querySelector('.dash-author-modal');
+  assert.equal(modal.querySelector('.dash-author-sheets-error').textContent,
+    'Could not read your sheets: Egeria connection is not configured');
+});
+
+test('zones that cannot be read say why, from the status or from the answer', { skip: SKIP }, async () => {
+  for (const [answer, words] of [
+    [{ __status: 500, detail: 'boom' }, 'Could not read zones: boom'],
+    [{ state: 'read_failed', message: 'Egeria refused the zone read', zones: [] }, 'Could not read zones: Egeria refused the zone read'],
+    [{ zones: [], count: 0, error: 'ConnectionError: refused' }, 'Could not read zones: ConnectionError: refused'],
+  ]) {
+    const w = makeWindow((url) => url === '/api/egeria/zones' ? answer : { state: 'ok', sheets: [] });
+    await w.EADashAuthor.openSave({ spec: 'S' });
+    const vis = [...w.document.querySelectorAll('.dash-author-zones select')][0];
+    vis.value = 'zones';
+    vis.dispatchEvent(new w.Event('change'));
+    await tick();
+    assert.equal(w.document.querySelector('.dash-author-zones-error').textContent, words);
+  }
 });
