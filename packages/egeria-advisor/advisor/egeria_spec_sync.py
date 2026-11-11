@@ -35,11 +35,10 @@ That is right only for **public** specs. Two consequences:
   whole consumer silently unpublish, which `folder_not_found` below reports as "not found, or not
   visible to <service account>".
 - **Zone-restricted specs must never enter this shared cache** (EA brief §4.6 revised by D5).
-  pyegeria's `sync_report_specs` has no `public_only` option yet (it is B6 work). Until it does,
-  this sync relies on the folder holding no restricted specs: today nothing in EA's folder is
-  zoned (the folder does not exist yet). When B6 lands, pass `public_only=True` here (see
-  `_sync_kwargs`), report its skipped-restricted count, and read restricted specs per signed-in
-  user, cached by credential identity, never through this module.
+  pyegeria (>= 6.2.33) enforces this itself: a sync with `shared=True` skips every zoned spec as
+  "zoned: not synced into a shared cache" and prunes a cached copy. The status reports how many were
+  skipped. Restricted specs are read per signed-in user, cached by credential identity (B6), never
+  through this module.
 
 Recursion
 ---------
@@ -126,13 +125,11 @@ def _sync_kwargs() -> Dict[str, Any]:
 
     `shared=True`: one cache read by every EA user (see "Visibility" in the module docstring).
     `recursive=True`: only when pyegeria accepts it (consumer-folders phase 2).
-    `public_only=True`: only when pyegeria accepts it (B6); keeps zoned specs out of the shared cache.
+    Zoned specs are kept out by pyegeria itself because the cache is shared (>= 6.2.33).
     """
     kwargs: Dict[str, Any] = {"shared": True}
     if _supports("recursive"):
         kwargs["recursive"] = True
-    if _supports("public_only"):
-        kwargs["public_only"] = True
     return kwargs
 
 
@@ -321,14 +318,19 @@ def egeria_held_status() -> Dict[str, Any]:
         "identity": st.get("identity"), "error": st.get("error"),
         "visibility": ("public specs only, read as EA's service account into a cache shared by every "
                        "EA user; zone-restricted specs are not read here"),
-        # C1 (Architect read-back, 2026-11-10): until pyegeria's sync takes public_only (B6), nothing
-        # stops a zoned spec the service account can read from entering the shared cache. The
-        # consumer-folders rule (no zoned spec in a consumer folder until B6) is what holds today;
-        # say so rather than imply a filter that is not there.
-        "zone_filter": "applied" if _supports("public_only") else "not applied",
+        # B0: pyegeria (>= 6.2.33) skips zoned specs from a shared cache; say how many, from the report.
+        "zone_filter": _zone_filter_words(report, skipped),
     }
     out["reason"], out["message"] = _explain(out, st, identity)
     return out
+
+
+def _zone_filter_words(report: Dict[str, Any], skipped: List[List[str]]) -> str:
+    """How many zoned specs the last sync kept out of the shared cache. Never "0" before a sync ran."""
+    if not report:
+        return "zoned specs are skipped from the shared cache; no sync has run yet"
+    n = sum(1 for _who, why in skipped if str(why).startswith("zoned"))
+    return f"zoned specs skipped from the shared cache: {n}"
 
 
 def _explain(out: Dict[str, Any], st: Dict[str, Any], identity: str):

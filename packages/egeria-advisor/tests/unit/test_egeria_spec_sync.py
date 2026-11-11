@@ -94,10 +94,14 @@ def test_sync_is_shared_and_never_asks_recursion_pyegeria_lacks():
 
 
 def test_zone_filter_status_is_stated():
-    """C1: while pyegeria's sync has no public_only, the status says the zone filter is not applied."""
-    applied = ess._supports("public_only")
-    assert ess.egeria_held_status()["zone_filter"] == ("applied" if applied else "not applied")
-    assert ("public_only" in ess._sync_kwargs()) == applied
+    """B0: pyegeria skips zoned specs from a shared cache itself; EA never asks for public_only and the
+    status says how many the last sync skipped (and that none ran, rather than "0", before a sync)."""
+    assert "public_only" not in ess._sync_kwargs()
+    assert ess._zone_filter_words({}, []) == "zoned specs are skipped from the shared cache; no sync has run yet"
+    report = {"skipped": [["A", "zoned: not synced into a shared cache (until B6's public-only read); zones z"],
+                          ["B", "not a report spec"]]}
+    assert ess._zone_filter_words(report, report["skipped"]) == "zoned specs skipped from the shared cache: 1"
+    assert ess._zone_filter_words({"skipped": []}, []) == "zoned specs skipped from the shared cache: 0"
 
 
 # ── absence messages: never a bare empty list ──────────────────────────────────
