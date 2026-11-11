@@ -773,10 +773,23 @@ class IngestionPipeline:
         from resource_explorer.ingestion.doc_parser import DocChunk, DocParser
         parser = DocParser(ctype.chunk_size, ctype.chunk_overlap)
         chunks = []
-        all_files = (
+        from resource_explorer.ingestion.site_templates import skip_reason
+        candidates = (
             self._local_files(local_root, ctype.file_extensions)
             + self._local_files_for_paths(extra_paths or [], ctype.file_extensions)
         )
+        # Site-generator scaffolding (template folders, redirect stubs) is not documentation: it
+        # made the whole of egeria_docs' web_docs collection (site/overrides). Skipped and counted.
+        all_files, skipped = [], {}
+        for path, content in candidates:
+            reason = skip_reason(path, content)
+            if reason:
+                skipped.setdefault(reason, []).append(path)
+            else:
+                all_files.append((path, content))
+        for reason, paths in skipped.items():
+            self.console.print(f"  [dim]web_docs: skipped {len(paths)} {reason} file(s): "
+                               f"{', '.join(paths[:5])}{' ...' if len(paths) > 5 else ''}[/dim]")
         for path, content in all_files:
             text = re.sub(r"<[^>]+>", " ", content)
             text = re.sub(r"\s+", " ", text).strip()
