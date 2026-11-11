@@ -35,6 +35,10 @@ const opts = { skip: !REQUIRED && SKIP };
 
 const ADVISOR = 'ReportSpecFolder::Consumer::EgeriaAdvisor';
 const PORTAL = 'ReportSpecFolder::Consumer::Portal';
+// The facet and the index use consumer DISPLAY names (live shape on laz: tests/unit/fixtures/egeria_live/
+// consumer_index.json); restricted specs list folder QNs plus the server's `used_by` names.
+const ADVISOR_NAME = 'Egeria Advisor';
+const PORTAL_NAME = 'Portal';
 const HOSTILE = '<img src=x onerror=alert(1)>';
 
 function setup(posts = [], zonesReply = { ok: true, status: 200, data: { zones: ['finance', 'hr'], count: 2 } }) {
@@ -73,8 +77,9 @@ function catalog(w, rows) {
 
 const DATA = {
   sources: { 'Spec-A': { source: 'builtin' }, 'Mine': { source: 'user' }, 'Held': { source: 'egeria' } },
-  used_by: { state: 'ok', consumers: [ADVISOR, PORTAL], index: { 'Held': [ADVISOR], 'Spec-A': [PORTAL] }, message: null },
-  restricted: { state: 'ok', specs: [{ label: 'Spec-Fin', zones: ['finance'], folders: [ADVISOR] }], message: null },
+  used_by: { state: 'ok', consumers: [ADVISOR_NAME, PORTAL_NAME], folders: { [ADVISOR]: ADVISOR_NAME, [PORTAL]: PORTAL_NAME },
+    index: { 'Held': [ADVISOR_NAME], 'Spec-A': [PORTAL_NAME] }, message: null },
+  restricted: { state: 'ok', specs: [{ label: 'Spec-Fin', zones: ['finance'], folders: [ADVISOR], used_by: [ADVISOR_NAME] }], message: null },
   catalog_status: { message: '2 spec(s) are not listed because they cannot run; each says why.', unrunnable: [] },
 };
 
@@ -96,7 +101,7 @@ test('"Used by" filters the catalog rows', opts, () => {
   const el = catalog(w, [['Spec-A', 'builtin'], ['Mine', 'user'], ['Held', 'egeria']]);
   w.SpecsPublish.onCatalog(DATA, el);
   const sel = w.document.querySelector('#specs-used-by select');
-  sel.value = ADVISOR;
+  sel.value = ADVISOR_NAME;
   sel.dispatchEvent(new w.Event('change'));
   const shown = [...el.querySelectorAll('[data-spec-row]')].filter(r => r.style.display !== 'none')
     .map(r => r.querySelector('button[data-spec]').getAttribute('data-spec'));
@@ -193,11 +198,11 @@ test('"Used by" filters the restricted rows by their own folders', opts, () => {
   const w = setup();
   const el = catalog(w, [['Spec-A', 'builtin']]);
   const data = { ...DATA, restricted: { state: 'ok', specs: [
-    { label: 'Fin-EA', zones: ['finance'], folders: [ADVISOR] },
-    { label: 'Fin-Portal', zones: ['finance'], folders: [PORTAL] }] } };
+    { label: 'Fin-EA', zones: ['finance'], folders: [ADVISOR], used_by: [ADVISOR_NAME] },
+    { label: 'Fin-Portal', zones: ['finance'], folders: [PORTAL], used_by: [PORTAL_NAME] }] } };
   w.SpecsPublish.onCatalog(data, el);
   const sel = w.document.querySelector('#specs-used-by select');
-  sel.value = PORTAL;
+  sel.value = PORTAL_NAME;
   sel.dispatchEvent(new w.Event('change'));
   const shown = [...w.document.querySelectorAll('[data-restricted-row]')].filter(r => r.style.display !== 'none')
     .map(r => r.querySelector('button').firstChild.textContent);

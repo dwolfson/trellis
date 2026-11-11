@@ -88,6 +88,7 @@ async def list_reports(request: Request, include_dre: bool = False, refresh: boo
                for n in listed}
     shadowed = [{"name": n, **v} for n, v in sorted(all_sources.items()) if v.get("shadowed_by")]
     restricted = await run_in_threadpool(_restricted_for, request, refresh)
+    used_by = rs.used_by_index()
     return {
         "catalog": catalog,
         "formats": formats,
@@ -98,8 +99,8 @@ async def list_reports(request: Request, include_dre: bool = False, refresh: boo
         "shadowed": shadowed,
         "egeria_held": egeria_held_status(),
         "catalog_status": catalog_status,
-        "restricted": restricted,
-        "used_by": rs.used_by_index(),
+        "restricted": rs.with_used_by(restricted, used_by),
+        "used_by": used_by,
         "publish": _publish_status(),
     }
 
