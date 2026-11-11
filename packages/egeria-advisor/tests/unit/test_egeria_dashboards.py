@@ -245,6 +245,23 @@ def test_notes_with_sheets_are_the_message(viewers, monkeypatch):
     assert out["message"] == cap["notes"][0]
 
 
+@pytest.mark.parametrize("folder, words", [
+    ({"qualifiedName": EA_FOLDER, "status": "not read", "reason": "Egeria answered 500", "sheets": 0},
+     f"{EA_FOLDER}: Egeria answered 500"),
+    ({"qualifiedName": EA_FOLDER, "status": "not read", "reason": None, "sheets": 0}, f"{EA_FOLDER}: not read"),
+    ({"qualifiedName": EA_FOLDER, "status": None, "reason": None, "sheets": 0}, f"{EA_FOLDER}: not read"),
+])
+def test_an_unread_folder_with_no_notes_says_its_reason_or_status(viewers, monkeypatch, folder, words):
+    from pyegeria.view import dashboard_resolver
+    from pyegeria.view.dashboards import DashboardSheetListing
+    listing = DashboardSheetListing([], notes=[], folders=[folder])
+    monkeypatch.setattr(dashboard_resolver, "list_dashboard_sheets_for_viewer", lambda client, folders=None: listing)
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "no_sheets"
+    assert out["message"] == f"No Dashboard Sheets to show for erinoverview: {words}."
+    assert ": ." not in out["message"]
+
+
 def test_read_folders_with_no_sheets_keep_the_no_sheets_words(viewers, monkeypatch):
     from pyegeria.view import dashboard_resolver
     from pyegeria.view.dashboards import DashboardSheetListing

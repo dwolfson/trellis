@@ -207,8 +207,11 @@ def list_sheets(creds: Optional[Dict[str, str]], *, refresh: bool = False,
     if not out["sheets"]:
         out["state"] = "no_sheets"
         if unread:
-            # A folder that was not found or not read is not an empty one: say the folder's own reason.
-            out["message"] = f"No Dashboard Sheets to show for {viewer}: " + "; ".join(notes) + "."
+            # A folder that was not found or not read is not an empty one: say the folder's own reason. With
+            # no notes, each unread folder's own `reason`, else its status ("not read").
+            why = notes or [f"{f.get('qualifiedName') or 'a dashboard folder'}: "
+                            f"{f.get('reason') or f.get('status') or 'not read'}" for f in unread]
+            out["message"] = f"No Dashboard Sheets to show for {viewer}: " + "; ".join(why) + "."
         else:
             out["message"] = (f"Egeria holds no Dashboard Sheets that {viewer} can see. None may exist yet, "
                               "or every one may be in a zone you cannot see."
