@@ -186,6 +186,18 @@ class TestUsedBy:
         assert other["used_by"] == ["ReportSpecFolder::SomethingElse"]
         assert out["state"] == "ok"
 
+    def test_a_restricted_spec_in_a_consumer_sub_folder_is_used_by_that_consumer(self, monkeypatch):
+        self._live(monkeypatch)
+        used_by = rs.used_by_index()
+        restricted = {"state": "ok", "specs": [
+            {"label": "Spec-Sub", "zones": ["finance"], "folders": [f"{ADVISOR}::Finance::Quarterly"]},
+            # a sibling whose name merely starts the same way is not a sub-folder
+            {"label": "Spec-Lookalike", "zones": ["hr"], "folders": [f"{ADVISOR}Archive"]}]}
+        sub, lookalike = rs.with_used_by(restricted, used_by)["specs"]
+        assert sub["used_by"] == ["Egeria Advisor"]
+        assert lookalike["used_by"] == [f"{ADVISOR}Archive"]
+        assert rs.consumer_display(ADVISOR, used_by["folders"]) == "Egeria Advisor"
+
 
 # ── publish and withdraw ───────────────────────────────────────────────────────
 

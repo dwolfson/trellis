@@ -176,12 +176,28 @@ def used_by_index() -> Dict[str, Any]:
     return {"state": "ok", "index": index, "consumers": consumers, "folders": folders, "message": None}
 
 
+def consumer_display(folder_qn: str, names: Dict[str, str]) -> str:
+    """The consumer a folder belongs to, by display name.
+
+    - A consumer folder: its own name.
+    - A sub-folder (`ReportSpecFolder::Consumer::EgeriaAdvisor::Finance`): the name of the consumer whose
+      qualified name is its longest `::` prefix. Consumer folders are walked recursively, so a spec
+      there is used by that consumer.
+    - Anything else keeps its qualified name: shown, and never matched by a facet choice."""
+    if folder_qn in names:
+        return names[folder_qn]
+    best = ""
+    for qn in names:
+        if folder_qn.startswith(qn + "::") and len(qn) > len(best):
+            best = qn
+    return names[best] if best else folder_qn
+
+
 def with_used_by(restricted: Dict[str, Any], used_by: Dict[str, Any]) -> Dict[str, Any]:
-    """Each restricted spec gains `used_by`: its folders as the facet names them (display names).
-    A folder the consumer index does not list keeps its qualified name, so it is still shown, and
-    the facet, whose choices are display names, never matches it by accident."""
+    """Each restricted spec gains `used_by`: its folders as the facet names them (consumer display
+    names, `consumer_display`)."""
     names = (used_by or {}).get("folders") or {}
-    specs = [{**s, "used_by": sorted({names.get(f, f) for f in (s.get("folders") or [])})}
+    specs = [{**s, "used_by": sorted({consumer_display(f, names) for f in (s.get("folders") or [])})}
              for s in (restricted or {}).get("specs") or []]
     return {**(restricted or {}), "specs": specs}
 
