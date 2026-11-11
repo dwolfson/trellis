@@ -9,7 +9,8 @@ The rules, all decided by the project owner or required by the architect's read-
   `{slug}_{type}__rebuild`, with chunk ids minted under the live name (`vector_store_pg.insert(id_collection=)`), from
   one download at a recorded commit. Chat keeps reading the live index.
 * **Check.** Old and new counts per type; a type that had chunks and is still proposed but now has none is refused;
-  each built table must own its vector index.
+  each built table must own its vector index. One exception: a web_docs whose every HTML file is site scaffolding
+  (site_templates.py) is a planned drop, listed as dropped with a note.
 * **The first rebuild ever is held** for an admin to accept (Q7), and timed; later ones go straight on.
 * **Survey writes after the check, before the swap** (Q6, the architect's Q6 points): the pipeline's other writers, from
   a download of the same commit. Not undone by an undo. Each is listed in the result.
@@ -353,6 +354,8 @@ def _build(r: _Run) -> None:
             kw = {"extra_paths": extra} if extra and ct.name in doc_types else {}
             if ct.name == "pdfs":
                 d.pipeline.pdf_failures = []
+            if ct.name == "web_docs":
+                d.pipeline.last_web_docs_scaffolding = None
             new = d.pipeline._ingest_collection(repo, slug, aside(name), ct,
                                                 root if ct.name != "release_notes" else None, id_collection=name,
                                                 **kw)
@@ -360,11 +363,19 @@ def _build(r: _Run) -> None:
             counts[name] = {"old": old, "new": int(new or 0)}
             if ct.name == "pdfs":
                 counts[name].update(_pdf_files(d, name, live))
+            if ct.name == "web_docs" and not new:
+                counts[name].update(_web_docs_scaffolding(d))
     for name in live:
         if name not in proposed:
             counts[name] = {"old": d.store.count(name) if d.store.collection_exists(name) else 0, "new": None}
+    # web_docs whose every HTML file is site-generator scaffolding (template folders, redirect stubs) is a PLANNED
+    # drop, not a regression: the old chunks were the scaffolding (egeria_docs, owner 2026-11-11, option A).
+    scaffolding = sorted(n for n, c in counts.items() if c.get("scaffolding_only"))
+    for n in scaffolding:
+        if d.store.collection_exists(aside(n)):
+            d.store.drop_collection(aside(n))
     refused = [f"{n} had {c['old']} chunk(s) and now has none" for n, c in counts.items()
-               if c["new"] == 0 and c["old"] > 0]
+               if c["new"] == 0 and c["old"] > 0 and not c.get("scaffolding_only")]
     # A PDF that HAS live chunks and now yields no text would replace them with none (laz 2026-11-10: Docling
     # returned empty documents without raising): that is a regression, and the rebuild refuses rather than swap a
     # smaller index in quietly. A PDF that had no live chunks either (image-only, corrupt) loses nothing, so it is a
@@ -381,18 +392,32 @@ def _build(r: _Run) -> None:
         if c.get("duplicates"):
             notes.append(f"{n}: {len(c['duplicates'])} PDF(s) left with no chunks, all duplicates "
                          f"({_shown(c['duplicates'])})")
+        if c.get("scaffolding_only"):
+            notes.append(f"{n}: every HTML file ({c['scaffolding_only']}) is site scaffolding "
+                         f"({_shown(c.get('scaffolding_files') or [])}); collection dropped")
     unindexed = [n for n, c in counts.items() if c["new"] and not d.store.has_vector_index(aside(n))]
     if unindexed:
         refused.append("these rebuilt tables have no vector index: " + ", ".join(unindexed))
     added = sorted(n for n, c in counts.items() if c["new"] and n not in live)
-    dropped = sorted(n for n in live if n not in proposed)
+    dropped = sorted(n for n in live if n not in proposed or n in scaffolding)
     kept = sorted(n for n, c in counts.items() if c["new"] and n in live)
-    words = "; ".join(f"{n}: {c['old']} → {c['new'] if c['new'] is not None else 'dropped'}"
+    words = "; ".join(f"{n}: {c['old']} → {c['new'] if c['new'] is not None and n not in scaffolding else 'dropped'}"
                       for n, c in sorted(counts.items()))
     if notes:
         words += "; note: " + "; ".join(notes)
     r.step("built", f"built: {words}", sha=sha, counts=counts, added=added, dropped=dropped, kept=kept,
            built_seconds=round(time.monotonic() - started, 1), refused="; ".join(refused), notes=notes)
+
+
+def _web_docs_scaffolding(d: Deps) -> dict:
+    """For a web_docs that came back empty: `scaffolding_only` (the number of HTML files) when every one of them was
+    site scaffolding, so the empty result is the plan and not a regression; nothing otherwise."""
+    sc = getattr(d.pipeline, "last_web_docs_scaffolding", None) or {}
+    skipped = sc.get("skipped") or {}
+    files = [f"{path} ({reason})" for reason, paths in sorted(skipped.items()) for path in paths]
+    if sc.get("candidates") and len(files) == sc["candidates"]:
+        return {"scaffolding_only": sc["candidates"], "scaffolding_files": files}
+    return {}
 
 
 def _shown(items: list[str], n: int = 3) -> str:

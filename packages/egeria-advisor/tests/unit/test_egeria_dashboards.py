@@ -291,9 +291,14 @@ class FakePipeline:
         return {"view_server": "fake-view", "platform_url": "https://fake:9443",
                 "user_id": egeria_credentials["user_id"], "user_pwd": "", "token": egeria_credentials["token"]}
 
-    def _execute_report(self, query, report_name, **kw):
+    def exec_spec_raw(self, report_name, **kw):
         self.calls.append((report_name, kw))
-        return {"response": f"| ran {report_name} |"}
+        return {"kind": "text", "content": f"| ran {report_name} |"}, None
+
+    @staticmethod
+    def _format_output(raw, fmt, report_name, spec=None):
+        from advisor.report_pipeline import ReportPipeline
+        return ReportPipeline._format_output(raw, fmt, report_name, spec)
 
 
 def test_run_report_placement_as_the_viewer(viewers):
@@ -302,7 +307,8 @@ def test_run_report_placement_as_the_viewer(viewers):
     assert out["state"] == "ok" and out["response"] == "| ran Collections |"
     name, kw = pipe.calls[0]
     assert kw["egeria_credentials"] is PETER                      # the viewer's own credentials
-    assert kw["search_string"] == "Coco" and kw["output_type"] == "TABLE"
+    # B7a: the Report's own DICT is shown as a tile (B5 replaced it with TABLE).
+    assert kw["search_string"] == "Coco" and kw["output_type"] == "DICT"
 
 
 def test_restricted_text_and_absent_placements_never_run(viewers):
