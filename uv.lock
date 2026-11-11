@@ -2136,7 +2136,7 @@ requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pyegeria", specifier = ">=6.2.36" },
+    { name = "pyegeria", specifier = ">=6.2.37" },
     { name = "pygments", specifier = ">=2.17.0" },
     { name = "pygount", specifier = ">=1.6.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -2994,6 +2994,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/b6/b55c3f49042f1df3dcd422b7f224f939892ee94f22abcf503a9b7339eaf2/html5lib-1.1.tar.gz", hash = "sha256:b2e5b40261e20f354d198eae92afc10d750afb487ed5e50f9c4eaf07c184146f", size = 272215, upload-time = "2020-06-22T23:32:38.834Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl", hash = "sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d", size = 112173, upload-time = "2020-06-22T23:32:36.781Z" },
+]
+
+[[package]]
+name = "html5rdf"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/55/1b839c43f5ed8207e17a9a02d8b395179520b8b4f00c00a41e113bc205ca/html5rdf-1.2.1.tar.gz", hash = "sha256:ace9b420ce52995bb4f05e7425eedf19e433c981dfe7a831ab391e2fa2e1a195", size = 287899, upload-time = "2024-10-30T05:06:56.384Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/c9/f6e1e8567660bc5b0aba281f2b0017b2a7665fcad6bf3ed67286a0c72cd4/html5rdf-1.2.1-py2.py3-none-any.whl", hash = "sha256:1f519121bc366af3e485310dc8041d2e86e5173c1a320fac3dc9d2604069b83e", size = 109765, upload-time = "2024-10-30T05:06:52.507Z" },
 ]
 
 [[package]]
@@ -6324,6 +6333,18 @@ wheels = [
 ]
 
 [[package]]
+name = "owlrl"
+version = "7.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "rdflib" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/08/50dd7fd0c64775d3d6309f35c0cc9a9d635f392f94ee2c4f9122404f7f86/owlrl-7.6.2.tar.gz", hash = "sha256:c743f35c2d908396e77823852bb1ebbce88340cd49961493983bec42c93283a8", size = 48564, upload-time = "2026-07-08T08:38:26.462Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/5e/314be7440bf28dbd47f85321a7434c5b74179a762228487d6493c01bddce/owlrl-7.6.2-py3-none-any.whl", hash = "sha256:83347bf7f133979e87b2b18695d51d25510b99cec3f6919b5df05d4fbf058ae0", size = 55814, upload-time = "2026-07-08T08:38:23.842Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.2"
 source = { registry = "https://pypi.org/simple" }
@@ -7433,7 +7454,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.36"
+version = "6.2.37"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7442,6 +7463,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "inflect" },
+    { name = "jsonschema" },
     { name = "jupyter" },
     { name = "jupyter-notebook-parser" },
     { name = "loguru" },
@@ -7454,9 +7476,11 @@ dependencies = [
     { name = "pydevd-pycharm" },
     { name = "pyperclip" },
     { name = "pyrefly" },
+    { name = "pyshacl" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "python-dotenv" },
+    { name = "rdflib" },
     { name = "requests" },
     { name = "rich" },
     { name = "textual-serve" },
@@ -7467,9 +7491,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/25/73/e85ab70175ab00790bbca7f39e9b56e256134715a39c22d32790c82df684/pyegeria-6.2.36.tar.gz", hash = "sha256:414500374b8bdcc6abd633ad733632b292e05344a20f635304a493b14f4f504e", size = 2742844, upload-time = "2026-11-11T13:23:42.447Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/8c/f761ce0a722ab5057b758b85b82abef8893c8cd8fb069df3ac0cffbbc6a5/pyegeria-6.2.37.tar.gz", hash = "sha256:20385f742857a92ddc9b60fe54b450da6f02152f0f6fcc1ff55aa9f97f8e04c6", size = 2843801, upload-time = "2026-11-11T19:42:19.937Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ec/78/cae0827ff8d1293de71f92c755c125dd117b10272a0688a8fb4a72ef24c8/pyegeria-6.2.36-py3-none-any.whl", hash = "sha256:f085e37526bc9561abfb56f14c60ab319dda301b54ef95706ac6bfe3564d6ac9", size = 3289629, upload-time = "2026-11-11T13:23:39.888Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/75/32583abdd1203f8a135855de18053e8e9b7782e835c5a7c56cf8b245a879/pyegeria-6.2.37-py3-none-any.whl", hash = "sha256:56736de0bc49bee3a8de7600487aaea9d46d0b63ecbaed793889158ac7617ed1", size = 3366371, upload-time = "2026-11-11T19:42:17.821Z" },
 ]
 
 [[package]]
@@ -7744,6 +7768,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0f/06/810d31380f66c75e1c0779a408d3b16117b1b368b57894f6aa66bef21686/pyrefly-1.2.0-py3-none-win32.whl", hash = "sha256:8c90751de8506d938e8f802659c74cf35bd7a0036510ee6c634a38eebb280bfa", size = 13229447, upload-time = "2026-08-01T02:56:20.921Z" },
     { url = "https://files.pythonhosted.org/packages/ed/98/4dafa3c7a1caed2dc8cc708dde09ba27963c7736508f55b626fff3024113/pyrefly-1.2.0-py3-none-win_amd64.whl", hash = "sha256:8a8964c224ccc4882730130955815de21ff443c1ac3f0b90685b19bf63848170", size = 14087387, upload-time = "2026-08-01T02:56:23.188Z" },
     { url = "https://files.pythonhosted.org/packages/1b/1c/df3cb0a2e5591660ded7a1836cd2f29dc48c91adb1c0a3a700a96f6d09e1/pyrefly-1.2.0-py3-none-win_arm64.whl", hash = "sha256:3a90bb8df39dfbac74b1f3b2e9d7c526b8f80568884c3944d955023a73ebf61e", size = 13430873, upload-time = "2026-08-01T02:56:25.425Z" },
+]
+
+[[package]]
+name = "pyshacl"
+version = "0.40.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "owlrl" },
+    { name = "packaging" },
+    { name = "prettytable" },
+    { name = "rdflib", extra = ["html"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/1d/c9b408e6d60ce6594a3301333875b2be1f60d55331d51fcfd871c08c01da/pyshacl-0.40.2.tar.gz", hash = "sha256:3b089fcfe82dccca2a9d560d88665ca0345f828b9cf21de554e611a55c2c7277", size = 1447035, upload-time = "2026-10-28T22:09:27.082Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/82/bda70658932e3129f591f26174d432c72a9aca809e0848ea7a2e48fe5f6e/pyshacl-0.40.2-py3-none-any.whl", hash = "sha256:edf0a7c15074902a1a420e8cfb89a764a9eed990b6ea15b8c30c40f2220eef61", size = 1306905, upload-time = "2026-10-28T22:09:24.829Z" },
 ]
 
 [[package]]
@@ -8269,6 +8308,23 @@ wheels = [
 ]
 
 [[package]]
+name = "rdflib"
+version = "7.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyparsing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/f5/18bb77b7af9526add0c727a3b2048959847dc5fb030913e2918bf384fec3/rdflib-7.6.0.tar.gz", hash = "sha256:6c831288d5e4a5a7ece85d0ccde9877d512a3d0f02d7c06455d00d6d0ea379df", size = 4943826, upload-time = "2026-02-13T07:15:55.938Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/c2/6604a71269e0c1bd75656d5a001432d16f2cc5b8c057140ec797155c295e/rdflib-7.6.0-py3-none-any.whl", hash = "sha256:30c0a3ebf4c0e09215f066be7246794b6492e054e782d7ac2a34c9f70a15e0dd", size = 615416, upload-time = "2026-02-13T07:15:46.487Z" },
+]
+
+[package.optional-dependencies]
+html = [
+    { name = "html5rdf" },
+]
+
+[[package]]
 name = "readchar"
 version = "4.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -8557,7 +8613,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.2.36" },
+    { name = "pyegeria", specifier = ">=6.2.37" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
