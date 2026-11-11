@@ -139,3 +139,36 @@
 :root .btn-amber:hover { background: rgb(var(--ea-warn-solid)); color: #fff; }
 :root .btn-red:hover   { background: rgb(var(--ea-danger-solid)); color: #fff; }
 :root .btn-slate:hover { background: rgb(var(--ea-raised)); color: rgb(var(--ea-ink)); }
+
+/* ── Large tables in dashboard tiles (dashboards_view.js wrapTable; the Portal's .tbl-scroll, #833) ────────
+   A table scrolls inside its tile, both ways, with the header row kept in view, instead of growing the tile
+   without limit. Small tables lay out as before. Tables with 5 or more columns keep a 120px minimum column
+   width and scroll sideways rather than wrapping every few characters. */
+:root .dash-tbl-scroll { overflow: auto; max-width: 100%; margin-bottom: .5rem; }
+:root .dash-tile .dash-tbl-scroll { max-height: 420px; }
+:root .dash-tbl-scroll table.dash-tbl-wide { min-width: calc(var(--tbl-cols) * 120px); }
+/* Separate borders, not collapsed: with collapse the shared borders scroll with the table and the sticky
+   header does not cover them, so scrolled rows show through a 1-2px strip above the header (found on the
+   Portal). Each cell draws its right and bottom edge, the table its top and left: it looks the same. */
+:root .dash-tbl-scroll table {
+  border-collapse: separate; border-spacing: 0; margin-bottom: 0;
+  border-top: 1px solid rgb(var(--ea-raised)); border-left: 1px solid rgb(var(--ea-raised));
+}
+:root .dash-tbl-scroll th, :root .dash-tbl-scroll td { border-style: solid; border-width: 0 1px 1px 0; }
+/* Sticky and opaque in every look: --ea-card is a solid colour in each. */
+:root .dash-tbl-scroll thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: rgb(var(--ea-card)); box-shadow: inset 0 -1px 0 rgb(var(--ea-raised));
+}
+/* Always-visible scroll bars (WebKit/Blink hide overlay bars until you scroll). */
+:root .dash-tbl-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+:root .dash-tbl-scroll::-webkit-scrollbar-track { background: rgb(var(--ea-surface)); border-radius: 5px; }
+:root .dash-tbl-scroll::-webkit-scrollbar-thumb {
+  background: rgb(var(--ea-raised-hi)); border-radius: 5px; border: 2px solid rgb(var(--ea-surface));
+}
+:root .dash-tbl-scroll::-webkit-scrollbar-corner { background: rgb(var(--ea-surface)); }
+/* Firefox, scoped by a Firefox-only feature query: Chrome 121+ ignores the ::-webkit-scrollbar rules above
+   once scrollbar-width or scrollbar-color is set. */
+@supports (-moz-appearance: none) {
+  :root .dash-tbl-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--ea-raised-hi)) rgb(var(--ea-surface)); }
+}

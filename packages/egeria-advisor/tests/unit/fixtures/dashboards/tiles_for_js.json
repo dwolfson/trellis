@@ -97,7 +97,7 @@
  },
  "markdown_records": {
   "kind": "markdown",
-  "markdown": "| Zone Membership | Category | Description | Display Name | Legal | Qualified Name | URL | Version Identifier |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n|  | Roadmap | Punch list of remaining work for the Local Dashboards / Egeria Overview feature  | Local Dashboards - Next Steps | None | Coco Pharmaceuticals::WorkItemList::Local-Dashboards---Next-Steps::1.0 | None | 1.0 |"
+  "markdown": "| Zone Membership | Category | Description | Display Name | Legal | Qualified Name | URL | Version Identifier |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n|  | Roadmap | Punch list of remaining work for the Local Dashboards / Egeria Overview feature… | Local Dashboards - Next Steps | None | Coco Pharmaceuticals::WorkItemList::Local-Dashboards---Next-Steps::1.0 | None | 1.0 |\n\n*+3 more columns: Authors, Content Status, Purpose*"
  },
  "trend_exact": {
   "kind": "trend",

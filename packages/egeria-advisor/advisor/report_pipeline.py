@@ -21,6 +21,22 @@ from loguru import logger
 
 import numpy as np
 
+#: The generic markdown table (a result with no TABLE columns in its spec) keeps this much, and says what
+#: it left out ("+N more rows", "+N more columns: a, b, ..."); a cut cell ends in "…".
+MAX_TABLE_ROWS = 50
+MAX_TABLE_COLS = 8
+MAX_CELL_CHARS = 80
+#: A long list of hidden columns names the first few and counts the rest (as the Portal does).
+HIDDEN_COLS_NAMED = 6
+
+
+def hidden_columns_note(hidden: List[str]) -> str:
+    """"+2 more columns: x, y": names the columns past the cap, so a reader knows what is not shown."""
+    n = len(hidden)
+    named = ", ".join(str(c) for c in hidden[:HIDDEN_COLS_NAMED])
+    rest = n - min(n, HIDDEN_COLS_NAMED)
+    return f"+{n} more column{'' if n == 1 else 's'}: {named}" + (f", and {rest} more" if rest else "")
+
 
 def _run_async(coro, timeout: int = 90) -> Any:
     """Run an async coroutine from sync code safely."""
@@ -965,17 +981,37 @@ class ReportPipeline:
                 if k not in cols:
                     cols.append(k)
 
-        # Cap columns so the table stays readable (drop GUIDs / raw JSON blobs)
+        # Cap columns so the table stays readable (drop GUIDs / raw JSON blobs). A cap is counted, never
+        # silent: past MAX_TABLE_COLS / MAX_TABLE_ROWS the table is followed by "+N more ...", naming the
+        # hidden columns, and a cell cut at MAX_CELL_CHARS ends in "…".
         _skip = {"guid", "qualifiedName", "versions", "additionalProperties", "extendedProperties"}
-        display_cols = [c for c in cols if c.lower() not in _skip][:8] or cols[:8]
+        shown = [c for c in cols if c.lower() not in _skip] or cols
+        display_cols = shown[:MAX_TABLE_COLS]
+        hidden_cols = shown[MAX_TABLE_COLS:]
+
+        def _cell(value: Any) -> str:
+            text = str(value).replace("|", "\\|")
+            return text if len(text) <= MAX_CELL_CHARS else text[:MAX_CELL_CHARS - 1] + "…"
 
         header = "| " + " | ".join(display_cols) + " |"
         sep = "| " + " | ".join("---" for _ in display_cols) + " |"
         lines = [header, sep]
-        for row in rows[:50]:  # safety cap
-            cells = [str(row.get(c, "")).replace("|", "\\|")[:80] for c in display_cols]
+        for row in rows[:MAX_TABLE_ROWS]:
+            cells = [_cell(row.get(c, "")) for c in display_cols]
             lines.append("| " + " | ".join(cells) + " |")
 
+        more = []
+        if len(rows) > MAX_TABLE_ROWS:
+            n = len(rows) - MAX_TABLE_ROWS
+            more.append(f"+{n} more row{'' if n == 1 else 's'}")
+        if hidden_cols:
+            more.append(hidden_columns_note(hidden_cols))
+        if more:
+            lines.append("")                      # a blank line: the note is not another table row
+            note = "; ".join(more)
+            for ch in ("\\", "*", "_", "`", "|"):  # column names stay literal text, not emphasis or code
+                note = note.replace(ch, "\\" + ch)
+            lines.append("*" + note + "*")
         return "\n".join(lines)
 
     # Convenience MCP listing tools are ONLY equivalent to the plain "list all X"
