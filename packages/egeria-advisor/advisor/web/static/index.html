@@ -1601,6 +1601,7 @@ async function submitQuery(query, extra = {}) {
 // ── Shared result post-processing (called by both streaming and non-streaming) ──
 function _applyQueryResult(query, result, wrap) {
   const qtype = result.query_type || 'general';
+  if (window.EADashAuthor) EADashAuthor.offerSave(wrap, result);   // B7b: Save to a dashboard
   const routingAgentFromResult = result.routing_agent || qtype;
   const intent = result.intent || {};
   const isClarify = qtype === 'clarification';
@@ -3632,6 +3633,7 @@ function initReportCanvasResize() {
 <script src="/static/plan_editor.js?v=20260713a"></script>
 <script src="/static/report_spec_canvas.js?v=20260629i"></script>
 <script src="/static/specs_publish.js?v=20261111a"></script>
-<script src="/static/dashboards_view.js?v=20261111a"></script>
+<script src="/static/dashboards_view.js?v=20261111b"></script>
+<script src="/static/dashboards_author.js?v=20261111a"></script>
 </body>
 </html>

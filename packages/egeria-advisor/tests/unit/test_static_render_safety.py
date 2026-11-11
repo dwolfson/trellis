@@ -29,7 +29,8 @@ CDN = re.compile(r"cdn\.|jsdelivr|unpkg|cdnjs|googleapis\.com", re.I)
 # exemption is visible and is removed when S1's page lands: the test below fails once it is clean.
 CDN_EXEMPT = {"admin.html": "S1 owns admin.html in Phase 0; its Tailwind <script> is still on the CDN"}
 
-S2_FILES = ["index.html", "plan_editor.js", "report_spec_canvas.js", "render.js", "dashboards_view.js"]
+S2_FILES = ["index.html", "plan_editor.js", "report_spec_canvas.js", "render.js", "dashboards_view.js",
+            "dashboards_author.js"]
 
 
 def _page_files():
@@ -109,7 +110,8 @@ def test_no_inline_handler_built_from_values(name):
     assert bad == []
 
 
-@pytest.mark.parametrize("name", ["plan_editor.js", "report_spec_canvas.js", "dashboards_view.js"])
+@pytest.mark.parametrize("name", ["plan_editor.js", "report_spec_canvas.js", "dashboards_view.js",
+                                  "dashboards_author.js"])
 def test_no_inline_onclick_in_js_modules(name):
     assert 'onclick="' not in (STATIC / name).read_text()
 
@@ -149,7 +151,8 @@ def test_node_render_harness():
         if required:
             pytest.fail(f"EA_RENDER_HARNESS_REQUIRED=1 but {missing}: the security harness did not run")
         pytest.skip(missing)
-    # Every harness file: render.test.mjs (S2), look.test.mjs (A-U3), dashboards_view.test.mjs (B7a), and any added later.
+    # Every harness file: render.test.mjs (S2), look.test.mjs (A-U3), dashboards_view.test.mjs (B7a),
+    # dashboards_author.test.mjs (B7b), and any added later.
     files = sorted(str(f) for f in (STATIC / "test").glob("*.test.mjs"))
     assert any(f.endswith("render.test.mjs") for f in files)
     r = subprocess.run(["node", "--test", *files], capture_output=True, text=True, timeout=180)
