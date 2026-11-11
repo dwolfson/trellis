@@ -505,7 +505,9 @@ def _tile(raw: Any, fmt: str, spec: str, pipeline: Any) -> Dict[str, Any]:
                     "state": data.get("state"), "reason": data.get("state_reason"), "subtitle": data.get("subtitle")}
             if tile["capped"] and not tile["display"].startswith("≥"):
                 tile["display"] = f"≥{tile['at_least']}" if tile["at_least"] is not None else "not measured"
-            if "elements" in data:   # output "list": the count, and the members below it
+            # output "list": the count, and the members below it. A count answer carries
+            # elements: None (pyegeria always sends the key), so the key alone is not "a list".
+            if data.get("output") == "list" or data.get("elements") is not None:
                 tile["markdown"] = pipeline._format_output(data.get("elements") or [], "TABLE", spec)
         elif _is_trend(data):
             points = [_trend_point(p) for p in data]

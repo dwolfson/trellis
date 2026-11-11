@@ -133,6 +133,18 @@ def test_a_cached_saved_query_is_a_kpi_with_its_as_of_time():
     assert (t["kind"], t["display"], t["mode"], t["as_of"]) == ("kpi", "37", "cached", "2026-11-10T18:02:11+00:00")
 
 
+def test_a_count_answer_has_no_member_table_under_it():
+    # Real shape: pyegeria's count answer always sends "elements": None. The tile must not render
+    # "No results returned" under the number (live finding F1, 2026-11-11).
+    t = tile({"kind": "json", "data": SAVED["cached_count"]})
+    assert "markdown" not in t
+
+
+def test_a_list_answer_keeps_its_member_table():
+    t = tile({"kind": "json", "data": SAVED["cached_list"]})
+    assert t["kind"] == "kpi" and t.get("markdown")
+
+
 def test_a_capped_saved_query_is_a_lower_bound():
     t = tile({"kind": "json", "data": SAVED["cached_capped"]})
     assert t["display"] == f"{GE}30" and t["value"] is None and t["capped"] is True

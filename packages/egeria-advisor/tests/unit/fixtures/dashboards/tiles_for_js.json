@@ -254,8 +254,7 @@
   "mode": "cached",
   "state": "measured",
   "reason": "",
-  "subtitle": "as of 2026-11-10T18:02:11+00:00",
-  "markdown": "*No results returned for spec.*"
+  "subtitle": "as of 2026-11-10T18:02:11+00:00"
  },
  "saved_capped": {
   "kind": "kpi",
@@ -267,8 +266,7 @@
   "mode": "cached",
   "state": "measured",
   "reason": "",
-  "subtitle": "as of 2026-11-10T18:02:11+00:00 · at least 30: the read stopped at its bound",
-  "markdown": "*No results returned for spec.*"
+  "subtitle": "as of 2026-11-10T18:02:11+00:00 · at least 30: the read stopped at its bound"
  },
  "saved_live": {
   "kind": "kpi",
@@ -280,8 +278,7 @@
   "mode": "live",
   "state": "measured",
   "reason": "",
-  "subtitle": "as of 2026-11-11T08:44:32+00:00",
-  "markdown": "*No results returned for spec.*"
+  "subtitle": "as of 2026-11-11T08:44:32+00:00"
  },
  "empty": {
   "kind": "empty",
