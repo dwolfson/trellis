@@ -15,6 +15,7 @@ trimming, to keep the files small; no field was renamed or invented.
 | `get_actor_profiles_by_name_found.json` | `get_actor_profiles_by_name("Erin Overview")` | `class`, `elementHeader`, `properties` |
 | `get_all_technology_types_head.json` | `get_all_technology_types()`: the first 3 | none |
 | `refusals.json` | the text of three non-answers | none |
+| `consumer_index.json` | `egeria_spec_cache.build_consumer_index(client)` under pyegeria 6.2.34, as `erinoverview`, read on laz itself (`https://localhost:9443`) on 2026-11-11. Only reads are made: the RootCollection and its folders' members. No `consumers.json` is written. Consumers are named by display name ("Egeria Advisor"), each with its `qualifiedName`. | none |
 
 `refusals.json` holds three entries:
 - the string pyegeria returns for a name that matches nothing;

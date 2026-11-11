@@ -148,13 +148,43 @@ class TestUsedBy:
         out = rs.used_by_index()
         assert out["state"] == "not_read" and "no consumer index yet" in out["message"]
 
-    def test_the_index_is_passed_through(self, monkeypatch):
+    @staticmethod
+    def _live(monkeypatch):
+        """The consumer index as pyegeria 6.2.34 builds it on laz (fixtures/egeria_live/consumer_index.json):
+        consumers are dicts named by DISPLAY name, and `index` values are those names."""
+        import json
+        from pathlib import Path
         import pyegeria.view.egeria_spec_cache as esc
-        monkeypatch.setattr(esc, "read_consumer_index", lambda **k: {
-            "status": "read", "consumers": [ADVISOR, "ReportSpecFolder::Consumer::Portal"],
-            "index": {"Spec-A": [ADVISOR, "ReportSpecFolder::Consumer::Portal"]}}, raising=False)
+        live = json.loads((Path(__file__).parent / "fixtures" / "egeria_live" / "consumer_index.json").read_text())
+        monkeypatch.setattr(esc, "read_consumer_index", lambda **k: live, raising=False)
+        return live
+
+    def test_the_live_index_reads_with_display_names(self, monkeypatch):
+        live = self._live(monkeypatch)
         out = rs.used_by_index()
-        assert out["state"] == "ok" and out["index"]["Spec-A"][1].endswith("Portal") and out["message"] is None
+        assert out["state"] == "ok" and out["message"] is None
+        assert out["index"] == live["index"]                       # {"Saved Query Answer": ["Portal"], ...}
+        assert out["consumers"] == sorted(c["name"] for c in live["consumers"])
+        assert "Egeria Advisor" in out["consumers"] and ADVISOR not in out["consumers"]
+        assert out["folders"][ADVISOR] == "Egeria Advisor"
+        assert out["folders"]["ReportSpecFolder::Consumer::Portal"] == "Portal"
+        # every facet choice is a name the index uses, so filtering compares like with like
+        assert {n for v in out["index"].values() for n in v} <= set(out["consumers"])
+
+    def test_restricted_rows_are_named_the_way_the_facet_is(self, monkeypatch):
+        self._live(monkeypatch)
+        used_by = rs.used_by_index()
+        restricted = {"state": "ok", "message": None, "specs": [
+            {"label": "Spec-Fin", "zones": ["finance"], "folders": [ADVISOR, "ReportSpecFolder::Consumer::Portal"]},
+            {"label": "Spec-Elsewhere", "zones": ["hr"], "folders": ["ReportSpecFolder::SomethingElse"]}]}
+        out = rs.with_used_by(restricted, used_by)
+        fin, other = out["specs"]
+        assert fin["used_by"] == ["Egeria Advisor", "Portal"]
+        assert set(fin["used_by"]) <= set(used_by["consumers"])
+        assert fin["folders"] == [ADVISOR, "ReportSpecFolder::Consumer::Portal"]   # publish/withdraw still use QNs
+        # a folder that is not a consumer keeps its QN: shown, and never matched by a facet choice
+        assert other["used_by"] == ["ReportSpecFolder::SomethingElse"]
+        assert out["state"] == "ok"
 
 
 # ── publish and withdraw ───────────────────────────────────────────────────────

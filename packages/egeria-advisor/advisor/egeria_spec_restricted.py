@@ -127,30 +127,63 @@ def conn_user(creds: Optional[Dict[str, str]]) -> Optional[str]:
     return (creds or {}).get("user_id") or None
 
 
+def _consumer_names(raw: Any) -> Dict[str, str]:
+    """{qualifiedName: display name} for the consumer folders the index lists.
+
+    pyegeria's index lists each consumer as a dict, `{"name": "Egeria Advisor", "qualifiedName":
+    "ReportSpecFolder::Consumer::EgeriaAdvisor", ...}`, and keys `index` by that display NAME. That is
+    the live shape on laz, captured in tests/unit/fixtures/egeria_live/consumer_index.json. A bare
+    string, as an older writer might produce, is taken as a name that is also its own key."""
+    out: Dict[str, str] = {}
+    for c in raw or []:
+        if isinstance(c, dict):
+            name = c.get("name") or c.get("qualifiedName")
+            if name:
+                out[c.get("qualifiedName") or name] = name
+        elif isinstance(c, str) and c:
+            out[c] = c
+    return out
+
+
 def used_by_index() -> Dict[str, Any]:
     """The "Used by" facet: {"state": ok | partial | not_read | unsupported, "index": {label: [consumer]},
-    "consumers": [names], "message"}. From the consumer index the last sync wrote (pyegeria
-    `read_consumer_index`, offline). "Not read" is never shown as "used by none"."""
+    "consumers": [names], "folders": {qualifiedName: name}, "message"}. From the consumer index the last
+    sync wrote (pyegeria `read_consumer_index`, offline). "Not read" is never shown as "used by none".
+
+    Every consumer is named by its folder's DISPLAY name ("Egeria Advisor"), the form pyegeria keys
+    `index` by. `folders` maps a folder's qualified name to that name, so a restricted spec, which is
+    listed by folder qualified name, can be matched against the same facet (`with_used_by`)."""
     try:
         from pyegeria.view.egeria_spec_cache import read_consumer_index
     except ImportError:
-        return {"state": "unsupported", "index": {}, "consumers": [],
+        return {"state": "unsupported", "index": {}, "consumers": [], "folders": {},
                 "message": "\"Used by\" needs pyegeria 6.2.33 or later (the consumer index)."}
     try:
         data = read_consumer_index()
     except Exception as exc:  # noqa: BLE001 -- stated
-        return {"state": "not_read", "index": {}, "consumers": [],
+        return {"state": "not_read", "index": {}, "consumers": [], "folders": {},
                 "message": f"\"Used by\" is unknown: the consumer index could not be read: {exc}"}
     status = data.get("status") or "read"
     index = {k: list(v) for k, v in (data.get("index") or {}).items()}
-    consumers = sorted({c for v in index.values() for c in v} | set(data.get("consumers") or []))
+    folders = _consumer_names(data.get("consumers"))
+    consumers = sorted({c for v in index.values() for c in v} | set(folders.values()))
     if status == "not read":
-        return {"state": "not_read", "index": {}, "consumers": consumers,
+        return {"state": "not_read", "index": {}, "consumers": consumers, "folders": folders,
                 "message": f"\"Used by\" is unknown: {data.get('reason') or 'the consumer index was not read'}."}
     if status == "partial":
-        return {"state": "partial", "index": index, "consumers": consumers,
+        return {"state": "partial", "index": index, "consumers": consumers, "folders": folders,
                 "message": f"\"Used by\" is incomplete: {data.get('reason')}."}
-    return {"state": "ok", "index": index, "consumers": consumers, "message": None}
+    return {"state": "ok", "index": index, "consumers": consumers, "folders": folders, "message": None}
+
+
+def with_used_by(restricted: Dict[str, Any], used_by: Dict[str, Any]) -> Dict[str, Any]:
+    """Each restricted spec gains `used_by`: its folders as the facet names them (display names).
+    A folder the consumer index does not list keeps its qualified name, so it is still shown, and
+    the facet, whose choices are display names, never matches it by accident."""
+    names = (used_by or {}).get("folders") or {}
+    specs = [{**s, "used_by": sorted({names.get(f, f) for f in (s.get("folders") or [])})}
+             for s in (restricted or {}).get("specs") or []]
+    return {**(restricted or {}), "specs": specs}
 
 
 def run_restricted_spec(creds: Optional[Dict[str, str]], label: str, *, output_format: str = "TABLE",
