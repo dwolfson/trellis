@@ -790,6 +790,9 @@ class IngestionPipeline:
         for reason, paths in skipped.items():
             self.console.print(f"  [dim]web_docs: skipped {len(paths)} {reason} file(s): "
                                f"{', '.join(paths[:5])}{' ...' if len(paths) > 5 else ''}[/dim]")
+        # Read by a rebuild (reindex._build): when EVERY candidate was scaffolding, an empty web_docs is the
+        # planned result, not a regression, and the collection is dropped with a note instead of refused.
+        self.last_web_docs_scaffolding = {"candidates": len(candidates), "skipped": skipped}
         for path, content in all_files:
             text = re.sub(r"<[^>]+>", " ", content)
             text = re.sub(r"\s+", " ", text).strip()
