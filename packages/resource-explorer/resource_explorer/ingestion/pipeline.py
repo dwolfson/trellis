@@ -45,6 +45,8 @@ class IngestionPipeline:
         self.console = Console()
         #: (display path, why) for each PDF the last `_ingest_pdfs` got no text from. See `_ingest_pdfs`.
         self.pdf_failures: list[tuple[str, str]] = []
+        self.last_kept_per_file: dict[str, int] = {}
+        self.last_duplicate_of: dict[str, dict[str, int]] = {}
 
     # Collection types that can ingest from extra_docs_paths
     _DOC_CTYPES: frozenset[str] = frozenset({
@@ -224,7 +226,17 @@ class IngestionPipeline:
             else:
                 chunks = _file_dispatch[ctype.name](local_root, resource_slug, ctype)
 
-        chunks = DataPrep().filter(chunks)
+        prep = DataPrep()
+        chunks = prep.filter(chunks)
+        # Per file, before any changed-files narrowing: what survived preparation, and what was dropped as a copy of
+        # an earlier file. A rebuild reads both so a file left with no chunks says why (laz 2026-11-11: three
+        # egeria_docs PDFs were content duplicates of others, and nothing said so).
+        kept: dict[str, int] = {}
+        for c in chunks:
+            f = str(c.metadata.get("file_path") or "")
+            kept[f] = kept.get(f, 0) + 1
+        self.last_kept_per_file = kept
+        self.last_duplicate_of = prep.duplicate_of
         if changed_files is not None:
             chunks = [c for c in chunks if c.metadata.get("file_path") in changed_files]
         if not chunks:
@@ -874,6 +886,11 @@ class IngestionPipeline:
                 return
             if not any((c.text or "").strip() for c in found):
                 self.pdf_failures.append((display, "converted to no text"))
+            # The repository-relative path, as every other collection stores, not this run's download folder: a
+            # temporary path differs on every run, so a refresh's per-file replace never matched a PDF and a
+            # rebuild could not compare a file with its live chunks.
+            for c in found:
+                c.metadata["file_path"] = display
             chunks.extend(found)
 
         for path in local_root.rglob("*.pdf"):

@@ -531,6 +531,21 @@ class PgVectorStore(BaseVectorStore):
             self._put_conn(conn)
         return deleted
 
+    def count_by_metadata(self, collection_name: str, field: str) -> dict[str, int]:
+        """Rows per value of one metadata field ("" for rows without it); {} for a collection that does not exist."""
+        self.connect()
+        if not self.collection_exists(collection_name):
+            return {}
+        table = self._table(collection_name)
+        sql = f"SELECT COALESCE(metadata->>%s, ''), COUNT(*) FROM {self._qualified(table)} GROUP BY 1"
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, [field])
+                return {str(k): int(n) for k, n in cur.fetchall()}
+        finally:
+            self._put_conn(conn)
+
     # ------------------------------------------------------------------
     # Stats / admin
     # ------------------------------------------------------------------
