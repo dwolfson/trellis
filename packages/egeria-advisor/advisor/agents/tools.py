@@ -6,31 +6,57 @@ from functools import lru_cache
 from pathlib import Path
 
 from beeai_framework.tools import tool
+from loguru import logger
 
 
 @lru_cache(maxsize=1)
 def _load_perspective_families() -> dict[str, list[str]]:
     """Load perspective→template-family mappings from config/perspective_template_families.csv.
 
-    Returns a dict keyed by lowercase advisor perspective key (e.g. 'developer', 'any')
+    Returns a dict keyed by lowercase role profile (e.g. 'developer', 'any'; see A-P P-1)
     with values being dicts of {normalised_family: boost} where boost is 2 for level='both'
     and 1 for level='basic'.  Comment lines (starting with #) are skipped.
     """
     csv_path = Path(__file__).parent.parent / "configdata" / "perspective_template_families.csv"
     result: dict[str, dict[str, int]] = {}
+    # Comment rows ("# ...") are skipped before any other field is read: csv gives them None for
+    # the missing columns, and a None.strip() here used to raise into a bare `except: pass`, so this
+    # returned {} and no perspective's template families ever applied (found by A-P P-1).
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                perspective = row.get("perspective", "").strip()
-                family = row.get("family", "").strip()
-                level = row.get("level", "basic").strip().lower()
-                if not perspective or not family or perspective.startswith("#"):
+                perspective = (row.get("perspective") or "").strip()
+                if not perspective or perspective.startswith("#"):
+                    continue
+                family = (row.get("family") or "").strip()
+                level = (row.get("level") or "basic").strip().lower()
+                if not family:
                     continue
                 boost = 2 if level == "both" else 1
                 result.setdefault(perspective.lower(), {})[family.lower()] = boost
-    except Exception:
-        pass
+    except OSError as exc:
+        logger.warning(f"Template families unavailable: could not read {csv_path.name}: {exc}")
+        return {}
     return result
+
+
+def _priority_families(perspective: str | None) -> dict[str, int]:
+    """Normalised template family -> boost (+2 for level both, +1 for basic) for a perspective.
+
+    The families CSV is keyed by ROLE PROFILE (A-P P-1), so the perspective's role_profile is looked
+    up; a "general" perspective gets only the "any" rows. No perspective: no boosts.
+    """
+    priority: dict[str, int] = {}
+    if not perspective:
+        return priority
+    from advisor.perspective_manager import role_profile
+    mappings = _load_perspective_families()
+    for key in (role_profile(perspective) or "", "any"):
+        for fam, boost in mappings.get(key, {}).items():
+            norm = _normalise(fam)
+            # Take the higher boost if the same family appears in both "any" and the profile
+            priority[norm] = max(priority.get(norm, 0), boost)
+    return priority
 
 
 @tool(description=(
@@ -254,15 +280,7 @@ def _find_dre_template_raw(query: str, level: str = "basic", perspective: str | 
 
     query_norm = _normalise(query)
 
-    # Build perspective-relevant family → boost map (+2 for both, +1 for basic).
-    priority_families: dict[str, int] = {}
-    if perspective:
-        mappings = _load_perspective_families()
-        for key in (perspective.lower(), "any"):
-            for fam, boost in mappings.get(key, {}).items():
-                norm = _normalise(fam)
-                # Take the higher boost if the same family appears in both "any" and perspective
-                priority_families[norm] = max(priority_families.get(norm, 0), boost)
+    priority_families = _priority_families(perspective)
 
     # Score every template file.
     # Tier 4: exact substring match between full normalised query and stem (or vice-versa).

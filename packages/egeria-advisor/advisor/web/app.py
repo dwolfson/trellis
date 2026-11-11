@@ -266,25 +266,37 @@ async def health() -> Dict[str, str]:
 
 @app.get("/api/status")
 async def system_status() -> Dict[str, Any]:
-    """Return connection status for Egeria MCP servers."""
+    """The MCP servers EA is configured to use: {state, message, mcp_servers}.
+
+    state: ok | none (no server enabled) | not_configured (no config file) | read_failed. It reports
+    configuration only; it does not connect to any server or check the RAG system.
+    """
     mcp_status: List[Dict[str, Any]] = []
+    cfg_path = Path(__file__).parent.parent / "configdata" / "mcp_servers.json"
+    if not cfg_path.exists():
+        return {"state": "not_configured", "mcp_servers": [],
+                "message": f"No MCP server configuration found at {cfg_path.name}."}
     try:
-        cfg_path = Path(__file__).parent.parent / "configdata" / "mcp_servers.json"
-        if cfg_path.exists():
-            cfg = json.loads(cfg_path.read_text())
-            for name, srv in cfg.get("mcpServers", {}).items():
-                if name.startswith("_"):
-                    continue
-                mcp_status.append({
-                    "name": name,
-                    "enabled": srv.get("enabled", True),
-                    "transport": srv.get("transport", "stdio"),
-                    "description": srv.get("description", ""),
-                })
+        cfg = json.loads(cfg_path.read_text())
+        for name, srv in cfg.get("mcpServers", {}).items():
+            if name.startswith("_"):
+                continue
+            mcp_status.append({
+                "name": name,
+                "enabled": srv.get("enabled", True),
+                "transport": srv.get("transport", "stdio"),
+                "description": srv.get("description", ""),
+            })
     except Exception as exc:
         logger.warning(f"Status check failed: {exc}")
-
-    return {"mcp_servers": mcp_status, "rag": "ok"}
+        return {"state": "read_failed", "mcp_servers": [],
+                "message": f"Could not read the MCP server configuration: {exc}"}
+    enabled = [s["name"] for s in mcp_status if s["enabled"]]
+    if not enabled:
+        return {"state": "none", "mcp_servers": mcp_status, "message": "No MCP server is enabled."}
+    return {"state": "ok", "mcp_servers": mcp_status,
+            "message": f"{len(enabled)} MCP server(s) configured: {', '.join(enabled)}. "
+                       "Configured, not checked for a connection."}
 
 
 @app.get("/api/actions")
@@ -300,25 +312,31 @@ async def list_actions() -> Dict[str, Any]:
 
 @app.get("/api/egeria/zones")
 async def get_governance_zones(request: Request) -> Dict[str, Any]:
-    """Return all governance zone names from the live Egeria instance.
+    """Every governance zone name the signed-in user can see in Egeria.
 
-    Requires login — this performs a live Egeria read and must be
-    attributable to the signed-in user, not a shared service account.
+    {state, zones, count, message}: state is ok | capped | none | not_configured | not_signed_in |
+    refused | unreachable | read_failed (advisor.egeria_context). count 0 with state "none" means
+    Egeria answered and holds none; any other state with count 0 means Egeria was not read.
+
+    Requires login: this is a live Egeria read and must be attributable to the signed-in user, not
+    a shared service account.
     """
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
-    try:
-        from advisor.egeria_context import EgeriaContext
-        zones = EgeriaContext(egeria_credentials=egeria_credentials).list_governance_zones()
-        return {"zones": zones, "count": len(zones)}
-    except Exception as exc:
-        return {"zones": [], "count": 0, "error": str(exc)}
+    from advisor.egeria_context import EgeriaContext
+    answer = EgeriaContext(egeria_credentials=egeria_credentials).governance_zones_answer()
+    return {**answer, "count": len(answer["zones"])}
 
 
 @app.get("/api/perspectives")
-async def list_perspectives() -> Dict[str, Any]:
-    """Return available perspectives (live from Egeria or CSV fallback)."""
-    from advisor.perspective_manager import get_all
-    return {"perspectives": get_all()}
+async def list_perspectives(request: Request) -> Dict[str, Any]:
+    """Available perspectives, and where they came from.
 
+    {perspectives, source, message}: source "egeria" ("from Egeria") or "built_in" ("built-in list:
+    Egeria not reached: <reason>"). A due Egeria refresh runs as the signed-in caller.
+    """
+    from advisor.auth import get_egeria_credentials
+    from advisor.perspective_manager import get_all, status
+    perspectives = get_all(get_egeria_credentials(request))
+    return {"perspectives": perspectives, **status()}

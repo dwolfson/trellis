@@ -83,6 +83,22 @@ def _command_to_entity_type(command: str) -> str:
 # GovernancePlanAgent
 # ---------------------------------------------------------------------------
 
+
+def unchecked_context_warnings(entities: dict) -> list[str]:
+    """One warning per distinct reason Egeria was not read during enrichment (actor_found or
+    exists_in_egeria is None), naming what went unchecked. Never phrased as "not found"."""
+    by_reason: dict = {}
+    for role in entities.get("roles", []):
+        if role.get("person") and role.get("actor_found") is None and "actor_lookup_message" in role:
+            by_reason.setdefault(role.get("actor_lookup_message") or "Egeria not reached.", []).append(role["person"])
+    for obj in entities.get("objects", []):
+        if obj.get("name") and obj.get("exists_in_egeria") is None and "exists_check_message" in obj:
+            by_reason.setdefault(obj.get("exists_check_message") or "Egeria not reached.", []).append(obj["name"])
+    return [
+        f"Not checked against Egeria: {', '.join(repr(n) for n in names)}. {reason}"
+        for reason, names in by_reason.items()
+    ]
+
 class GovernancePlanAgent:
     """
     Generates a full Governance Plan Document from a natural language description.
@@ -1037,15 +1053,21 @@ class GovernancePlanAgent:
                         f"(GUID: {obj['egeria_guid'][:8]}…). "
                         f"The plan will create a new one — rename it if you meant to update the existing one."
                     )
-            # Surface unresolved actors
+            # Surface unresolved actors. False = Egeria answered "no such actor"; None = Egeria
+            # was NOT read, which must never be stated as "not found" (A-P2).
             for role in entities.get("roles", []):
                 if role.get("actor_found") is False:
                     context_warnings.append(
                         f"'{role['person']}' was not found in Egeria's actor profiles. "
                         f"A 'Create Actor Profile' step may be needed, or check the spelling."
                     )
+            context_warnings.extend(unchecked_context_warnings(entities))
         except Exception as _ctx_exc:
-            logger.debug(f"GovernancePlanAgent: context enrichment skipped: {_ctx_exc}")
+            logger.info(f"GovernancePlanAgent: context enrichment skipped: {_ctx_exc}")
+            context_warnings.append(
+                f"Egeria was not checked for this plan (context enrichment failed: {_ctx_exc}). "
+                "People and names in it are unverified."
+            )
 
         # ── Stage 2: deterministic command mapping ──────────────────────── #
         commands = self._entities_to_commands(entities, existing_commands or [])

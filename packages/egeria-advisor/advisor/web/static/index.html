@@ -760,9 +760,9 @@ async function loadStatus() {
     const dot = document.getElementById('status-dot');
     const enabled = (data.mcp_servers || []).filter(s => s.enabled).length;
     dot.className = `w-2 h-2 rounded-full ${enabled > 0 ? 'bg-green-400' : 'bg-red-400'}`;
-    dot.title = enabled > 0
+    dot.title = data.message || (enabled > 0
       ? `${enabled} MCP server(s) configured`
-      : 'No MCP servers enabled';
+      : 'No MCP servers enabled');
   } catch {}
 }
 
@@ -977,6 +977,13 @@ async function loadPerspectives() {
     btn.textContent = label;
     bar.appendChild(btn);
   });
+  // Where the list came from (A-P1): "from Egeria", or "built-in list: Egeria not reached: <reason>".
+  bar.querySelector('.persp-source')?.remove();
+  const src = document.createElement('span');
+  src.className = 'persp-source self-center text-[10px] text-slate-500 ml-1';
+  src.textContent = data.source === 'egeria' ? 'from Egeria' : 'built-in list';
+  src.title = data.message || '';
+  bar.appendChild(src);
 }
 
 // ── Plans sidebar ──────────────────────────────────────────────────────────────
