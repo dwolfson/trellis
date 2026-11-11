@@ -1,6 +1,6 @@
 # Hardware acceleration: detect what a machine has, and install only what it can use
 
-Proposal, 2026-11-11. Status: for the project owner's decision (§7). Scope: Resource Explorer, Egeria Advisor and
+Proposal, 2026-11-11. Status: decided in principle by the project owner (§7), with conditions; rollout §6. Scope: Resource Explorer, Egeria Advisor and
 the shared packages that run PyTorch models: Docling's PDF layout and table models, and sentence-transformers
 embeddings.
 
@@ -149,23 +149,49 @@ Choosing a build per machine needs a probe that runs before any PyTorch is insta
 plus the GPU's `gfx_target_version` in `/sys/class/kfd`, or `uname -s` = Darwin. That can be a small script that
 prints the extra to use; it chooses nothing on its own.
 
+## 5a. A hardware check at start-up
+
+Each app checks, at start-up, what the machine has against what the installed PyTorch can use, and says so. It
+reports; it never installs, because a build is part of an environment every session on the machine shares, and
+a multi-gigabyte change to it is the owner's call.
+
+- **The machine:** the same probe as §5 (an NVIDIA GPU by `nvidia-smi` or `/proc/driver/nvidia`, an AMD GPU by
+  `/dev/kfd` and `gfx_target_version`, Apple by the platform), with no PyTorch import needed.
+- **The build:** `torch.version.cuda`, `torch.version.hip`, and whether CUDA or MPS is available.
+- **What it says:** one line in the start-up log, the same in `/health`'s detail and the admin panel. A GPU the
+  build cannot use is a warning that names the fix, for example "AMD Radeon 890M found; this environment has the
+  CPU-only PyTorch; `uv sync --extra rocm` would make PDF conversion about 2x faster". A build the machine cannot
+  use (the CUDA build with no NVIDIA GPU) is a note naming the smaller build.
+- **The device chosen** (§4) is reported next to it, so "GPU found, GPU used" is one line.
+
 ## 6. Rollout
 
 1. **Measure laz:** run the same timing script on Apple's GPU and on its CPU, for the MPS column in §2.
-2. **Proposal A** (runtime): the shared function and its tests; switch Docling, RE's embeddings and EA's
-   embeddings to it; record the device in each run. Behaviour on today's machines is unchanged, except that the
-   choice is now said.
+2. **Proposal A** (runtime) and the start-up check (§5a): the shared function and its tests; switch Docling and
+   RE's embeddings to it; record the device in each run. Behaviour on today's machines is unchanged, except that
+   the choice is now said. EA's embeddings move to `auto` after the measurement in §7.
 3. **Spike for Proposal B:** a branch with the extras, `uv lock`, and builds on Linux CPU, on hedwig with `rocm`,
-   and on a Mac with no extra; both images built with `cpu`, and their size compared with today's.
+   and on a Mac with no extra; both images built with `cpu`, and their size compared with today's; and how a
+   machine keeps its extra across a plain `uv sync` (§7, hedwig).
 4. **Proposal B** (install): the extras, the probe script, the images on `cpu`, and the documentation (CLAUDE.md
    "uv", `docs/packaging.md`).
 
-## 7. Questions for the project owner
+## 7. Decisions
 
-1. **Is the CPU-only build the Linux default** (images, CI, a fresh checkout), with `cuda`/`rocm` opt-in per
-   machine? Or does the default stay PyPI's CUDA build, with `cpu` opt-in for the images only?
-2. **Should hedwig move to `rocm`?** It halves PDF conversion and costs about 16 GB of disk and one slow first run.
-   Its shared environment is used by every session on hedwig, so this is a shared-environment change.
-3. **Embeddings on the GPU too?** EA defaults to the CPU on purpose today. Proposal A keeps each purpose's
-   default; whether EA should move to `auto` is a separate call.
-4. **EA's ONNX path:** keep `onnxruntime-gpu` as an extra (NVIDIA only), or retire it in favour of the PyTorch path?
+**Decision (project owner, 2026-11-11):** "yes" to the CPU-only build as the Linux default, with a hardware check
+at start-up (§5a).
+
+**Decision (project owner, 2026-11-11):** "yes" to moving hedwig to `rocm`. Condition: a plain `uv sync` from the
+root must not put hedwig back on the CPU build once CPU is the default (CLAUDE.md tells every session to run
+exactly that). The spike (§6, step 3) settles how a machine keeps its extra across every sync: a uv setting if
+there is one, else a wrapper that every session uses. Until then hedwig stays as it is; the start-up check is the
+backstop that would notice a flip.
+
+**Decision (project owner, 2026-11-11):** "yes" to EA's embeddings on `auto`. Advice given with it, to settle by
+measurement before switching: EA embeds one short query at a time with a small model, where moving data to a GPU
+can cost as much as it saves, and on hedwig the GPU is shared with Docling (and an LLM, if Ollama uses it). Measure
+query-time and batch indexing on CPU and GPU first; `auto` for batch indexing and `cpu` for queries is a likely
+outcome.
+
+**Decision (project owner, 2026-11-11):** "keep" EA's ONNX path (`onnxruntime-gpu`, NVIDIA only). It stays an
+extra; `--all-extras` still fails on macOS because of it (CLAUDE.md, "uv").
