@@ -37,6 +37,7 @@ members = [
     "trellis-step-hub-tables",
     "trellis-step-schema-comparison",
     "trellis-step-statistics-freshness",
+    "trellis-ui",
     "trellis-vectorstore",
     "trellis-workspace",
 ]
@@ -2071,6 +2072,7 @@ dependencies = [
     { name = "tree-sitter-java" },
     { name = "trellis-auth", extra = ["egeria"] },
     { name = "trellis-querycache" },
+    { name = "trellis-ui" },
     { name = "trellis-vectorstore" },
 ]
 
@@ -2150,6 +2152,7 @@ requires-dist = [
     { name = "tree-sitter-java", specifier = ">=0.23.0" },
     { name = "trellis-auth", extras = ["egeria"], editable = "packages/trellis-auth" },
     { name = "trellis-querycache", editable = "packages/trellis-querycache" },
+    { name = "trellis-ui", editable = "packages/trellis-ui" },
     { name = "trellis-vectorstore", editable = "packages/trellis-vectorstore" },
 ]
 provides-extras = ["dev", "dashboard", "gpu", "onnx-tools", "phoenix"]
@@ -8478,6 +8481,7 @@ dependencies = [
     { name = "trellis-feedback" },
     { name = "trellis-microflow" },
     { name = "trellis-querycache" },
+    { name = "trellis-ui" },
     { name = "trellis-vectorstore" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
@@ -8577,6 +8581,7 @@ requires-dist = [
     { name = "trellis-feedback", editable = "packages/trellis-feedback" },
     { name = "trellis-microflow", editable = "packages/trellis-microflow" },
     { name = "trellis-querycache", editable = "packages/trellis-querycache" },
+    { name = "trellis-ui", editable = "packages/trellis-ui" },
     { name = "trellis-vectorstore", editable = "packages/trellis-vectorstore" },
     { name = "typer", specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
@@ -10382,6 +10387,17 @@ dependencies = [
 requires-dist = [{ name = "egeria-trellis-analytics", specifier = ">=0.4,<0.5" }]
 
 [[package]]
+name = "trellis-ui"
+version = "0.1.0"
+source = { editable = "packages/trellis-ui" }
+dependencies = [
+    { name = "starlette" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "starlette", specifier = ">=0.37.0" }]
+
+[[package]]
 name = "trellis-vectorstore"
 version = "0.1.0"
 source = { editable = "packages/trellis-vectorstore" }
@@ -10433,6 +10449,7 @@ dev = [
     { name = "trellis-step-hub-tables" },
     { name = "trellis-step-schema-comparison" },
     { name = "trellis-step-statistics-freshness" },
+    { name = "trellis-ui" },
     { name = "trellis-vectorstore" },
 ]
 
@@ -10459,6 +10476,7 @@ dev = [
     { name = "trellis-step-hub-tables", editable = "packages/trellis-analytics/examples/steps/hub_tables" },
     { name = "trellis-step-schema-comparison", editable = "packages/trellis-analytics/examples/steps/schema_comparison" },
     { name = "trellis-step-statistics-freshness", editable = "packages/trellis-analytics/examples/steps/statistics_freshness" },
+    { name = "trellis-ui", editable = "packages/trellis-ui" },
     { name = "trellis-vectorstore", editable = "packages/trellis-vectorstore" },
 ]
 

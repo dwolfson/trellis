@@ -616,7 +616,7 @@ const ReportSpecCanvas = (() => {
       return `
         <div class="flex items-center justify-between py-1 px-2 hover:bg-slate-800/40 rounded transition-colors text-xs text-slate-300">
           <span class="font-mono text-slate-400">${_escHtml(name)} <span class="text-[10px] text-violet-400/80">(${_escHtml(type)})</span></span>
-          <button class="px-1.5 py-0.5 rounded bg-violet-700/60 hover:bg-violet-600/80 text-[10px] text-white font-semibold transition-colors"
+          <button class="px-1.5 py-0.5 rounded bg-violet-700 hover:bg-violet-600/80 text-[10px] text-white font-semibold transition-colors"
             data-add-path="${_escHtml(path)}" data-add-name="${_escHtml(derivedName)}">＋ Add</button>
         </div>
       `;

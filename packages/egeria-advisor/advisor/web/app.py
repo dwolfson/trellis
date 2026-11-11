@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import trellis_ui
 from loguru import logger
 
 # Cross-cutting helpers used by more than one route group live in
@@ -53,6 +54,9 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+# The looks and the other pieces shared with Resource Explorer (packages/trellis-ui), at /static/trellis-ui/.
+# Mounted FIRST: Starlette matches mounts in order, and "/static" would answer these paths with a 404.
+trellis_ui.mount(app)
 app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 
