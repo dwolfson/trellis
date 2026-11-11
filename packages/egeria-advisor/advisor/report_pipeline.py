@@ -16,7 +16,7 @@ import json
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 import numpy as np
@@ -616,7 +616,7 @@ class ReportPipeline:
             logger.warning(f"Keyword fallback for find_specs failed: {e}")
             return []
 
-    def run_report(
+    def exec_spec_raw(
         self,
         report_name: str,
         search_string: str = "*",
@@ -625,24 +625,19 @@ class ReportPipeline:
         extra_params: Optional[Dict[str, Any]] = None,
         egeria_credentials: Optional[Dict[str, str]] = None,
         exact_params: bool = False,
-    ) -> Optional[str]:
-        """
-        Execute a named report and return the output string.
+    ) -> Tuple[Any, Optional[str]]:
+        """Run a named report spec: (pyegeria's raw result, None), or (None, why it did not run).
 
-        page_size: limits graph nodes Egeria traverses. None → use self._default_page_size.
-        egeria_credentials: the authenticated caller's {user_id, password}; falls back
-            to the service account (see advisor.auth.resolve_egeria_credentials) when None.
-        exact_params: send `extra_params` and nothing else -- no search_string / page_size /
-            start_from. An analytic spec's function takes only its own parameters and refuses
-            the find vocabulary (TypeError: unexpected keyword argument 'search_string').
-        Returns None on failure.
+        The raw result is exec_report_spec's own shape ({"kind": "json"|"text"|"empty"|"absent", ...}), so
+        a caller that renders it itself (a dashboard tile: a KPI, a chart, a trend) sees the data, not a
+        text flattening of it. Raises ConnectionError when Egeria cannot be reached.
+
+        The error is RETURNED, never stored on this shared instance: dashboard tiles run concurrently, and
+        `_last_run_error` would let one run report another's failure. run_report() keeps that attribute
+        for its existing callers. Arguments as run_report().
         """
         effective_page_size = page_size if page_size is not None else self._default_page_size
         is_wildcard = not search_string or search_string.strip() in ("*", "")
-        # Record why we return None so the caller can distinguish a genuine
-        # "no records" empty result from an execution error/timeout, and never
-        # mask a failure behind an unrelated convenience-listing fallback.
-        self._last_run_error = None
 
         # Execute in-process via pyegeria's exec_report_spec (a fresh Egeria client
         # bound to this call's event loop) rather than the MCP run_report tool.
@@ -661,8 +656,7 @@ class ReportPipeline:
             # Neither a token nor a password: exec_report_spec would mint on
             # pyegeria's configured password under this user id. Refuse, and
             # say "sign in" rather than "not configured".
-            self._last_run_error = SIGN_IN_TO_RUN_REPORTS
-            return None
+            return None, SIGN_IN_TO_RUN_REPORTS
         if not _conn_is_complete(conn):
             raise ConnectionError("Egeria connection is not configured (config/mcp_servers.json → pyegeria.env)")
         # pyegeria >= 6.1.10 (ISSUE-86): exec_report_spec accepts the caller's
@@ -703,21 +697,53 @@ class ReportPipeline:
         except ValueError as e:
             # Unknown report, unsupported output_format, or missing action —
             # surface honestly via _classify_run_error.
-            self._last_run_error = str(e)
             logger.info(f"run_report({report_name}) report error: {e}")
-            return None
+            return None, str(e)
         except Exception as e:
             err = type(e).__name__
             msg = f"{err}: {e}"
             if "timeout" in err.lower() or "timeout" in str(e).lower():
-                self._last_run_error = "The report timed out (Egeria took too long to respond)."
                 logger.error(f"run_report({report_name}) timed out: {e}")
-                return None
+                return None, "The report timed out (Egeria took too long to respond)."
             # Treat anything else (connection refused, 4xx/5xx transport) as a
             # reachability problem so the caller shows the "Egeria not reachable" path.
             logger.error(f"run_report({report_name}) failed [{err}]: {e}")
             raise ConnectionError(msg) from e
 
+        return raw, None
+
+    def run_report(
+        self,
+        report_name: str,
+        search_string: str = "*",
+        output_type: str = "DICT",
+        page_size: Optional[int] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+        exact_params: bool = False,
+    ) -> Optional[str]:
+        """
+        Execute a named report and return the output string.
+
+        page_size: limits graph nodes Egeria traverses. None → use self._default_page_size.
+        egeria_credentials: the authenticated caller's {user_id, password}; falls back
+            to the service account (see advisor.auth.resolve_egeria_credentials) when None.
+        exact_params: send `extra_params` and nothing else -- no search_string / page_size /
+            start_from. An analytic spec's function takes only its own parameters and refuses
+            the find vocabulary (TypeError: unexpected keyword argument 'search_string').
+        Returns None on failure.
+        """
+        # Record why we return None so the caller can distinguish a genuine
+        # "no records" empty result from an execution error/timeout, and never
+        # mask a failure behind an unrelated convenience-listing fallback.
+        self._last_run_error = None
+        raw, error = self.exec_spec_raw(
+            report_name, search_string=search_string, output_type=output_type, page_size=page_size,
+            extra_params=extra_params, egeria_credentials=egeria_credentials, exact_params=exact_params,
+        )
+        if error:
+            self._last_run_error = error
+            return None
         if raw is None:
             return None
         if isinstance(raw, str):

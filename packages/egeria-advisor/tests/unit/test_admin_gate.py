@@ -24,9 +24,14 @@ GATED = [
     ("post", "/api/admin/collections/{c}/reindex?force=true&confirm={c}"),
     ("post", "/api/admin/collections/{c}/reindex"),
     ("get", "/api/admin/jobs"),
-    ("get", "/api/feedback/extended"),
-    ("patch", "/api/feedback/extended/0"),
     ("get", "/api/feedback/analysis"),
+]
+#: A-F1: triage moved to the trellis-feedback router, which checks admin itself (the same
+#: `trellis_auth.require_admin` definition, through `advisor.auth.is_admin`).
+LIBRARY_ADMIN = [
+    ("get", "/api/feedback/v2/items"),
+    ("get", "/api/feedback/v2/causes"),
+    ("post", "/api/feedback/v2/triage"),
 ]
 
 
@@ -74,13 +79,6 @@ def _nothing_real_runs(monkeypatch, tmp_path):
     monkeypatch.setattr(admin_routes, "_system_health", lambda: {}, raising=False)
     monkeypatch.setattr(admin_routes, "_dre_templates_status", lambda: None, raising=False)
 
-    ext = tmp_path / "feedback_extended.jsonl"
-    ext.write_text(json.dumps({"query": "q", "vote": -1, "triage_status": "new"}) + "\n")
-    from advisor.web import feedback as feedback_routes
-    from advisor.web import shared
-    monkeypatch.setattr(feedback_routes, "_extended_feedback_path", lambda: ext, raising=False)
-    monkeypatch.setattr(shared, "_extended_feedback_path", lambda: ext, raising=False)
-
     class _Collector:
         # S4's collector interface (feedback hotfix): the vote route calls record_vote and reads its
         # query_metrics outcome; record_feedback is the CLI's bool wrapper.
@@ -98,6 +96,9 @@ def _nothing_real_runs(monkeypatch, tmp_path):
 
         def get_routing_improvements(self):
             return {}
+
+        def analysis(self):
+            return {"stats": {}, "gaps": {}, "improvements": [], "count": 0, "unreadable_lines": []}
 
     import advisor.feedback_collector as fc
     monkeypatch.setattr(fc, "get_feedback_collector", lambda: _Collector())
@@ -189,6 +190,33 @@ def test_anonymous_mode_is_not_an_admin(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         require_admin(req, app_prefix=auth.ADMIN_ENV_PREFIX, user=stand_in)
     assert exc.value.status_code == 403 and exc.value.detail == "Sign in to do this"
+
+
+# ── the trellis-feedback router (A-F1) ──────────────────────────────────────────────────────────────────
+
+def _library_call(client, method, path, headers):
+    kw = {"headers": headers}
+    if method == "post":
+        kw["json"] = {"ref_id": "no-such-item", "status": "triaged"}
+    return getattr(client, method)(path, **kw)
+
+
+@pytest.mark.parametrize("method,path", LIBRARY_ADMIN)
+def test_library_triage_routes_need_login_then_admin(client, monkeypatch, method, path):
+    monkeypatch.setenv("ADVISOR_ADMIN_USERS", ADMIN)
+    assert _library_call(client, method, path, {}).status_code == 401
+    r = _library_call(client, method, path, _bearer(OTHER))
+    assert r.status_code == 403 and r.json()["detail"] == "Admin only", r.text
+    r = _library_call(client, method, path, _bearer(ADMIN))
+    # through: 200, or 404 for triage of an item that does not exist -- never 401/403
+    assert r.status_code in (200, 404), r.text
+
+
+def test_retired_line_index_routes_are_gone(client, monkeypatch):
+    monkeypatch.setenv("ADVISOR_ADMIN_USERS", ADMIN)
+    assert client.get("/api/feedback/extended", headers=_bearer(ADMIN)).status_code in (404, 405)
+    assert client.patch("/api/feedback/extended/0", headers=_bearer(ADMIN),
+                        json={"triage_status": "known_issue"}).status_code in (404, 405)
 
 
 # ── what stays open ──────────────────────────────────────────────────────────────────────────────────────

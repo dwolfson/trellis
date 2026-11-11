@@ -73,7 +73,8 @@
 
   function applyUsedBy(data, catalogEl) {
     const index = (data.used_by || {}).index || {};
-    // Restricted rows carry their own consumer folders (the shared consumer index leaves zoned labels out).
+    // Restricted rows carry their own consumers (the shared consumer index leaves zoned labels out), as display
+    // names (`used_by`, from the server), the same form as the facet's choices and the index's values.
     document.querySelectorAll('[data-restricted-row]').forEach(row => {
       const folders = JSON.parse(row.getAttribute('data-folders') || '[]');
       row.style.display = (!usedByFilter || folders.includes(usedByFilter)) ? '' : 'none';
@@ -123,11 +124,11 @@
     specs.forEach(s => {
       const zones = (s.zones || []).join(', ');
       const btn = h('button', { class: 'text-left px-2 py-0.5 rounded text-xs hover:bg-slate-700 text-slate-300 flex-1',
-        title: `Read from Egeria as you; folders: ${(s.folders || []).map(consumerName).join(', ')}`,
+        title: `Read from Egeria as you; used by: ${(s.used_by || (s.folders || []).map(consumerName)).join(', ')}`,
         onclick: () => runRestricted(s.label) },
         s.label, h('span', { class: 'ml-1 px-1 rounded text-[10px] bg-rose-900/50 text-rose-300', text: `restricted: ${zones}` }));
       list.appendChild(h('div', { class: 'flex items-center gap-1 group', 'data-restricted-row': '',
-        'data-folders': JSON.stringify(s.folders || []) }, btn,
+        'data-folders': JSON.stringify(s.used_by || s.folders || []) }, btn,
         h('button', { class: 'opacity-0 group-hover:opacity-100 text-[10px] px-1 rounded bg-slate-700 text-slate-300',
           text: 'withdraw', title: `Withdraw '${s.label}'`, onclick: () => openWithdraw(s.label) })));
     });

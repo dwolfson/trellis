@@ -58,8 +58,22 @@ def _isolated(tmp_path, monkeypatch):
 
 
 def _records(tmp_path, name="user_feedback.jsonl"):
+    """The legacy JSONL lines: A-F1 writes none any more, so every caller below expects []."""
     path = tmp_path / "feedback" / name
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _items():
+    """The votes as the trellis-feedback store holds them (A-F1), newest first."""
+    from advisor.feedback_store import get_store
+    return get_store().list(kind="answer")
+
+
+def _break_the_store(tmp_path, monkeypatch):
+    """Point the store at a SQLite file in a folder that does not exist: opening it fails."""
+    from advisor import feedback_store
+    feedback_store.reset_stores()
+    monkeypatch.setenv("ADVISOR_FEEDBACK_DATABASE_URL", f"sqlite:///{tmp_path / 'no-such-dir' / 'f.db'}")
 
 
 @pytest.fixture
@@ -81,15 +95,22 @@ def test_vote_records_user_id_and_keeps_intent_out_of_comment(http, tmp_path, _i
     client, as_user = http
     r = client.post("/api/feedback", json=BODY, headers=as_user("erinoverview"))
     assert r.status_code == 200, r.text
-    assert r.json() == {"status": "ok", "secondary": {"extended": "ok", "query_metrics": "ok"}}
+    body = r.json()
+    assert body["status"] == "ok" and body["created"] is True
+    assert body["secondary"] == {"query_metrics": "ok"}
 
-    (primary,) = _records(tmp_path)
-    assert primary["user_id"] == "erinoverview"
-    assert primary["intent_override"] == "explain"
-    assert primary["user_comment"] is None and primary["feedback_text"] is None
-    assert "sentiment" not in primary                      # nothing the user wrote, nothing analysed
-    (extended,) = _records(tmp_path, "feedback_extended.jsonl")
-    assert extended["user_id"] == "erinoverview" and extended["intent_override"] == "explain"
+    (item,) = _items()
+    assert item["id"] == body["item"]["id"]
+    assert item["user_id"] == "erinoverview"
+    assert item["intent_label"] == "explain"               # its own field, never a comment
+    assert item["query_text"] == BODY["query"] and item["response_text"] == BODY["response_text"]
+    assert (item["perspective"], item["routing_agent"]) == ("Data Steward", "doc_agent")
+    assert item["message"] == ""
+    extra = item["extra"]
+    assert "user_comment" not in extra and "feedback_text" not in extra
+    assert "sentiment" not in extra                        # nothing the user wrote, nothing analysed
+    assert extra["query_type"] == "explanation"
+    assert _records(tmp_path) == [] and _records(tmp_path, "feedback_extended.jsonl") == []   # no JSONL
 
 
 # ── query_metrics: by user AND query, skipped without a user ───────────────────
@@ -98,7 +119,7 @@ def test_query_metrics_update_matches_user_and_query(_isolated):
     fc = fcmod.get_feedback_collector()
     out = fc.record_vote(query="q1", query_type="t", collections_searched=[], response_length=0,
                          rating="negative", user_id="peterprofile", intent_override="act")
-    assert out == {"query_metrics": "ok"}
+    assert out["query_metrics"] == "ok" and out["created"] is True
     sql, params = _isolated.calls[0]
     assert "WHERE user_id = %s AND query_text = %s" in sql
     assert params[-2:] == ("peterprofile", "q1")
@@ -110,7 +131,7 @@ def test_query_metrics_skipped_without_a_user(_isolated):
     fc = fcmod.get_feedback_collector()
     out = fc.record_vote(query="q1", query_type="t", collections_searched=[], response_length=0,
                          rating="positive", user_id=None)
-    assert out == {"query_metrics": "skipped"}
+    assert out["query_metrics"] == "skipped"
     assert _isolated.calls == []                           # never a text-only guess
 
 
@@ -126,31 +147,22 @@ def test_query_metrics_no_match_and_error_are_reported(_isolated):
 
 # ── honest status ──────────────────────────────────────────────────────────────
 
-def test_primary_write_failure_is_500_with_the_reason(http, tmp_path, monkeypatch):
+def test_primary_write_failure_is_500_with_the_reason(http, tmp_path, monkeypatch, _isolated):
     client, as_user = http
-    fc = fcmod.get_feedback_collector()
-    fc.feedback_file = tmp_path / "no-such-dir" / "user_feedback.jsonl"   # the open() fails
+    _break_the_store(tmp_path, monkeypatch)
     r = client.post("/api/feedback", json=BODY, headers=as_user("erinoverview"))
     assert r.status_code == 500
-    assert r.json()["detail"].startswith("could not record your feedback: FileNotFoundError")
+    detail = r.json()["detail"]
+    assert detail.startswith("could not record your feedback: feedback store not opened"), detail
+    assert "unable to open database file" in detail
+    assert _isolated.calls == []                           # no secondary for a vote that was not kept
 
 
-def test_extended_write_failure_is_reported_not_hidden(http, tmp_path, monkeypatch):
-    client, as_user = http
-    monkeypatch.setattr("advisor.web.feedback._extended_feedback_path",
-                        lambda: tmp_path / "feedback" / "missing-dir" / "x.jsonl")
-    monkeypatch.setattr("advisor.config.ensure_writable_dir", lambda *a, **k: None)
-    r = client.post("/api/feedback", json=BODY, headers=as_user("erinoverview"))
-    assert r.status_code == 200
-    assert r.json()["secondary"]["extended"] == "error"
-    assert len(_records(tmp_path)) == 1                    # the vote itself was kept
-
-
-def test_cli_wrapper_still_returns_a_bool(tmp_path):
+def test_cli_wrapper_still_returns_a_bool(tmp_path, monkeypatch):
     fc = fcmod.get_feedback_collector()
     assert fc.record_feedback(query="q", query_type="t", collections_searched=[], response_length=0,
                               rating="positive") is True
-    fc.feedback_file = tmp_path / "nope" / "f.jsonl"
+    _break_the_store(tmp_path, monkeypatch)
     assert fc.record_feedback(query="q", query_type="t", collections_searched=[], response_length=0,
                               rating="positive") is False
 
@@ -293,4 +305,4 @@ def test_anonymous_vote_records_no_user_and_skips_query_metrics(_isolated, tmp_p
     from advisor.web.shared import FeedbackRequest
     out = _record_vote(FeedbackRequest(**BODY), None)
     assert out["secondary"]["query_metrics"] == "skipped" and _isolated.calls == []
-    assert _records(tmp_path)[0]["user_id"] is None
+    assert _items()[0]["user_id"] == ""                    # the library's "anonymous"
