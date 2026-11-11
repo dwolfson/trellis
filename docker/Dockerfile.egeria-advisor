@@ -132,6 +132,7 @@ COPY --chown=trellis:trellis packages/trellis-querycache packages/trellis-queryc
 COPY --chown=trellis:trellis packages/trellis-auth packages/trellis-auth
 COPY --chown=trellis:trellis packages/trellis-ui packages/trellis-ui
 COPY --chown=trellis:trellis packages/trellis-accel packages/trellis-accel
+COPY --chown=trellis:trellis packages/trellis-feedback packages/trellis-feedback
 # Repo-level config/ — Dr.Egeria templates and the annotated report specs.
 # Both used to live inside packages/egeria-advisor (examples/templates and
 # advisor/configdata/report_specs) and so were copied with the package. They

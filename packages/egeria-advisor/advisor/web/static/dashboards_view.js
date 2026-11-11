@@ -107,7 +107,12 @@
       status.textContent = data.message;
       return;
     }
-    if (data.state === 'no_sheets') { status.textContent = data.message; return; }
+    if (data.state === 'no_sheets') {
+      status.textContent = data.message;
+      if (root.EADashAuthor) root.EADashAuthor.mountSidebar();   // a first sheet can still be made
+      return;
+    }
+    if (root.EADashAuthor) root.EADashAuthor.mountSidebar();
     status.textContent = `${data.sheets.length} sheet${data.sheets.length === 1 ? '' : 's'} visible to ${data.viewer}`;
     sheets = {};
     data.sheets.forEach(s => {
@@ -174,8 +179,11 @@
     const grid = el('div');
     grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;';
     const runs = [];
+    const author = root.EADashAuthor;   // B7b, when loaded: move / remove / delete
+    if (author) author.decorateSheet(wrap, sheet);
     sheet.placements.forEach(p => {
       const t = dashTile(sheet, p);
+      if (author) author.decorateTile(t, sheet, p);
       grid.appendChild(t);
       if (t._run) runs.push(() => t._run({ refresh: !!(opts && opts.refresh) }));
     });
