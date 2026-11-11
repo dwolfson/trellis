@@ -70,13 +70,15 @@ KNOWN_BREAKS = {
 @lru_cache(maxsize=None)
 def _egeria_tech():
     from pyegeria import EgeriaTech
-    # Constructing it makes no network call; the sub-client map is built here.
-    return EgeriaTech("contract-test-server", "https://localhost:9443", "contract-test-user")
+    # Constructing it makes no network call; the sub-client map is built here. Building a SUB-client does (its
+    # constructor GETs /api/about), so nothing here builds one: sub-clients are checked by class, via
+    # _subclient_class. The URL points nowhere on purpose, so an accidental connection fails rather than passing
+    # only where an Egeria happens to be up (it did: CI failed on 9206e8aa, laz passed because 9443 was up).
+    return EgeriaTech("contract-test-server", "https://127.0.0.1:9", "contract-test-user")
 
 
-@lru_cache(maxsize=None)
-def _subclient(name: str):
-    return _egeria_tech()._get_subclient(name)
+def _subclient_class(name: str):
+    return _egeria_tech()._subclient_map[name]
 
 
 def _egeria_tech_has(attr: str) -> bool:
@@ -206,7 +208,7 @@ def _resolve_chain(cls, chain: list[str]) -> str | None:
         if not _egeria_tech_has(first):
             return first
         if first in _egeria_tech()._subclient_map and len(chain) > 1:
-            if not hasattr(_subclient(first), chain[1]):
+            if not hasattr(_subclient_class(first), chain[1]):
                 return f"{first}.{chain[1]}"
         return None
     return None if hasattr(cls, first) else first
