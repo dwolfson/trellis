@@ -44,7 +44,8 @@ def test_one_more_row_is_singular():
 def test_columns_past_the_cap_are_counted_and_named():
     md = table(_rows(2, rp.MAX_TABLE_COLS + 2), "T")
     assert _table_lines(md)[0].count("|") == rp.MAX_TABLE_COLS + 1
-    assert md.splitlines()[-1] == r"*+2 more columns: col\_8, col\_9*"
+    c = rp.MAX_TABLE_COLS
+    assert md.splitlines()[-1] == rf"*+2 more columns: col\_{c}, col\_{c + 1}*"
 
 
 def test_a_long_list_of_hidden_columns_names_six_and_counts_the_rest():
@@ -54,11 +55,11 @@ def test_a_long_list_of_hidden_columns_names_six_and_counts_the_rest():
 
 def test_rows_and_columns_together():
     md = table(_rows(rp.MAX_TABLE_ROWS + 3, rp.MAX_TABLE_COLS + 1), "T")
-    assert md.splitlines()[-1] == r"*+3 more rows; +1 more column: col\_8*"
+    assert md.splitlines()[-1] == rf"*+3 more rows; +1 more column: col\_{rp.MAX_TABLE_COLS}*"
 
 
 def test_a_cut_cell_ends_in_an_ellipsis():
-    md = table([{"Name": "a" * 200}], "T")
+    md = table([{"Name": "a" * (rp.MAX_CELL_CHARS + 50)}], "T")
     cell = _table_lines(md)[2].strip("| ").strip()
     assert len(cell) == rp.MAX_CELL_CHARS and cell.endswith("…")
     # Exactly at the cap: the whole cell.
@@ -72,3 +73,23 @@ def test_skipped_identity_columns_do_not_count_as_hidden():
     rows = [{"guid": "g", "versions": "v", "Name": "n"}]
     md = table(rows, "T")
     assert "more" not in md and _table_lines(md)[0] == "| Name |"
+
+
+def test_the_caps_match_the_portal_now_that_tiles_scroll():
+    assert (rp.MAX_TABLE_ROWS, rp.MAX_TABLE_COLS, rp.MAX_CELL_CHARS) == (200, 20, 200)
+
+
+def test_a_line_break_in_a_cell_is_a_br_not_a_new_row():
+    md = table([{"Name": "first\nsecond", "Note": "a\r\nb\rc", "Pipe": "x|y"}], "T")
+    rows = _table_lines(md)
+    assert len(md.splitlines()) == 3 == len(rows)
+    assert rows[2] == "| first<br>second | a<br>b<br>c | x\\|y |"
+
+
+def test_a_line_break_in_a_spec_column_cell_is_a_br_too():
+    from types import SimpleNamespace
+    col = SimpleNamespace(name="Name", key="display_name")
+    spec = SimpleNamespace(formats=[SimpleNamespace(types=["TABLE"], attributes=[col])])
+    element = {"properties": {"displayName": "one\ntwo"}, "display_name": "one\ntwo"}
+    md = table([element], "T", spec=spec)
+    assert md.splitlines()[-1] == "| one<br>two |"

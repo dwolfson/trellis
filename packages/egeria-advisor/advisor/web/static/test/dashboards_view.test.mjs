@@ -324,3 +324,13 @@ test('every table in a tile is wrapped once; the Firefox scroll-bar rules are sc
   assert.ok(!/scrollbar-(width|color)\s*:/.test(outside), 'Chrome would drop ::-webkit-scrollbar if these applied to it');
   assert.match(css, /\.dash-tbl-scroll::-webkit-scrollbar\s*\{/);
 });
+
+test('a line break the server wrote as <br> in a cell draws as a break in that cell, not a new row', { skip: SKIP }, () => {
+  const w = styledWindow();
+  const tile = tileWith(w, '| Name | Note |\n| --- | --- |\n| first<br>second | x |');
+  const cells = tile.querySelectorAll('tbody td');
+  assert.equal(tile.querySelectorAll('tbody tr').length, 1);
+  assert.equal(cells.length, 2);
+  assert.equal(cells[0].querySelectorAll('br').length, 1);
+  assert.equal(cells[0].textContent, 'firstsecond');
+});

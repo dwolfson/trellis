@@ -22,12 +22,19 @@ from loguru import logger
 import numpy as np
 
 #: The generic markdown table (a result with no TABLE columns in its spec) keeps this much, and says what
-#: it left out ("+N more rows", "+N more columns: a, b, ..."); a cut cell ends in "…".
-MAX_TABLE_ROWS = 50
-MAX_TABLE_COLS = 8
-MAX_CELL_CHARS = 80
+#: it left out ("+N more rows", "+N more columns: a, b, ..."); a cut cell ends in "…". Rows and columns
+#: match the Portal (200 x 20) now that a tile's table scrolls; a cell is cut at 200 characters.
+MAX_TABLE_ROWS = 200
+MAX_TABLE_COLS = 20
+MAX_CELL_CHARS = 200
 #: A long list of hidden columns names the first few and counts the rest (as the Portal does).
 HIDDEN_COLS_NAMED = 6
+
+
+def table_cell(value: Any) -> str:
+    """A value as one markdown table cell: `|` escaped and a line break as <br>, so neither ends the row."""
+    text = str(value).replace("|", "\\|")
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
 
 
 def hidden_columns_note(hidden: List[str]) -> str:
@@ -946,7 +953,7 @@ class ReportPipeline:
                         else:
                             val = str(val)
                             
-                        val = val.replace("|", "\\|")
+                        val = table_cell(val)
                         row_vals.append(val)
                         
                     markdown_lines.append("| " + " | ".join(row_vals) + " |")
@@ -990,8 +997,10 @@ class ReportPipeline:
         hidden_cols = shown[MAX_TABLE_COLS:]
 
         def _cell(value: Any) -> str:
-            text = str(value).replace("|", "\\|")
-            return text if len(text) <= MAX_CELL_CHARS else text[:MAX_CELL_CHARS - 1] + "…"
+            text = str(value)
+            if len(text) > MAX_CELL_CHARS:
+                text = text[:MAX_CELL_CHARS - 1] + "…"      # cut before escaping: never half an escape
+            return table_cell(text)
 
         header = "| " + " | ".join(display_cols) + " |"
         sep = "| " + " | ".join("---" for _ in display_cols) + " |"
