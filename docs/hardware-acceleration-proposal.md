@@ -20,7 +20,7 @@ Two separate problems need two separate mechanisms:
   can actually use, refuses known-bad combinations, takes an environment override, and says what it chose and why.
 
 Measured (§2): on hedwig the AMD GPU makes PDF conversion about **2.1 times faster** with **identical output**
-(after a one-time compile); on laz Apple's GPU is about **1.3 times faster** overall, 2.1 times on everything but
+(after a one-time compile); on laz Apple's GPU is about **1.3 times faster** overall, 1.7 times on everything but
 the table-dense document.
 
 ## 2. What was measured
@@ -30,7 +30,7 @@ the table-dense document.
 Docling 2.150 (RE's options: OCR off, table structure on), the same 113 pages of public sustainability PDFs in
 every run, seconds per page:
 
-| Sample | Pages | CPU, 4 threads | GPU (ROCm 7.2), warm | Speed-up |
+| Sample | Pages | CPU, 4 threads (s/page) | GPU (ROCm 7.2), warm (s/page) | Speed-up |
 |---|---|---|---|---|
 | NAICS manual, front matter | 25 | 1.62 | 0.89 | 1.8× |
 | NAICS manual, code pages | 25 | 0.95 | 0.36 | 2.6× |
@@ -58,7 +58,7 @@ Docling on MPS failed on every page until transformers 5.22.2 fixed RT-DETR's ha
 the upgrade (#1057) it runs on MPS. The same script and 113 pages, run by the coordinator on laz on 2026-11-11 in
 8813's environment (docling 2.150.0, transformers 5.22.2, torch 2.13.0, 4 threads), second runs:
 
-| Sample | Pages | CPU | MPS | Speed-up |
+| Sample | Pages | CPU (total s) | MPS (total s) | Speed-up |
 |---|---|---|---|---|
 | NAICS manual, front matter | 25 | 10.03 s | 7.03 s | 1.4× |
 | NAICS manual, code pages | 25 | 5.87 s | 2.90 s | 2.0× |
@@ -68,8 +68,8 @@ the upgrade (#1057) it runs on MPS. The same script and 113 pages, run by the co
 | Value-chain standard | 20 | 4.57 s | 2.77 s | 1.6× |
 | **Total** | 113 | **65.4 s** | **50.6 s** | **≈1.3×** |
 
-- **The table-dense document barely gains on MPS** and is two thirds of the total on both devices, so its cost is
-  not model inference there. Without it, MPS is 2.1 times faster (16.5 s against 28.6 s), the same as hedwig's GPU.
+- **The table-dense document barely gains on MPS** and is 56% of the total on the CPU and 67% on MPS, so its cost
+  is not model inference there. Without it, MPS is 1.7 times faster (16.52 s against 28.61 s).
 - **First runs** were close to second runs (MPS 52.3 s, CPU 67.0 s): no large one-time compile on Apple's GPU.
 - **Output:** identical on laz between MPS and CPU (43,206 words, the same characters and tables per sample).
 - **Laz's CPU is about 4 times hedwig's** on this sample (65 s against 259–271 s), and table-dense pages are where
