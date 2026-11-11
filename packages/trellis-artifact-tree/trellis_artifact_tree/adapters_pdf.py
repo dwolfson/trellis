@@ -33,6 +33,46 @@ _CONTENT_LABELS = {"text", "list_item", "table", "code", "formula", "caption"}
 _DROPPED_LABELS = {"page_header", "page_footer", "picture"}
 
 
+def disable_torch_compile() -> None:
+    """Turn off Docling's torch.compile of its models, before any pipeline options are built.
+
+    Docling (2.118) compiles its layout model by default (`settings.inference.compile_torch_models`). On Apple
+    MPS, which has no float64, every batch then fails inside the layout stage ("KeyError: torch.float64"), and
+    Docling returns an EMPTY document without raising. Found on laz by the first timed rebuild (2026-11-10): 36
+    chunks of PDFs became none. Compilation is only a speed-up, so it is off everywhere; the engines read this
+    setting when their options are constructed, so it must be set before `PdfPipelineOptions()`.
+    """
+    try:
+        from docling.datamodel.settings import settings
+    except ImportError:  # pragma: no cover - the [pdf] extra is not installed
+        return
+    settings.inference.compile_torch_models = False
+
+
+def keep_off_mps(options) -> None:
+    """Run Docling's models on the CPU where it would otherwise pick Apple MPS.
+
+    Turning torch.compile off was not enough. Gate b354 on laz (2026-11-11) ran a real PDF through the converter
+    with compile off, and Docling raised: transformers' RT-DETRv2 layout model builds its position embedding with
+    `torch.arange(..., dtype=torch.float64, device=device)`, and MPS has no float64 ("Cannot convert a MPS Tensor to
+    float64"). The float64 is hard-coded in transformers, so no Docling dtype setting reaches it. The CPU is slower
+    but correct; CUDA and the CPU are left as Docling chooses them.
+    """
+    try:
+        import torch
+        from docling.datamodel.accelerator_options import AcceleratorDevice
+    except ImportError:  # pragma: no cover - the [pdf] extra is not installed
+        return
+    device = options.accelerator_options.device
+    wants_mps = device in (AcceleratorDevice.MPS, AcceleratorDevice.MPS.value) or (
+        device in (AcceleratorDevice.AUTO, AcceleratorDevice.AUTO.value)
+        and not torch.cuda.is_available()
+        and torch.backends.mps.is_available()
+    )
+    if wants_mps:
+        options.accelerator_options.device = AcceleratorDevice.CPU
+
+
 @dataclass(frozen=True)
 class DocItem:
     """The subset of a Docling item this mapping needs.
@@ -238,6 +278,7 @@ class PdfAdapter:
         return getattr(po, options_name)()
 
     def _convert(self, path: str) -> list[DocItem]:
+        disable_torch_compile()
         try:
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -249,6 +290,7 @@ class PdfAdapter:
             ) from exc
 
         options = PdfPipelineOptions()
+        keep_off_mps(options)
         options.do_ocr = self.ocr
         # Left on regardless of OCR: table structure recognition is a separate
         # Docling stage and works without it. Tying them together would mean

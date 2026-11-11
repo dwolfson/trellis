@@ -43,6 +43,8 @@ class IngestionPipeline:
         self.registry = ProjectRegistry()
         self.store = MultiCollectionStore()
         self.console = Console()
+        #: (display path, why) for each PDF the last `_ingest_pdfs` got no text from. See `_ingest_pdfs`.
+        self.pdf_failures: list[tuple[str, str]] = []
 
     # Collection types that can ingest from extra_docs_paths
     _DOC_CTYPES: frozenset[str] = frozenset({
@@ -852,19 +854,27 @@ class IngestionPipeline:
                 _converter = build_pdf_converter()
             return _converter.convert(path_str).document
 
+        # Every PDF that yields no text is recorded, not skipped quietly (tests/test_no_silent_success.py): Docling
+        # can return an empty document without raising (its compiled layout model on Apple MPS, laz 2026-11-10),
+        # and a re-ingest then replaces a file's chunks with none. Read by callers after the collection.
+        self.pdf_failures = []
+
         def _handle(display: str, abs_str: str) -> None:
             try:
                 document = _convert(abs_str)
-            except Exception:
-                # Unchanged from before: an unconvertible PDF is skipped, and
-                # now it yields neither chunks nor a tree rather than half of
-                # each.
+            except Exception as exc:
+                # An unconvertible PDF yields neither chunks nor a tree rather than half of each.
+                self.pdf_failures.append((display, f"conversion failed: {type(exc).__name__}: {exc}"[:300]))
                 return
             converted.append((display, document))
             try:
-                chunks.extend(parser.parse_pdf(abs_str, resource_slug, document=document))
-            except Exception:
-                pass
+                found = parser.parse_pdf(abs_str, resource_slug, document=document)
+            except Exception as exc:
+                self.pdf_failures.append((display, f"parsing failed: {type(exc).__name__}: {exc}"[:300]))
+                return
+            if not any((c.text or "").strip() for c in found):
+                self.pdf_failures.append((display, "converted to no text"))
+            chunks.extend(found)
 
         for path in local_root.rglob("*.pdf"):
             if is_vendored_abs(path, local_root):
@@ -885,6 +895,11 @@ class IngestionPipeline:
         self._report_tree_result(
             build_pdf_trees_from_documents(converted, resource_slug), resource_slug,
         )
+        if self.pdf_failures:
+            shown = "; ".join(f"{d} ({why})" for d, why in self.pdf_failures[:5])
+            more = f" and {len(self.pdf_failures) - 5} more" if len(self.pdf_failures) > 5 else ""
+            self.console.print(f"[yellow]{len(self.pdf_failures)} PDF(s) in {resource_slug} yielded no text: "
+                               f"{shown}{more}[/yellow]")
 
         return chunks
 

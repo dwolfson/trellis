@@ -889,3 +889,60 @@ class TestDecisionClaim:
 
 def _cont_of(row):
     return reindex._target(row).get("continue_of")
+
+
+# ── PDFs that yield no text (the first timed rebuild on laz, 2026-11-10) ─────────────────────────────────────────
+
+class _PdfFailingPipeline(FakePipeline):
+    """The pipeline as it is after `_ingest_pdfs` met Docling's silent failure on some files."""
+
+    def _ingest_collection(self, repo, slug, name, ct, root, *, id_collection=None, extra_paths=None):
+        if ct.name == "pdfs":
+            self.pdf_failures = [("docs/a.pdf", "converted to no text"), ("docs/b.pdf", "converted to no text")]
+        return super()._ingest_collection(repo, slug, name, ct, root, id_collection=id_collection,
+                                          extra_paths=extra_paths)
+
+
+class TestPdfFailures:
+    def test_a_rebuild_whose_pdfs_yielded_no_text_is_refused_and_names_them(self, registry, store):
+        d = deps(registry, store, proposed=("markdown_docs", "python_code", "pdfs"),
+                 content={"markdown_docs": [("README.md", "intro")], "python_code": [("a.py", "x")],
+                          "pdfs": [("docs/c.pdf", "the one that converted")]})
+        d.pipeline = _PdfFailingPipeline(store, d.pipeline.content)
+        live_before = {k: list(v) for k, v in store.tables.items()}
+        state, error = execute(registry, queued(registry), d)
+        assert state == "failed"
+        assert "2 PDF(s) yielded no text" in error and "docs/a.pdf: converted to no text" in error
+        assert store.tables == live_before                                   # nothing swapped, aside dropped
+        pr = reindex.progress(registry, SLUG)
+        assert pr["counts"][f"{SLUG}_pdfs"]["failed_files"][0].startswith("docs/a.pdf")
+
+    def test_failures_from_an_earlier_collection_do_not_leak_into_a_later_rebuild(self, registry, store):
+        d = deps(registry, store, proposed=("markdown_docs", "python_code", "pdfs"),
+                 content={"markdown_docs": [("README.md", "intro"), ("README.md", "more")],
+                          "python_code": [("a.py", "x")], "pdfs": [("docs/c.pdf", "text")]})
+        d.pipeline.pdf_failures = [("stale.pdf", "converted to no text")]   # left over from some earlier ingest
+        state, _ = execute(registry, queued(registry), d)
+        assert state == "succeeded"
+
+
+class TestTimingAndHeartbeat:
+    def test_a_failed_build_still_records_how_long_it_took(self, registry, store, monkeypatch):
+        d = deps(registry, store)
+
+        def boom(*a, **kw):
+            raise RuntimeError("download failed")
+        monkeypatch.setattr(d.client, "download_zipball", boom)
+        run_id = queued(registry)
+        assert execute(registry, run_id, d)[0] == "failed"
+        pr = reindex.progress(registry, SLUG)
+        assert pr["built_seconds"] is not None and pr["build_started_at"]
+
+    def test_progress_shows_the_build_time_and_the_run_rows_heartbeat(self, registry, store):
+        run_id = queued(registry)
+        registry.claim_run(run_id, "w1") if hasattr(registry, "claim_run") else None
+        registry.heartbeat_run(run_id)
+        pr = reindex.progress(registry, SLUG)
+        assert "heartbeat_at" in pr and "built_seconds" in pr and "started_at" in pr
+        execute(registry, run_id, deps(registry, store))
+        assert reindex.progress(registry, SLUG)["built_seconds"] is not None

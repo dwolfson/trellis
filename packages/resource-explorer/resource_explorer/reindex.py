@@ -287,7 +287,8 @@ def run(run_id: str, deps: Deps) -> tuple[str, str]:
         log.exception("rebuild of %s failed while building", slug)
         _drop_aside(r)
         why = _why(exc)
-        r.step("failed", f"the build failed, and the live index is unchanged: {why}")
+        r.step("failed", f"the build failed, and the live index is unchanged: {why}",
+               built_seconds=_seconds_since(r.t.get("build_started_at")))
         return "failed", why[:500]
     if r.t.get("refused"):
         _drop_aside(r)
@@ -298,6 +299,16 @@ def run(run_id: str, deps: Deps) -> tuple[str, str]:
                                   "swaps")
         return "succeeded", ""
     return _finish(r)
+
+
+def _seconds_since(iso: str | None) -> float | None:
+    """Wall-clock seconds since `iso`, for a build that failed before it recorded its own time."""
+    if not iso:
+        return None
+    try:
+        return round((_now() - datetime.fromisoformat(iso)).total_seconds(), 1)
+    except ValueError:
+        return None
 
 
 def _why(exc: BaseException) -> str:
@@ -313,7 +324,8 @@ def _build(r: _Run) -> None:
     d, slug = r.d, r.t["slug"]
     p = d.registry.get(slug)
     started = time.monotonic()
-    r.step("building", "building aside from a fresh download; chat keeps the live index")
+    r.step("building", "building aside from a fresh download; chat keeps the live index",
+           build_started_at=_now().isoformat())
     plan = d.analyzer.analyze(p.github_url, subpath=p.subproject_path or None)
     live = own_collections(slug, p.collections)
     proposed = {f"{slug}_{ct.name}": ct for ct in plan.proposed_collections}
@@ -339,16 +351,27 @@ def _build(r: _Run) -> None:
             if d.store.collection_exists(aside(name)):
                 d.store.drop_collection(aside(name))
             kw = {"extra_paths": extra} if extra and ct.name in doc_types else {}
+            if ct.name == "pdfs":
+                d.pipeline.pdf_failures = []
             new = d.pipeline._ingest_collection(repo, slug, aside(name), ct,
                                                 root if ct.name != "release_notes" else None, id_collection=name,
                                                 **kw)
             old = d.store.count(name) if name in live and d.store.collection_exists(name) else 0
             counts[name] = {"old": old, "new": int(new or 0)}
+            if ct.name == "pdfs" and getattr(d.pipeline, "pdf_failures", None):
+                counts[name]["failed_files"] = [f"{f}: {why}" for f, why in d.pipeline.pdf_failures]
     for name in live:
         if name not in proposed:
             counts[name] = {"old": d.store.count(name) if d.store.collection_exists(name) else 0, "new": None}
     refused = [f"{n} had {c['old']} chunk(s) and now has none" for n, c in counts.items()
                if c["new"] == 0 and c["old"] > 0]
+    # A PDF that yielded no text would replace its chunks with none (laz 2026-11-10: Docling returned empty
+    # documents without raising). The rebuild refuses rather than swap a smaller index in quietly.
+    for n, c in counts.items():
+        if c.get("failed_files"):
+            shown = "; ".join(c["failed_files"][:3]) + (f" and {len(c['failed_files']) - 3} more"
+                                                        if len(c["failed_files"]) > 3 else "")
+            refused.append(f"{n}: {len(c['failed_files'])} PDF(s) yielded no text ({shown})")
     unindexed = [n for n, c in counts.items() if c["new"] and not d.store.has_vector_index(aside(n))]
     if unindexed:
         refused.append("these rebuilt tables have no vector index: " + ", ".join(unindexed))
@@ -896,5 +919,9 @@ def progress(registry, slug: str) -> dict:
                     "previous_tables": [previous(n) for n in (t.get("kept") or []) + (t.get("dropped") or [])]
                     if t.get("phase") == "done" and not t.get("undone") and not t.get("discarded") else [],
                     "drop_error": t.get("drop_error", ""), "left_aside": t.get("left_aside") or [],
+                    # The build's own timing (set on success and on failure), and the run row's heartbeat: a
+                    # running row whose heartbeat is older than 3 intervals is what crash recovery looks at.
+                    "built_seconds": t.get("built_seconds"), "build_started_at": t.get("build_started_at", ""),
+                    "heartbeat_at": r.get("heartbeat_at") or "", "started_at": r.get("started_at") or "",
                     "undone": bool(t.get("undone")), "error": r.get("error", "")}
     return {"run_id": None}

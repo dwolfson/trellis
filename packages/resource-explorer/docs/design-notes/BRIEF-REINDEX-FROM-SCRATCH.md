@@ -148,6 +148,17 @@ Re-ingest" card. The architect accepted it at the read-back of 9fb4980b.
 peer round, and not during a heavy Egeria period or a gate (the coordinator's rules). The code enforces one at a time;
 the rest is the coordinator's routine.
 
+**What the first timed rebuild found (laz, egeria_docs, 2026-11-10).** It failed safely: the check refused because
+`egeria_docs_pdfs had 36 chunk(s) and now has none`, the live index was untouched, and the build took 27 min 39 s.
+The cause was not the rebuild: Docling 2.118 compiles its layout model with `torch.compile` by default, every batch
+failed on Apple MPS (no float64), and Docling returned empty documents without raising, which `_ingest_pdfs` then
+skipped quietly. Turning compilation off (`disable_torch_compile`) was not enough: gate b354 ran a real PDF on laz
+with compile off and the layout model still failed, because transformers' RT-DETRv2 hard-codes a float64 tensor.
+Fixed by running Docling on the CPU wherever it would pick MPS (`keep_off_mps`, in trellis-artifact-tree and RE's
+`build_pdf_converter`); compilation stays off. Every PDF that yields no text is now recorded
+(`pipeline.pdf_failures`): a rebuild refuses and names the files, and a refresh says so in its output. Progress now
+carries `built_seconds` on failure too, and the run row's `heartbeat_at`.
+
 ## 8. Questions for the project owner
 
 **Decision (project owner, 2026-11-10):** Q2, Q3 and Q5 as recommended: swap at once when the check passes, keeping the
