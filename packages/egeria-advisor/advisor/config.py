@@ -477,7 +477,9 @@ class AdvisorSettings(BaseSettings):
         default="sentence-transformers/all-MiniLM-L6-v2",
         alias="EMBEDDING_MODEL"
     )
-    embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
+    # No embedding_device field: EA reads the device from advisor.yaml's
+    # embeddings.device (shipped "auto"). An EMBEDDING_DEVICE env var used to be
+    # declared here but nothing read it, which misled two reviews on 2026-11-11.
 
     # MLflow
     # Default matches advisor.yaml observability.mlflow.tracking_uri (the

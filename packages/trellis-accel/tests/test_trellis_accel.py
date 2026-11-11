@@ -193,7 +193,7 @@ def test_hedwig_today_an_amd_gpu_and_the_cuda_build(monkeypatch, tmp_path):
 
 
 def test_each_purpose_is_reported_with_its_real_setting(monkeypatch):
-    """Architect C1: on laz, EA embeds on the CPU (EMBEDDING_DEVICE's default) while Docling uses Apple's GPU; the
+    """Architect C1: when an app's embeddings setting is "cpu" while Docling is "auto" on an Apple GPU, the
     report must say both, not one generic "auto" choice."""
     _use(monkeypatch, _torch(mps=True))
     monkeypatch.setattr(ta.metadata, "version", lambda n: "5.22.2")
