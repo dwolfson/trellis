@@ -64,6 +64,14 @@ async def start_line_within(seconds: float) -> str:
         return issue_117_start_line(lambda: "")
 
 
+def _hardware_purposes() -> dict:
+    """The device setting each of RE's models really runs with: its embeddings from EmbeddingsConfig.device, Docling
+    on auto (with trellis-accel's rule for Apple's GPU). The report states these, not one generic choice."""
+    from resource_explorer.config import get_config
+
+    return {"embeddings": get_config().embeddings.device, "docling": "auto"}
+
+
 def _log_hardware_in_background(log) -> None:
     """The start-up hardware line (packages/trellis-accel): what the machine has, what this PyTorch can use, the device
     chosen and any finding that names a fix. Built off the startup path (importing torch takes seconds) and cached,
@@ -73,7 +81,7 @@ def _log_hardware_in_background(log) -> None:
     def run():
         try:
             from trellis_accel import report_once, startup_line
-            log.info("%s", startup_line(report_once()))
+            log.info("%s", startup_line(report_once(_hardware_purposes())))
         except Exception as exc:  # noqa: BLE001 -- a report, never a reason to stop serving
             log.warning("hardware report could not be made: %s", exc)
 
@@ -532,7 +540,7 @@ async def health_hardware() -> dict:
     import asyncio
 
     from trellis_accel import report_once
-    return await asyncio.to_thread(report_once)
+    return await asyncio.to_thread(lambda: report_once(_hardware_purposes()))
 
 
 # A fresh token per server process: a page that sees it change knows the server restarted (and so what it can

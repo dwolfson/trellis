@@ -204,9 +204,11 @@ class EmbeddingGenerator:
             logger.info(f"embedding model loaded from cache (offline): {self.model_name}")
 
     def _detect_best_device(self) -> str:
-        """The device for EMBEDDING_DEVICE=auto: the shared choice (packages/trellis-accel), which is TRELLIS_DEVICE
-        when set, else an NVIDIA or AMD (ROCm) GPU, then Apple's GPU, then the CPU, and says why. EA's own default
-        stays "cpu" (EMBEDDING_DEVICE); this runs only when that is set to "auto"."""
+        """The device for an embeddings device of "auto": the shared choice
+        (packages/trellis-accel): TRELLIS_DEVICE when set, else an NVIDIA or AMD (ROCm) GPU,
+        then Apple's GPU, then the CPU, and says why. EA's setting is advisor.yaml's
+        `embeddings.device`, shipped as "auto" (EmbeddingConfig's own default, "cpu", applies
+        only when the file leaves it out); EMBEDDING_DEVICE is not read on this path."""
         from trellis_accel import pick_device
 
         choice = pick_device("auto", purpose="embeddings")

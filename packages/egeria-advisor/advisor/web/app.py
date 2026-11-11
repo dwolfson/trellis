@@ -193,6 +193,15 @@ from advisor.web.dashboards import router as _dashboards_router
 app.include_router(_dashboards_router)
 
 
+def _hardware_purposes() -> dict:
+    """The device setting each of EA's models really runs with: its embeddings from
+    advisor.yaml's `embeddings.device` (what advisor/embeddings.py reads; shipped as "auto"),
+    Docling on auto. The report states these, not one generic choice."""
+    from advisor.config import get_full_config
+
+    return {"embeddings": get_full_config()["embeddings"].device, "docling": "auto"}
+
+
 def _log_hardware_in_background(log) -> None:
     """The start-up hardware line (packages/trellis-accel): what the machine has, what this
     PyTorch can use, the device chosen and any finding that names a fix. Built off the startup
@@ -203,7 +212,7 @@ def _log_hardware_in_background(log) -> None:
     def run():
         try:
             from trellis_accel import report_once, startup_line
-            log.info(startup_line(report_once()))
+            log.info(startup_line(report_once(_hardware_purposes())))
         except Exception as exc:  # noqa: BLE001 -- a report, never a reason to stop serving
             log.warning(f"hardware report could not be made: {exc}")
 
@@ -296,7 +305,7 @@ async def health_hardware() -> dict:
     import asyncio
 
     from trellis_accel import report_once
-    return await asyncio.to_thread(report_once)
+    return await asyncio.to_thread(lambda: report_once(_hardware_purposes()))
 
 
 @app.get("/api/status")

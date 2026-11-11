@@ -21,9 +21,9 @@ REPORT = {"machine": {"amd": ["gfx1150"], "nvidia": [], "apple": False, "platfor
 
 def test_the_endpoint_serves_the_report_made_at_start_up(monkeypatch):
     made = []
-    monkeypatch.setattr(trellis_accel, "report_once", lambda: made.append(1) or REPORT)
+    monkeypatch.setattr(trellis_accel, "report_once", lambda purposes=None: made.append(purposes) or REPORT)
     assert asyncio.run(web.health_hardware()) == REPORT
-    assert made == [1]
+    assert made == [web._hardware_purposes()]   # the app's real settings, per purpose (Architect C1)
 
 
 def test_it_is_signed_in_only_unlike_health():
@@ -41,7 +41,7 @@ def _drain():
 
 
 def test_the_start_up_line_is_logged_off_the_startup_path(monkeypatch, caplog):
-    monkeypatch.setattr(trellis_accel, "report_once", lambda: REPORT)
+    monkeypatch.setattr(trellis_accel, "report_once", lambda purposes=None: REPORT)
     monkeypatch.setattr(trellis_accel, "startup_line", lambda r: "hardware: PyTorch 2.13.0 (cuda); device cpu")
     seen = []
     log = logging.getLogger("hw-test")
@@ -52,7 +52,7 @@ def test_the_start_up_line_is_logged_off_the_startup_path(monkeypatch, caplog):
 
 
 def test_a_report_that_fails_is_a_warning_not_a_stop(monkeypatch):
-    def broken():
+    def broken(purposes=None):
         raise RuntimeError("torch import failed")
     monkeypatch.setattr(trellis_accel, "report_once", broken)
     warned = []
@@ -61,3 +61,10 @@ def test_a_report_that_fails_is_a_warning_not_a_stop(monkeypatch):
     web._log_hardware_in_background(log)
     _drain()
     assert warned and "torch import failed" in warned[0]
+
+
+def test_re_reports_its_embeddings_with_its_configured_setting():
+    """Architect C1: the report states RE's own embeddings setting, not a generic "auto"."""
+    from resource_explorer.config import get_config
+
+    assert web._hardware_purposes() == {"embeddings": get_config().embeddings.device, "docling": "auto"}

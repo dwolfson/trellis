@@ -132,7 +132,8 @@ def _kfd(tmp_path, *versions):
 
 def test_the_amd_gpu_is_read_from_kfd_as_its_gfx_name(monkeypatch, tmp_path):
     monkeypatch.setattr(ta, "KFD_NODES", _kfd(tmp_path, 0, 110500, 90010))   # node 0 is the CPU
-    assert ta.probe_machine()["amd"] == ["gfx1150", "gfx90a"]
+    amd = ta.probe_machine()["amd"]
+    assert amd["status"] == "found" and amd["gpus"] == ["gfx1150", "gfx90a"]
 
 
 def test_an_nvidia_gpu_is_read_from_its_driver(monkeypatch, tmp_path):
@@ -140,28 +141,74 @@ def test_an_nvidia_gpu_is_read_from_its_driver(monkeypatch, tmp_path):
     gpu.mkdir(parents=True)
     (gpu / "information").write_text("Model: \t\t NVIDIA GeForce RTX 4090\nIRQ: 1\n")
     monkeypatch.setattr(ta, "NVIDIA_PROC", tmp_path / "nv")
-    assert ta.probe_machine()["nvidia"] == ["NVIDIA GeForce RTX 4090"]
+    assert ta.probe_machine()["nvidia"] == {"status": "found", "gpus": ["NVIDIA GeForce RTX 4090"], "reason": ""}
+
+
+def test_no_driver_is_none_with_the_reason():
+    m = ta.probe_machine()
+    assert m["nvidia"]["status"] == "none" and "no NVIDIA driver" in m["nvidia"]["reason"]
+    assert m["amd"]["status"] == "none" and "/sys/class/kfd" in m["amd"]["reason"]
+
+
+def test_a_failing_nvidia_smi_is_not_checked_not_none(monkeypatch):
+    """Architect C2: a failing nvidia-smi says nothing about whether there is a GPU."""
+    monkeypatch.setattr(ta.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None)
+    monkeypatch.setattr(ta.subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        returncode=9, stdout="", stderr="NVIDIA-SMI has failed because it couldn't communicate with the driver"))
+    nv = ta.probe_machine()["nvidia"]
+    assert nv["status"] == "not checked" and "exit 9" in nv["reason"] and "couldn't communicate" in nv["reason"]
+
+
+def test_a_probe_that_raises_is_not_checked_and_the_report_still_comes(monkeypatch, tmp_path):
+    """Architect C2: a kfd read error used to raise the whole report, and /health/hardware 500'd on every call."""
+    kfd = _kfd(tmp_path, 110500)
+    (kfd / "0" / "properties").chmod(0)
+    monkeypatch.setattr(ta, "KFD_NODES", kfd)
+    monkeypatch.setattr(ta.Path, "read_text", lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    _use(monkeypatch, _torch())
+    r = ta.hardware_report()
+    assert r["machine"]["amd"]["status"] == "not checked" and "PermissionError" in r["machine"]["amd"]["reason"]
+    assert any(f["text"].startswith("AMD GPUs not checked: PermissionError") for f in r["findings"])
+
+
+def test_the_report_never_raises(monkeypatch):
+    monkeypatch.setattr(ta, "probe_machine", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    r = ta.hardware_report()
+    assert r["choices"] == {} and "could not be made: RuntimeError: boom" in r["findings"][0]["text"]
 
 
 def test_hedwig_today_an_amd_gpu_and_the_cuda_build(monkeypatch, tmp_path):
     """hedwig on 2026-11-11: a Radeon 890M, and the lock's CUDA PyTorch, which cannot use it."""
     monkeypatch.setattr(ta, "KFD_NODES", _kfd(tmp_path, 0, 110500))
     _use(monkeypatch, _torch(cuda=False))
-    r = ta.hardware_report()
-    assert r["choice"]["device"] == "cpu"
+    r = ta.hardware_report({"embeddings": "auto", "docling": "auto"})
+    assert {p: c["device"] for p, c in r["choices"].items()} == {"embeddings": "cpu", "docling": "cpu"}
     texts = [f["text"] for f in r["findings"]]
     assert any(t.startswith("AMD GPU gfx1150 found, but this environment has the CUDA PyTorch; a ROCm build")
                for t in texts)
     assert any("CUDA build (about 4.5 GB of NVIDIA libraries) and the machine has no NVIDIA GPU" in t for t in texts)
     line = ta.startup_line(r)
-    assert line.startswith("hardware: PyTorch 2.13.0 (cuda); device cpu: no GPU this PyTorch can use; WARN: AMD GPU")
+    assert line.startswith("hardware: PyTorch 2.13.0 (cuda); embeddings (setting auto): cpu, no GPU this PyTorch can "
+                           "use; docling (setting auto): cpu")
+
+
+def test_each_purpose_is_reported_with_its_real_setting(monkeypatch):
+    """Architect C1: on laz, EA embeds on the CPU (EMBEDDING_DEVICE's default) while Docling uses Apple's GPU; the
+    report must say both, not one generic "auto" choice."""
+    _use(monkeypatch, _torch(mps=True))
+    monkeypatch.setattr(ta.metadata, "version", lambda n: "5.22.2")
+    r = ta.hardware_report({"embeddings": "cpu", "docling": "auto"})
+    assert r["choices"]["embeddings"] == {"setting": "cpu", "device": "cpu", "reason": "this app's setting asks for cpu",
+                                          "gpu": None}
+    assert r["choices"]["docling"]["device"] == "mps" and r["choices"]["docling"]["setting"] == "auto"
+    assert "embeddings (setting cpu): cpu" in ta.startup_line(r) and "docling (setting auto): mps" in ta.startup_line(r)
 
 
 def test_hedwig_with_rocm_says_nothing_but_what_it_uses(monkeypatch, tmp_path):
     monkeypatch.setattr(ta, "KFD_NODES", _kfd(tmp_path, 0, 110500))
     _use(monkeypatch, _torch(cuda=True, hip="7.2.53211", name="AMD Radeon 890M Graphics"))
-    r = ta.hardware_report()
-    assert r["findings"] == [] and r["choice"]["device"] == "cuda" and r["build"]["kind"] == "rocm"
+    r = ta.hardware_report({"docling": "auto"})
+    assert r["findings"] == [] and r["choices"]["docling"]["device"] == "cuda" and r["build"]["kind"] == "rocm"
 
 
 def test_a_matching_gpu_that_pytorch_cannot_open_is_a_warning(monkeypatch, tmp_path):
@@ -170,14 +217,17 @@ def test_a_matching_gpu_that_pytorch_cannot_open_is_a_warning(monkeypatch, tmp_p
     assert any("cannot use the GPU (driver, or permission" in f["text"] for f in ta.hardware_report()["findings"])
 
 
-def test_a_refused_override_is_a_finding_not_a_crash(monkeypatch):
+def test_a_refused_setting_is_a_finding_not_a_crash(monkeypatch):
     _use(monkeypatch, _torch())
-    monkeypatch.setenv(ta.DEVICE_ENV, "cuda")
-    r = ta.hardware_report()
-    assert r["choice"]["device"] is None and r["findings"][-1]["level"] == "warn"
+    r = ta.hardware_report({"embeddings": "cuda"})
+    assert r["choices"]["embeddings"]["device"] is None
+    assert r["findings"][-1]["level"] == "warn" and r["findings"][-1]["text"].startswith("embeddings: this app's setting")
 
 
-def test_the_report_is_made_once(monkeypatch):
+def test_the_report_is_made_once_per_set_of_purposes(monkeypatch):
     calls = []
-    monkeypatch.setattr(ta, "hardware_report", lambda: calls.append(1) or {"x": 1})
-    assert ta.report_once() is ta.report_once() and calls == [1]
+    monkeypatch.setattr(ta, "hardware_report", lambda purposes=None: calls.append(purposes) or {"x": 1})
+    a = ta.report_once({"embeddings": "cpu", "docling": "auto"})
+    assert ta.report_once({"docling": "auto", "embeddings": "cpu"}) is a       # same set, any order: one report
+    ta.report_once({"embeddings": "auto"})
+    assert calls == [{"docling": "auto", "embeddings": "cpu"}, {"embeddings": "auto"}]

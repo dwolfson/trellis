@@ -25,9 +25,10 @@ REPORT = {"machine": {"amd": ["gfx1150"], "nvidia": [], "apple": False,
 
 def test_the_endpoint_serves_the_report_made_at_start_up(monkeypatch):
     made = []
-    monkeypatch.setattr(trellis_accel, "report_once", lambda: made.append(1) or REPORT)
+    monkeypatch.setattr(trellis_accel, "report_once",
+                        lambda purposes=None: made.append(purposes) or REPORT)
     assert asyncio.run(web.health_hardware()) == REPORT
-    assert made == [1]
+    assert made == [web._hardware_purposes()]   # the app's real settings, per purpose (C1)
 
 
 def test_it_is_signed_in_only_unlike_health():
@@ -44,7 +45,7 @@ def _drain():
 
 
 def test_the_start_up_line_is_logged_off_the_startup_path(monkeypatch, caplog):
-    monkeypatch.setattr(trellis_accel, "report_once", lambda: REPORT)
+    monkeypatch.setattr(trellis_accel, "report_once", lambda purposes=None: REPORT)
     line = "hardware: PyTorch 2.13.0 (cuda); device cpu"
     monkeypatch.setattr(trellis_accel, "startup_line", lambda r: line)
     seen = []
@@ -56,7 +57,7 @@ def test_the_start_up_line_is_logged_off_the_startup_path(monkeypatch, caplog):
 
 
 def test_a_report_that_fails_is_a_warning_not_a_stop(monkeypatch):
-    def broken():
+    def broken(purposes=None):
         raise RuntimeError("torch import failed")
     monkeypatch.setattr(trellis_accel, "report_once", broken)
     warned = []
@@ -65,3 +66,26 @@ def test_a_report_that_fails_is_a_warning_not_a_stop(monkeypatch):
     web._log_hardware_in_background(log)
     _drain()
     assert warned and "torch import failed" in warned[0]
+
+
+def test_ea_reports_the_embeddings_setting_it_really_runs_with(monkeypatch):
+    """Architect C1: the report states each purpose with EA's real setting, not one generic choice.
+    EA's embeddings read advisor.yaml's embeddings.device (shipped "auto"); EMBEDDING_DEVICE's
+    "cpu" default is not on that path. With a "cpu" setting the report says cpu even where
+    Apple's GPU is free, and with "auto" it says what auto picks."""
+    import types
+
+    import trellis_accel as ta
+
+    from advisor.config import get_full_config
+
+    assert web._hardware_purposes() == {"embeddings": get_full_config()["embeddings"].device,
+                                        "docling": "auto"}
+    fake = types.SimpleNamespace(
+        __version__="2.13.0", version=types.SimpleNamespace(cuda=None, hip=None),
+        cuda=types.SimpleNamespace(is_available=lambda: False, get_device_name=lambda i=0: ""),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setattr(ta, "_torch", lambda: fake)
+    monkeypatch.delenv(ta.DEVICE_ENV, raising=False)
+    assert ta.hardware_report({"embeddings": "cpu"})["choices"]["embeddings"]["device"] == "cpu"
+    assert ta.hardware_report({"embeddings": "auto"})["choices"]["embeddings"]["device"] == "mps"

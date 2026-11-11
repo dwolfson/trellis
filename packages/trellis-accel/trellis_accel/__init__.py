@@ -160,31 +160,53 @@ def _gfx(target_version: int) -> str:
     return f"gfx{major}{minor:x}{step:x}"
 
 
-def probe_machine() -> dict[str, Any]:
-    """The GPUs the machine has, read from the OS: NVIDIA from its driver, AMD from the kernel's kfd topology,
-    Apple from the platform. No PyTorch, no network, nothing installed."""
-    out: dict[str, Any] = {"platform": f"{sys.platform}/{platform.machine()}", "nvidia": [], "amd": [],
-                           "apple": sys.platform == "darwin" and platform.machine() == "arm64"}
-    if NVIDIA_PROC.is_dir():
-        for info in sorted(NVIDIA_PROC.glob("*/information")):
-            model = next((ln.split(":", 1)[1].strip() for ln in info.read_text(errors="ignore").splitlines()
-                          if ln.startswith("Model:")), "NVIDIA GPU")
-            out["nvidia"].append(model)
-    elif shutil.which("nvidia-smi"):
-        try:
-            listed = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3,
-                                    check=False).stdout
-            out["nvidia"] = [ln.split(":", 1)[1].split("(")[0].strip() for ln in listed.splitlines() if ":" in ln]
-        except Exception:  # noqa: BLE001, S110 -- a probe, not a requirement: no NVIDIA list is said as none
-            pass
-    if KFD_NODES.is_dir():
+def _probe(status: str, gpus: list[str] | None = None, reason: str = "") -> dict[str, Any]:
+    """One vendor's probe: "found" (with gpus), "none" (the OS says there is none), or "not checked" (with reason)."""
+    return {"status": status, "gpus": list(gpus or []), "reason": reason}
+
+
+def _probe_nvidia() -> dict[str, Any]:
+    try:
+        if NVIDIA_PROC.is_dir():
+            models = []
+            for info in sorted(NVIDIA_PROC.glob("*/information")):
+                models.append(next((ln.split(":", 1)[1].strip() for ln in info.read_text(errors="ignore").splitlines()
+                                    if ln.startswith("Model:")), "NVIDIA GPU"))
+            return _probe("found", models) if models else _probe("none", reason="NVIDIA's driver lists no GPU")
+        if shutil.which("nvidia-smi"):
+            run = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=3, check=False)
+            if run.returncode != 0:   # a failing nvidia-smi says nothing about whether there is a GPU
+                why = " ".join((run.stderr or run.stdout or "").split())[:160]
+                return _probe("not checked", reason=f"nvidia-smi failed (exit {run.returncode}): {why}")
+            models = [ln.split(":", 1)[1].split("(")[0].strip() for ln in run.stdout.splitlines() if ":" in ln]
+            return _probe("found", models) if models else _probe("none", reason="nvidia-smi lists no GPU")
+        return _probe("none", reason="no NVIDIA driver (/proc/driver/nvidia) and no nvidia-smi")
+    except Exception as exc:  # noqa: BLE001 -- a probe never raises; it says what it could not do
+        return _probe("not checked", reason=f"{type(exc).__name__}: {exc}")
+
+
+def _probe_amd() -> dict[str, Any]:
+    try:
+        if not KFD_NODES.is_dir():
+            return _probe("none", reason="no AMD kernel driver topology (/sys/class/kfd)")
+        gfx = []
         for props in sorted(KFD_NODES.glob("*/properties")):
             for ln in props.read_text(errors="ignore").splitlines():
                 if ln.startswith("gfx_target_version"):
                     v = int(ln.split()[-1] or 0)
                     if v:
-                        out["amd"].append(_gfx(v))
-    return out
+                        gfx.append(_gfx(v))
+        return _probe("found", gfx) if gfx else _probe("none", reason="the kfd topology lists no GPU node")
+    except Exception as exc:  # noqa: BLE001 -- a probe never raises; it says what it could not do
+        return _probe("not checked", reason=f"{type(exc).__name__}: {exc}")
+
+
+def probe_machine() -> dict[str, Any]:
+    """The GPUs the machine has, read from the OS: NVIDIA from its driver (or nvidia-smi), AMD from the kernel's kfd
+    topology, Apple from the platform. Each is {"status": found | none | not checked, "gpus", "reason"}; nothing here
+    raises. No PyTorch, no network, nothing installed."""
+    return {"platform": f"{sys.platform}/{platform.machine()}", "nvidia": _probe_nvidia(), "amd": _probe_amd(),
+            "apple": sys.platform == "darwin" and platform.machine() == "arm64"}
 
 
 def _build() -> dict[str, Any]:
@@ -197,52 +219,83 @@ def _build() -> dict[str, Any]:
             "gpu_available": bool(torch.cuda.is_available()), "mps_available": _available(torch, "mps")}
 
 
-def hardware_report(requested: str = "auto", purpose: str = "") -> dict[str, Any]:
-    """What the machine has, what the installed PyTorch can use, the device chosen, and findings that name the fix.
-    Reports only: it never installs or changes anything."""
-    machine, build = probe_machine(), _build()
+def _choices(purposes: dict[str, str]) -> dict[str, dict[str, Any]]:
+    out = {}
+    for purpose, requested in purposes.items():
+        try:
+            out[purpose] = {"setting": requested, **asdict(pick_device(requested, purpose=purpose))}
+        except DeviceUnavailable as exc:
+            out[purpose] = {"setting": requested, "device": None, "reason": str(exc), "gpu": None}
+    return out
+
+
+def hardware_report(purposes: dict[str, str] | None = None) -> dict[str, Any]:
+    """What the machine has, what the installed PyTorch can use, the device each purpose actually gets (from the app's
+    own setting for it: `purposes` = {"embeddings": "cpu", "docling": "auto", ...}), and findings that name the fix.
+    Reports only: it never installs or changes anything, and it never raises (a failure is a finding)."""
+    purposes = dict(purposes or {"default": "auto"})
     try:
-        choice: dict[str, Any] = asdict(pick_device(requested, purpose=purpose))
-    except DeviceUnavailable as exc:
-        choice = {"device": None, "reason": str(exc), "gpu": None}
+        machine, build = probe_machine(), _build()
+        choices = _choices(purposes)
+    except Exception as exc:  # noqa: BLE001 -- the report is about the machine; it must never take the app down
+        return {"machine": None, "build": None, "choices": {},
+                "findings": [{"level": "warn", "text": f"the hardware report could not be made: "
+                                                       f"{type(exc).__name__}: {exc}"}]}
     findings: list[dict[str, str]] = []
     kind = build.get("kind")
+    amd, nvidia = machine["amd"], machine["nvidia"]
     proposal = "see docs/hardware-acceleration-proposal.md"
+    for vendor, probe in (("NVIDIA", nvidia), ("AMD", amd)):
+        if probe["status"] == "not checked":
+            findings.append({"level": "note", "text": f"{vendor} GPUs not checked: {probe['reason']}"})
     if build.get("torch") is None:
         findings.append({"level": "note", "text": "PyTorch is not installed; models that need it cannot run here"})
-    if machine["amd"] and kind != "rocm" and build.get("torch"):
-        findings.append({"level": "warn", "text": f"AMD GPU {', '.join(machine['amd'])} found, but this environment "
+    if amd["status"] == "found" and kind != "rocm" and build.get("torch"):
+        findings.append({"level": "warn", "text": f"AMD GPU {', '.join(amd['gpus'])} found, but this environment "
                          f"has the {kind.upper() if kind == 'cuda' else 'CPU-only'} PyTorch; a ROCm build would make "
                          f"PDF conversion about 2x faster (measured on a Radeon 890M; {proposal})"})
-    if machine["nvidia"] and kind != "cuda" and build.get("torch"):
-        findings.append({"level": "warn", "text": f"NVIDIA GPU {', '.join(machine['nvidia'])} found, but this "
+    if nvidia["status"] == "found" and kind != "cuda" and build.get("torch"):
+        findings.append({"level": "warn", "text": f"NVIDIA GPU {', '.join(nvidia['gpus'])} found, but this "
                          f"environment has the {'ROCm' if kind == 'rocm' else 'CPU-only'} PyTorch; the CUDA build "
                          f"would use it ({proposal})"})
-    if kind == "cuda" and not machine["nvidia"] and not build.get("gpu_available"):
+    if kind == "cuda" and nvidia["status"] == "none" and not build.get("gpu_available"):
         findings.append({"level": "note", "text": "this PyTorch is the CUDA build (about 4.5 GB of NVIDIA libraries) "
                          f"and the machine has no NVIDIA GPU; the CPU-only build would do the same work ({proposal})"})
-    if kind == "rocm" and not machine["amd"] and not build.get("gpu_available"):
+    if kind == "rocm" and amd["status"] == "none" and not build.get("gpu_available"):
         findings.append({"level": "note", "text": "this PyTorch is the ROCm build and the machine has no AMD GPU it "
                          "can see; the CPU-only build would do the same work"})
-    if (kind == "rocm" and machine["amd"] or kind == "cuda" and machine["nvidia"]) and not build.get("gpu_available"):
+    matched = (kind == "rocm" and amd["status"] == "found") or (kind == "cuda" and nvidia["status"] == "found")
+    if matched and not build.get("gpu_available"):
         findings.append({"level": "warn", "text": "the GPU and this PyTorch build match, but PyTorch cannot use the "
                          "GPU (driver, or permission on /dev/kfd or /dev/nvidia*)"})
-    if choice["device"] is None:
-        findings.append({"level": "warn", "text": choice["reason"]})
-    return {"machine": machine, "build": build, "choice": choice, "findings": findings}
+    for purpose, c in choices.items():
+        if c["device"] is None:
+            findings.append({"level": "warn", "text": f"{purpose}: {c['reason']}"})
+    return {"machine": machine, "build": build, "choices": choices, "findings": findings}
 
 
 @cache
-def report_once() -> dict[str, Any]:
-    """The report, made once per process (at start-up): serving it costs nothing and never touches PyTorch again."""
-    return hardware_report()
+def _report_for(purposes: tuple[tuple[str, str], ...]) -> dict[str, Any]:
+    return hardware_report(dict(purposes))
+
+
+def report_once(purposes: dict[str, str] | None = None) -> dict[str, Any]:
+    """The report for these purposes, made once per process (at start-up): serving it again costs nothing and never
+    touches PyTorch. hardware_report never raises, so what is cached is always a report."""
+    return _report_for(tuple(sorted((purposes or {"default": "auto"}).items())))
+
+
+report_once.cache_clear = _report_for.cache_clear   # type: ignore[attr-defined]
 
 
 def startup_line(report: dict[str, Any]) -> str:
-    """One line for the start-up log: the device, why, and any finding."""
-    b, c = report["build"], report["choice"]
+    """One line for the start-up log: the PyTorch build, each purpose's device and why, and any finding."""
+    b = report.get("build") or {}
     torch_word = f"PyTorch {b['torch']} ({b.get('kind')})" if b.get("torch") else "no PyTorch"
-    line = f"hardware: {torch_word}; device {c['device'] or 'none'}: {c['reason']}"
-    for f in report["findings"]:
+    parts = [f"hardware: {torch_word}"]
+    for purpose, c in (report.get("choices") or {}).items():
+        parts.append(f"{purpose} (setting {c['setting']}): {c['device'] or 'none'}, {c['reason']}")
+    line = "; ".join(parts)
+    for f in report.get("findings") or []:
         line += f"; {f['level'].upper()}: {f['text']}"
     return line
