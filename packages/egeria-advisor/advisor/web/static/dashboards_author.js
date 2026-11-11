@@ -35,6 +35,24 @@
     b.addEventListener('click', onClick);
     return b;
   }
+  /** GET as the user; {ok, data, why}: why says what went wrong, in the server's words when it gave them
+   *  (A-P's {state, message}, FastAPI's detail), never an empty answer passed off as "none". */
+  async function getJson(url) {
+    try {
+      const r = await fetch(url, { headers: headers() });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        return { ok: false, data, why: r.status === 401 ? 'sign in again' : (data.message || data.detail || `HTTP ${r.status}`) };
+      }
+      if (data.error || data.state === 'read_failed' || data.state === 'failed') {
+        return { ok: false, data, why: data.message || data.error };
+      }
+      return { ok: true, data };
+    } catch (e) {
+      return { ok: false, data: {}, why: String(e) };
+    }
+  }
+
   function refreshAfterWrite(sheetName) {
     if (root.EADashboards) {
       root.EADashboards.loadDashboards(true);
@@ -138,12 +156,16 @@
       if (vis.value !== 'zones' || loaded) return;
       loaded = true;
       list.textContent = 'Reading zones…';
-      try {
-        const r = await fetch('/api/egeria/zones', { headers: headers() });
-        const data = await r.json();
+      {
+        const got = await getJson('/api/egeria/zones');
+        const data = got.data;
         list.textContent = '';
-        if (data.error || !(data.zones || []).length) {
-          list.appendChild(el('span', 'text-amber-400', data.error ? `Could not list zones: ${data.error}` : 'Egeria lists no zones you can use.'));
+        if (!got.ok) {
+          list.appendChild(el('span', 'dash-author-zones-error text-amber-400', `Could not read zones: ${got.why}`));
+          return;
+        }
+        if (!(data.zones || []).length) {
+          list.appendChild(el('span', 'text-amber-400', data.message || 'Egeria lists no zones you can use.'));
           return;
         }
         data.zones.forEach(z => {
@@ -156,7 +178,7 @@
           lab.appendChild(el('span', null, name));
           list.appendChild(lab);
         });
-      } catch (e) { list.textContent = `Could not list zones: ${e}`; }
+      }
     });
     return { box, value: () => vis.value === 'zones' ? [...list.querySelectorAll('input:checked')].map(c => c.value) : [] };
   }
@@ -166,7 +188,12 @@
     opts = opts || {};
     const m = modal('Save to a dashboard');
     const body = m.body;
-    const sheets = await fetch('/api/dashboards', { headers: headers() }).then(r => r.ok ? r.json() : {}).catch(() => ({}));
+    const listed = await getJson('/api/dashboards');
+    const sheets = listed.ok ? listed.data : {};
+    if (!listed.ok) {
+      // Not "you have no sheets": the list could not be read, so only a new sheet can be chosen here.
+      body.appendChild(el('div', 'dash-author-sheets-error text-amber-400', `Could not read your sheets: ${listed.why}`));
+    }
     const sheetSel = select([['__new__', 'New sheet…']].concat((sheets.sheets || []).map(s => [s.name, s.heading || s.name])),
       (sheets.sheets || []).length ? sheets.sheets[0].name : '__new__');
     body.appendChild(field('Sheet', sheetSel));

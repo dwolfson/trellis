@@ -69,11 +69,16 @@ def _text(value: Any, what: str, *, required: bool = False, max_len: int = _MAX_
     text = str(value)
     if len(text) > max_len:
         raise AuthorRefused(f"{what} must be at most {max_len} characters.")
-    if re.search(r"[\x00-\x1f\x7f]", text):
-        raise AuthorRefused(f"{what} must be one line, with no control characters.")
+    # pyegeria reads the document with str.splitlines(), which also breaks a line at U+0085, U+2028, U+2029
+    # and \x0b \x0c \x1c-\x1e: any of them would start a new line, and so a new heading or command.
+    if len(text.splitlines()) != 1 or re.search(r"[\x00-\x1f\x7f\x85\u2028\u2029]", text):
+        raise AuthorRefused(f"{what} must be one line, with no control characters or line breaks.")
     stripped = text.strip()
-    if stripped.startswith("#") or "___" in text or "|" in text:
-        raise AuthorRefused(f"{what} may not start with '#' or contain '___' or '|'.")
+    if stripped.startswith(("#", ">")) or "___" in text or "|" in text:
+        raise AuthorRefused(f"{what} may not start with '#' or '>', or contain '___' or '|'.")
+    if re.fullmatch(r"-{3,}", stripped):
+        # a block boundary: it could cut "### Zone Membership" off a Report and leave it public
+        raise AuthorRefused(f"{what} may not be a line of dashes.")
     return stripped
 
 
@@ -287,12 +292,21 @@ async def _existing_report(client: Any, name: str) -> Optional[Dict[str, Any]]:
 
 
 async def _filing_state(client: Any, sheet: str) -> Dict[str, Any]:
-    from md_processing.v2.dashboard_sheet import dashboard_qn, find_element_by_qualified_name
+    """Whether a new sheet will be filed: "will_file", "already_filed" (its Dashboard is a member already:
+    Dr.Egeria's Add Member does not dedupe, so a second filing would add a second membership), or
+    "not_filed" with why. Read at preview AND again at apply, so two plans for one sheet file once."""
+    from md_processing.v2.dashboard_sheet import (DashboardSheetEgeriaWriter, dashboard_qn,
+                                                  find_element_by_qualified_name)
     folder = await find_element_by_qualified_name(client, CONSUMER_FOLDER_QN)
     if not folder:
         return {"state": "not_filed", "folder": CONSUMER_FOLDER_QN,
                 "message": f"not filed: the EgeriaAdvisor dashboard folder ({CONSUMER_FOLDER_QN}) isn't seeded "
                            "in Egeria, or you cannot see it."}
+    reader = DashboardSheetEgeriaWriter(client, dry_run=True)
+    members = await reader._related(reader._guid(folder), "CollectionMembership", start_at_end=1)
+    if any((m.get("properties") or {}).get("qualifiedName") == dashboard_qn(sheet) for m in members):
+        return {"state": "already_filed", "folder": CONSUMER_FOLDER_QN,
+                "message": f"already filed in {CONSUMER_FOLDER_QN}"}
     return {"state": "will_file", "folder": CONSUMER_FOLDER_QN,
             "message": f"will add {dashboard_qn(sheet)} to {CONSUMER_FOLDER_QN}",
             "dr_egeria": filing_document(sheet)}
@@ -463,14 +477,25 @@ async def _apply_async(conn, plan_: Plan, client) -> Dict[str, Any]:
         result["notes"].append("What was written differs from the preview (Egeria changed in between): "
                                "see actions.")
     if op["new_sheet"]:
-        filing = await _filing_state(client, op["sheet"])
+        result["filing"] = await _file(conn, client, op["sheet"])
+    return {**result, "state": "written"}
+
+
+async def _file(conn: Dict[str, str], client: Any, sheet: str) -> Dict[str, Any]:
+    """File a new sheet AFTER its write. Never fails the apply: the sheet is written whatever happens here,
+    and a filing that did not happen says why ("not_filed: <reason>"), so it can be filed later."""
+    try:
+        filing = await _filing_state(client, sheet)
         if filing["state"] == "will_file":
             ok, words, _ = _dr_words(await _run_dr_egeria(conn, filing["dr_egeria"], "process"))
             filing = ({"state": "filed", "folder": CONSUMER_FOLDER_QN, "message": f"filed in {CONSUMER_FOLDER_QN}"}
                       if ok else {"state": "not_filed", "folder": CONSUMER_FOLDER_QN,
                                   "message": f"not filed: Dr.Egeria refused the membership: {words}"})
-        result["filing"] = {k: v for k, v in filing.items() if k != "dr_egeria"}
-    return {**result, "state": "written"}
+    except Exception as exc:  # noqa: BLE001 -- said in the result; the sheet write stands
+        logger.warning(f"dashboards author: filing {sheet!r} failed after the sheet was written: {exc}")
+        filing = {"state": "not_filed", "folder": CONSUMER_FOLDER_QN,
+                  "message": f"not filed: {_words(exc)}. The sheet was written; file it again later."}
+    return {k: v for k, v in filing.items() if k != "dr_egeria"}
 
 
 def apply(creds: Optional[Dict[str, str]], plan_id: str, *, confirm: Any = None,
