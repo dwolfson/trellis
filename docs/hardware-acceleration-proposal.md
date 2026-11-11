@@ -90,7 +90,7 @@ The laz files are under `~/.re-gate/docling-timing-2026-11-11/` on laz.
 | Where | Default | Order | Notes |
 |---|---|---|---|
 | RE embeddings (`resource_explorer/embeddings.py`) | `auto` (`EmbeddingsConfig.device`) | MPS, CUDA, CPU | MPS before CUDA; no reason recorded |
-| EA embeddings (`advisor/embeddings.py`) | `cpu` (`EMBEDDING_DEVICE`) | CUDA/ROCm, MPS, CPU | logs the GPU's name; falls back to CPU on failure |
+| EA embeddings (`advisor/embeddings.py`) | `auto` (`advisor.yaml`'s `embeddings.device`) | CUDA/ROCm, MPS, CPU | logs the GPU's name; falls back to CPU on failure. `EmbeddingConfig`'s own default is `cpu`, used only if the file leaves it out; `EMBEDDING_DEVICE` is defined but not read on this path |
 | Docling (`trellis_artifact_tree.adapters_pdf.keep_off_mps`, RE's `build_pdf_converter`) | Docling's `AUTO` | Docling's own | CPU instead of MPS only when transformers is older than 5.22.2, or `TRELLIS_DOCLING_ALLOW_MPS` says so |
 
 The same machine can therefore embed on one device and convert PDFs on another, and nothing records which.
@@ -131,8 +131,10 @@ Every consumer asks it: RE's and EA's embeddings, and Docling (as `AcceleratorOp
 its reason go in the log at start-up and in each run's record (a rebuild's progress, a survey's activity entry), so
 a slow or failed run says what it ran on.
 
-Two settings stay per purpose, because they differ in practice: EA's embeddings default to `cpu` today on purpose,
-and a purpose can keep its own default while still asking the shared function when it is `auto`.
+Settings stay per purpose, because they can differ: each purpose keeps its own setting (RE's
+`EmbeddingsConfig.device`, EA's `advisor.yaml` `embeddings.device`, both `auto` today) and asks the shared function
+only when it is `auto`. (An earlier version of this document said EA's embeddings default to `cpu`; that was
+wrong, found while building Proposal A: EA reads `advisor.yaml`, which ships `auto`.)
 
 The ONNX embedding path in EA (`onnxruntime` / `onnxruntime-gpu`) is a separate stack; it is out of scope here
 and noted in §7.
@@ -207,7 +209,8 @@ a multi-gigabyte change to it is the owner's call.
 1. **Measure laz:** run the same timing script on Apple's GPU and on its CPU, for the MPS column in §2.
 2. **Proposal A** (runtime) and the start-up check (§5a): the shared function and its tests; switch Docling and
    RE's embeddings to it; record the device in each run. Behaviour on today's machines is unchanged, except that
-   the choice is now said. EA's embeddings move to `auto` after the measurement in §7.
+   the choice is now said. EA's embeddings are already on `auto`; the measurement in §7 decides whether queries
+   should move to `cpu`.
 3. **Spike for Proposal B:** a branch with the extras, `uv lock`, and builds on Linux CPU, on hedwig with `rocm`,
    and on a Mac with no extra; both images built with `cpu` and the post-sync swap removed, with their size
    checked against today's (it should not change); and how a machine keeps its extra across a plain `uv sync`
@@ -230,8 +233,10 @@ exactly that). The spike (§6, step 3) settles how a machine keeps its extra acr
 there is one, else a wrapper that every session uses. Until then hedwig stays as it is; the start-up check is the
 backstop that would notice a flip.
 
-**Decision (project owner, 2026-11-11):** "Yes" (to question 3). EA's embeddings move to `auto`. Advice given with it, to settle by
-measurement before switching: EA embeds one short query at a time with a small model, where moving data to a GPU
+**Decision (project owner, 2026-11-11):** "Yes" (to question 3). Question 3 rested on this document's wrong premise that
+EA's embeddings default to `cpu`: they already run on `auto` (`advisor.yaml`). The answer stands as `auto` for EA's
+embeddings, which is what EA does today. The advice given with it still applies, now as a question of whether to move
+queries back to `cpu`: EA embeds one short query at a time with a small model, where moving data to a GPU
 can cost as much as it saves, and on hedwig the GPU is shared with Docling (and an LLM, if Ollama uses it). Measure
 query-time and batch indexing on CPU and GPU first; `auto` for batch indexing and `cpu` for queries is a likely
 outcome.
