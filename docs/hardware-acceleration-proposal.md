@@ -9,10 +9,12 @@ embeddings.
 Two separate problems need two separate mechanisms:
 
 - **Which PyTorch build is installed** (CUDA for NVIDIA, ROCm for AMD, CPU-only) can only be decided when the
-  environment is built. A running program cannot swap builds. Today every Linux install gets the NVIDIA (CUDA 13)
-  build and its 15 NVIDIA runtime packages, about 4.5 GB, including the Docker images and hedwig, which have no
-  NVIDIA GPU. Proposal: one optional extra per build (`cpu`, `cuda`, `rocm`) chosen per machine, CPU-only by
-  default on Linux; macOS unchanged (its standard build already includes Apple's GPU support).
+  environment is built. A running program cannot swap builds. Today a bare-metal Linux install (hedwig's shared
+  environment, a developer's checkout) gets the lock's NVIDIA (CUDA 13) build and its 15 NVIDIA runtime packages,
+  about 4.5 GB, whether or not the machine has an NVIDIA GPU. The Docker images do not: both Dockerfiles already
+  swap to the CPU-only build after their last `uv sync` (§3.2). Proposal: one optional extra per build (`cpu`,
+  `cuda`, `rocm`) chosen per machine, CPU-only by default on Linux; macOS unchanged (its standard build already
+  includes Apple's GPU support). For the images this replaces the post-sync swap with the lock itself.
 - **Which device each run uses** is decided at run time, and today three pieces of code decide it three different
   ways. Proposal: one small shared function that every consumer asks, which looks at what the installed PyTorch
   can actually use, refuses known-bad combinations, takes an environment override, and says what it chose and why.
@@ -67,11 +69,19 @@ passes (b357). There is no MPS timing yet: the same script (§6, step 1) gives o
 
 The same machine can therefore embed on one device and convert PDFs on another, and nothing records which.
 
-### 3.2 Installs: the NVIDIA build everywhere on Linux
+### 3.2 Installs: the lock's NVIDIA build on bare-metal Linux; a post-sync swap in the images
 
 `uv.lock` resolves `torch` from PyPI. On Linux that wheel is the CUDA 13 build, and it brings `triton` and 15
 `nvidia-*` packages. In hedwig's shared environment that is 2.7 GB of NVIDIA libraries, 1.1 GB of torch and
-690 MB of triton. Both Docker images install the same. On a machine without an NVIDIA GPU, all of it is unused.
+690 MB of triton; on a machine without an NVIDIA GPU, all of it is unused.
+
+**The Docker images already avoid it** (`docker/Dockerfile.resource-explorer` lines 14–25 and 78ff,
+`docker/Dockerfile.egeria-advisor` 63–77): after the last `uv sync` in the builder stage they uninstall torch,
+torchvision, triton and the `nvidia-*` packages and reinstall torch from PyTorch's CPU-only index
+(`docs/packaging.md` has the measured size delta). Their comments record why it must be the last step: a later
+frozen `uv sync` sees the venv no longer matches the lock and silently reinstalls the CUDA build. That same
+behaviour is why a machine on a non-default build (§7, hedwig) needs the build in the lock, not a swap after it.
+EA's `docs/design/RUNTIME_AND_HARDWARE.md` §4a has the measurement behind the images' CPU-only choice.
 (EA also lists `onnxruntime-gpu`, which has no macOS arm64 wheel; that is why `--all-extras` fails on a Mac,
 CLAUDE.md "uv".)
 
@@ -132,7 +142,9 @@ explicit = true
 ```
 
 - **macOS:** no extra; PyPI's build already includes MPS.
-- **Linux images and CI:** `cpu`. Expected saving about 3.4 GB per image (the NVIDIA libraries and triton).
+- **Linux images and CI:** `cpu`. For the images this is no size change (they already swap to the CPU build); it
+  replaces the post-sync uninstall/reinstall with the lock itself, which a later `uv sync` cannot undo. The saving
+  is on bare-metal Linux without an NVIDIA GPU: about 4.5 GB per environment.
 - **A Linux machine with an NVIDIA GPU:** `cuda`. **With an AMD GPU (hedwig):** `rocm`.
 - **The lock** records all three, and only the chosen one is downloaded.
 
@@ -171,27 +183,32 @@ a multi-gigabyte change to it is the owner's call.
    RE's embeddings to it; record the device in each run. Behaviour on today's machines is unchanged, except that
    the choice is now said. EA's embeddings move to `auto` after the measurement in §7.
 3. **Spike for Proposal B:** a branch with the extras, `uv lock`, and builds on Linux CPU, on hedwig with `rocm`,
-   and on a Mac with no extra; both images built with `cpu`, and their size compared with today's; and how a
-   machine keeps its extra across a plain `uv sync` (§7, hedwig).
-4. **Proposal B** (install): the extras, the probe script, the images on `cpu`, and the documentation (CLAUDE.md
-   "uv", `docs/packaging.md`).
+   and on a Mac with no extra; both images built with `cpu` and the post-sync swap removed, with their size
+   checked against today's (it should not change); and how a machine keeps its extra across a plain `uv sync`
+   (§7, hedwig).
+4. **Proposal B** (install): the extras, the probe script, the images on `cpu` without the swap, and the
+   documentation (CLAUDE.md "uv", `docs/packaging.md`).
 
 ## 7. Decisions
 
-**Decision (project owner, 2026-11-11):** "yes" to the CPU-only build as the Linux default, with a hardware check
-at start-up (§5a).
+The project owner answered §7's four questions in the Claude Code session that wrote this proposal, on
+2026-11-11, after reading its first version. Their words, verbatim, are quoted in each callout below; what
+follows each quotation is this document's own wording of the decision and its conditions.
 
-**Decision (project owner, 2026-11-11):** "yes" to moving hedwig to `rocm`. Condition: a plain `uv sync` from the
+**Decision (project owner, 2026-11-11):** "yes, I think so - but we should build in a hardware check on trellis
+startup?" The CPU-only build is the Linux default, with a hardware check at start-up (§5a).
+
+**Decision (project owner, 2026-11-11):** "yes" (to question 2). Hedwig moves to `rocm`. Condition: a plain `uv sync` from the
 root must not put hedwig back on the CPU build once CPU is the default (CLAUDE.md tells every session to run
 exactly that). The spike (§6, step 3) settles how a machine keeps its extra across every sync: a uv setting if
 there is one, else a wrapper that every session uses. Until then hedwig stays as it is; the start-up check is the
 backstop that would notice a flip.
 
-**Decision (project owner, 2026-11-11):** "yes" to EA's embeddings on `auto`. Advice given with it, to settle by
+**Decision (project owner, 2026-11-11):** "Yes" (to question 3). EA's embeddings move to `auto`. Advice given with it, to settle by
 measurement before switching: EA embeds one short query at a time with a small model, where moving data to a GPU
 can cost as much as it saves, and on hedwig the GPU is shared with Docling (and an LLM, if Ollama uses it). Measure
 query-time and batch indexing on CPU and GPU first; `auto` for batch indexing and `cpu` for queries is a likely
 outcome.
 
-**Decision (project owner, 2026-11-11):** "keep" EA's ONNX path (`onnxruntime-gpu`, NVIDIA only). It stays an
+**Decision (project owner, 2026-11-11):** "Keep" (to question 4). EA's ONNX path (`onnxruntime-gpu`, NVIDIA only) stays, as an
 extra; `--all-extras` still fails on macOS because of it (CLAUDE.md, "uv").
