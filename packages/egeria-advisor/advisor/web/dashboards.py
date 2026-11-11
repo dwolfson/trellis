@@ -1,4 +1,4 @@
-"""Dashboard Sheets held in Egeria: list, show, run one report placement (brief B5, read only).
+"""Dashboard Sheets held in Egeria: list, show, run a placement as a tile, drill down (briefs B5, B7a; read only).
 
 Every route reads as the signed-in user (their Egeria token); see advisor.egeria_dashboards for the
 visibility and cache rules. No route writes to Egeria.
@@ -52,9 +52,25 @@ async def show_dashboard(request: Request, name: str, perspective: Optional[str]
 @router.post("/api/dashboards/{name}/placements/{position}/run")
 async def run_dashboard_placement(request: Request, name: str, position: int,
                                   body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Run one report placement with EA's report execution, as this user. Restricted, missing and text
-    placements are refused with their reason."""
+    """Run one report placement as this user and return its tile (kpi / kpis / chart / trend / markdown /
+    empty / absent), served from this user's result cache when fresh, or stale with its age while one
+    background run refreshes it. Body: perspective, output_format and params (this view's ⚙ overrides,
+    never saved), refresh (run now). Restricted, missing and text placements are refused with their reason."""
     from advisor import egeria_dashboards as ed
     body = body or {}
+    params = body.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise HTTPException(status_code=422, detail="params must be an object of parameter name to value")
     return await _call(ed.run_placement, _viewer_creds(request), name, position,
-                       perspective=body.get("perspective") or None, output_format=body.get("output_format"))
+                       perspective=body.get("perspective") or None, output_format=body.get("output_format"),
+                       params=params or None, refresh=bool(body.get("refresh")))
+
+
+@router.post("/api/dashboards/{name}/placements/{position}/detail")
+async def run_dashboard_detail(request: Request, name: str, position: int,
+                               body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Run a placement's drill-down spec (its detail_spec) as this user, as a table."""
+    from advisor import egeria_dashboards as ed
+    body = body or {}
+    return await _call(ed.run_detail, _viewer_creds(request), name, position,
+                       perspective=body.get("perspective") or None, refresh=bool(body.get("refresh")))
