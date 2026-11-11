@@ -19,8 +19,9 @@ Two separate problems need two separate mechanisms:
   ways. Proposal: one small shared function that every consumer asks, which looks at what the installed PyTorch
   can actually use, refuses known-bad combinations, takes an environment override, and says what it chose and why.
 
-Measured on hedwig (§2): the GPU makes PDF conversion about **2.1 times faster** with **identical output**, and
-the first run on a machine pays a one-time compile cost.
+Measured (§2): on hedwig the AMD GPU makes PDF conversion about **2.1 times faster** with **identical output**
+(after a one-time compile); on laz Apple's GPU is about **1.3 times faster** overall, 2.1 times on everything but
+the table-dense document.
 
 ## 2. What was measured
 
@@ -54,8 +55,33 @@ every run, seconds per page:
 ### 2.2 Laz: Apple silicon (MPS)
 
 Docling on MPS failed on every page until transformers 5.22.2 fixed RT-DETR's hard-coded float64 (gate b354); with
-the upgrade (#1057) the coordinator confirmed Docling logs `Accelerator device: 'mps'` and the real-PDF test
-passes (b357). There is no MPS timing yet: the same script (§6, step 1) gives one.
+the upgrade (#1057) it runs on MPS. The same script and 113 pages, run by the coordinator on laz on 2026-11-11 in
+8813's environment (docling 2.150.0, transformers 5.22.2, torch 2.13.0, 4 threads), second runs:
+
+| Sample | Pages | CPU | MPS | Speed-up |
+|---|---|---|---|---|
+| NAICS manual, front matter | 25 | 10.03 s | 7.03 s | 1.4× |
+| NAICS manual, code pages | 25 | 5.87 s | 2.90 s | 2.0× |
+| GWP tables | 9 | 2.31 s | 0.98 s | 2.4× |
+| JRC emission factors (table-dense) | 13 | 36.80 s | 34.12 s | 1.1× |
+| SPG methodology | 21 | 5.83 s | 2.84 s | 2.1× |
+| Value-chain standard | 20 | 4.57 s | 2.77 s | 1.6× |
+| **Total** | 113 | **65.4 s** | **50.6 s** | **≈1.3×** |
+
+- **The table-dense document barely gains on MPS** and is two thirds of the total on both devices, so its cost is
+  not model inference there. Without it, MPS is 2.1 times faster (16.5 s against 28.6 s), the same as hedwig's GPU.
+- **First runs** were close to second runs (MPS 52.3 s, CPU 67.0 s): no large one-time compile on Apple's GPU.
+- **Output:** identical on laz between MPS and CPU (43,206 words, the same characters and tables per sample).
+- **Laz's CPU is about 4 times hedwig's** on this sample (65 s against 259–271 s), and table-dense pages are where
+  the gap is largest (JRC 36.8 s against about 143 s).
+- **The two machines detect tables differently.** On each machine every device gives the same output, but laz
+  finds 6, 5, 2, 9, 6 and 4 tables in the six samples and hedwig 8, 0, 2, 9, 5 and 4, with nearly the same words
+  (43,206 against 43,153). So a chat index rebuilt on one machine is not byte-identical to one rebuilt on the
+  other, and a cross-machine comparison should compare words, not table counts.
+- **The upgrade changed table detection too:** on laz, Docling 2.118 / transformers 5.10.1 on the CPU found 4, 3,
+  3, 9, 6 and 4 (and could not run on MPS at all, the float64 error).
+
+The laz files are under `~/.re-gate/docling-timing-2026-11-11/` on laz.
 
 ## 3. What there is today
 
