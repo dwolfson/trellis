@@ -60,7 +60,6 @@
   "advisor/web/admin.py::_vector_counts": 1,
   "advisor/web/app.py::_user_context_middleware": 1,
   "advisor/web/drafts.py::patch_draft_commands": 1,
-  "advisor/web/feedback.py::feedback_extended": 1,
   "advisor/web/reports.py::patch_report_draft_columns": 1,
   "advisor/web/templates.py::get_column_fields": 1
 }

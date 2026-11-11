@@ -3,6 +3,12 @@ User feedback collection system for continuous improvement.
 
 This module captures user feedback on query responses to improve
 routing accuracy and response quality over time.
+
+Since Phase 2 (A-F1, 2026-11-11) every vote is an `answer` item in the shared trellis-feedback
+store (`advisor.feedback_store`), and the statistics and gap analysis read from it. Nothing is
+appended to `user_feedback.jsonl` any more. `scripts/import_feedback_jsonl.py` copies that file in
+once. A collector built with an explicit `feedback_file` reads that file for its statistics: the
+legacy reports (scripts/generate_collection_usage_report.py) still pass one.
 """
 
 from typing import Optional, Dict, Any, List
@@ -15,7 +21,7 @@ import os
 import threading
 from loguru import logger
 
-from advisor.config import resolve_advisor_data_root, ensure_writable_dir
+from advisor.config import resolve_advisor_data_root
 
 # Import sentiment analyzer
 try:
@@ -77,17 +83,19 @@ class FeedbackCollector:
     def __init__(self, feedback_file: Optional[Path] = None):
         """
         Initialize feedback collector.
-        
-        Args:
-            feedback_file: Path to feedback JSON file
-        """
-        if feedback_file is None:
-            feedback_file = resolve_advisor_data_root() / "feedback" / "user_feedback.jsonl"
 
-        self.feedback_file = feedback_file
-        ensure_writable_dir(self.feedback_file.parent, "ADVISOR_DATA_PATH")
-        
-        logger.info(f"Initialized feedback collector: {self.feedback_file}")
+        Args:
+            feedback_file: a legacy JSONL file to read statistics from, instead of the
+                trellis-feedback store. Votes are never written to it.
+        """
+        #: Set only when a caller asked for a legacy file; None means "read the library".
+        self.legacy_file: Optional[Path] = Path(feedback_file) if feedback_file is not None else None
+        #: The old default path, kept for messages and for the one-time import.
+        self.feedback_file = self.legacy_file or (resolve_advisor_data_root() / "feedback" / "user_feedback.jsonl")
+        #: Lines of the legacy file that could not be read on the last pass (line number, reason).
+        self.unreadable_lines: List[Dict[str, Any]] = []
+        logger.info("Initialized feedback collector: "
+                    + (f"legacy file {self.legacy_file}" if self.legacy_file else "trellis-feedback store"))
     
     def record_feedback(
         self,
@@ -142,12 +150,19 @@ class FeedbackCollector:
         routing_agent: Optional[str] = None,
         user_id: Optional[str] = None,
         intent_override: Optional[str] = None,
-    ) -> Dict[str, str]:
+        response_text: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        exchange_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Record one vote. Phase 0 S4 hotfix (2026-11-10; replaced in Phase 2 by trellis-feedback).
+        Record one vote.
 
-        - The PRIMARY record is user_feedback.jsonl. If it cannot be written this raises
-          FeedbackWriteError with the reason; nothing reports success for a vote that was not kept.
+        - The PRIMARY record is an `answer` item in the trellis-feedback store (A-F1). If it cannot be
+          written this raises FeedbackWriteError with the reason; nothing reports success for a vote
+          that was not kept.
+        - `idempotency_key` (session + exchange + vote, `feedback_store.vote_key`): a retry with the
+          same key from the same user writes nothing and returns the first item, `created` False, and
+          the secondary sinks are not run again.
         - MLflow is never on the caller's path: it is queued to one background worker, skipped when
           the tracker's reachability probe disabled tracking, with a short timeout and no retries.
           (Before this, a refused MLflow port was retried for ~4 minutes inside the request.)
@@ -157,7 +172,8 @@ class FeedbackCollector:
 
         Synchronous: callers on an event loop must run it in a thread (run_in_threadpool).
 
-        Returns {"query_metrics": "ok" | "no_match" | "skipped" | "error"}.
+        Returns {"item_id", "created", "query_metrics": "ok" | "no_match" | "skipped" | "error" |
+        "not_run" (a replay: the first submit already did it)}.
         """
         # Validate star rating if provided
         if star_rating is not None and not (1 <= star_rating <= 5):
@@ -206,12 +222,12 @@ class FeedbackCollector:
             entry_dict['sentiment_emotion'] = sentiment_result.emotion
             entry_dict['sentiment_keywords'] = sentiment_result.keywords_found
 
-        # PRIMARY: the vote is kept only if this line is written
-        try:
-            with open(self.feedback_file, 'a') as f:
-                f.write(json.dumps(entry_dict) + '\n')
-        except Exception as e:
-            raise FeedbackWriteError(f"{type(e).__name__}: {e}") from e
+        # PRIMARY: the vote is kept only if the library item is written
+        item_id, created = self._write_item(entry, entry_dict, response_text=response_text,
+                                            idempotency_key=idempotency_key, exchange_id=exchange_id)
+        if not created:
+            logger.info(f"Feedback replay for item {item_id} (same idempotency key); nothing written")
+            return {"item_id": item_id, "created": False, "query_metrics": "not_run"}
 
         # Secondary: MLflow in the background, never awaited here
         submit_mlflow_feedback(self, entry, sentiment_result)
@@ -223,8 +239,89 @@ class FeedbackCollector:
         )
 
         logger.info(f"Recorded {rating} feedback for query: {query[:50]}... "
-                    f"(user={user_id or 'anonymous'}, query_metrics={query_metrics})")
-        return {"query_metrics": query_metrics}
+                    f"(item={item_id}, user={user_id or 'anonymous'}, query_metrics={query_metrics})")
+        return {"item_id": item_id, "created": True, "query_metrics": query_metrics}
+
+    @staticmethod
+    def _write_item(entry: "FeedbackEntry", entry_dict: Dict[str, Any], *, response_text: Optional[str],
+                    idempotency_key: Optional[str], exchange_id: Optional[str]):
+        """Write the vote as a library `answer` item; (item id, created). FeedbackWriteError otherwise."""
+        from advisor.feedback_store import StoreUnavailable, VOTE_BY_RATING, get_store
+        if entry.rating not in VOTE_BY_RATING:
+            raise FeedbackWriteError(f"rating must be one of {sorted(VOTE_BY_RATING)}, got {entry.rating!r}")
+        # Everything EA's analytics read that the library item has no column for.
+        keep = ("query_type", "collections_searched", "response_length", "star_rating", "category",
+                "suggested_collection", "feedback_text", "user_comment", "sentiment",
+                "sentiment_confidence", "sentiment_emotion", "sentiment_keywords")
+        extra = {k: entry_dict[k] for k in keep if entry_dict.get(k) not in (None, "", [])}
+        if exchange_id:
+            extra["exchange_id"] = exchange_id
+        try:
+            from trellis_feedback import FeedbackItem
+            store = get_store()
+            item = FeedbackItem(
+                app=store.app, kind="answer", vote=VOTE_BY_RATING[entry.rating],
+                query_text=(entry.query or "").strip(), response_text=response_text or "",
+                user_id=entry.user_id or "", session_id=entry.session_id or "",
+                intent_label=entry.intent_override or "", perspective=entry.perspective or "",
+                routing_agent=entry.routing_agent or "", extra=extra,
+            )
+            stored, created = store.submit(item, idempotency_key=idempotency_key)
+        except StoreUnavailable as e:
+            raise FeedbackWriteError(str(e)) from e
+        except Exception as e:  # noqa: BLE001 -- the vote was not kept: say why, in one line
+            from advisor.feedback_store import _words
+            raise FeedbackWriteError(f"{type(e).__name__}: {_words(e)}") from e
+        return stored.id, created
+
+    # ── reading: the library, or a legacy file a caller named ─────────────────
+
+    def entries(self) -> List[Dict[str, Any]]:
+        """Every vote, in the shape the statistics read. From the trellis-feedback store, or from
+        `legacy_file` when the collector was built with one.
+
+        Raises FeedbackReadError when the store cannot be read. A legacy line that is not JSON is
+        skipped and listed in `unreadable_lines` (line number and reason), never silently dropped."""
+        self.unreadable_lines = []
+        if self.legacy_file is None:
+            from advisor.feedback_store import StoreUnavailable, as_collector_entry, get_store, iter_answer_items
+            try:
+                return [as_collector_entry(r) for r in iter_answer_items(get_store())]
+            except StoreUnavailable as e:
+                raise FeedbackReadError(str(e)) from e
+            except Exception as e:  # noqa: BLE001 -- a read that failed is reported, not shown as "no votes"
+                from advisor.feedback_store import _words
+                raise FeedbackReadError(f"feedback store not read: {type(e).__name__}: {_words(e)}") from e
+        if not self.legacy_file.exists():
+            return []
+        out: List[Dict[str, Any]] = []
+        with open(self.legacy_file, "r") as f:
+            for n, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError as e:
+                    self.unreadable_lines.append({"line": n, "reason": f"not JSON: {e}"})
+                    continue
+                if not isinstance(rec, dict):
+                    self.unreadable_lines.append({"line": n, "reason": "not a JSON object"})
+                    continue
+                out.append(rec)
+        return out
+
+    def analysis(self) -> Dict[str, Any]:
+        """Statistics, gaps and routing improvements from ONE read of the votes.
+        Raises FeedbackReadError when they cannot be read."""
+        entries = self.entries()
+        stats = self._stats_from_entries(entries)
+        return {
+            "stats": stats,
+            "gaps": self._gaps_from_entries(entries, stats),
+            "improvements": self.get_routing_improvements(stats),
+            "count": len(entries),
+            "unreadable_lines": list(self.unreadable_lines),
+        }
 
     def _update_query_metrics(self, *, query: str, user_id: Optional[str], rating: str,
                               star_rating: Optional[int], suggested_collection: Optional[str],
@@ -265,20 +362,13 @@ class FeedbackCollector:
 
     def get_feedback_stats(self) -> Dict[str, Any]:
         """
-        Get feedback statistics.
-        
-        Returns:
-            Dictionary with feedback statistics
+        Get feedback statistics. Raises FeedbackReadError when the votes cannot be read.
         """
-        if not self.feedback_file.exists():
-            return {
-                "total": 0,
-                "positive": 0,
-                "negative": 0,
-                "neutral": 0,
-                "satisfaction_rate": 0.0
-            }
-        
+        return self._stats_from_entries(self.entries())
+
+    @staticmethod
+    def _stats_from_entries(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Statistics over `entries` (each in `entries()`'s shape)."""
         stats = {
             "total": 0,
             "positive": 0,
@@ -297,109 +387,103 @@ class FeedbackCollector:
             "by_routing_agent": {},
         }
         
-        try:
-            with open(self.feedback_file, 'r') as f:
-                for line in f:
-                    entry = json.loads(line)
-                    stats["total"] += 1
-                    
-                    # Count by rating
-                    rating = entry.get("rating", "neutral")
-                    stats[rating] = stats.get(rating, 0) + 1
-                    
-                    # Track star ratings
-                    star_rating = entry.get("star_rating")
-                    if star_rating is not None:
-                        stats["star_ratings"].append(star_rating)
-                    
-                    # Track by category
-                    category = entry.get("category")
-                    if category:
-                        if category not in stats["by_category"]:
-                            stats["by_category"][category] = {
-                                "total": 0, "positive": 0, "neutral": 0, "negative": 0, "star_ratings": []
-                            }
-                        stats["by_category"][category]["total"] += 1
-                        stats["by_category"][category][rating] = \
-                            stats["by_category"][category].get(rating, 0) + 1
-                        if star_rating is not None:
-                            stats["by_category"][category]["star_ratings"].append(star_rating)
-                    
-                    # Count by query type
-                    query_type = entry.get("query_type", "unknown")
-                    if query_type not in stats["by_query_type"]:
-                        stats["by_query_type"][query_type] = {
-                            "total": 0, "positive": 0, "neutral": 0, "negative": 0
-                        }
-                    stats["by_query_type"][query_type]["total"] += 1
-                    stats["by_query_type"][query_type][rating] = \
-                        stats["by_query_type"][query_type].get(rating, 0) + 1
-                    
-                    # Count by collection
-                    for collection in entry.get("collections_searched", []):
-                        if collection not in stats["by_collection"]:
-                            stats["by_collection"][collection] = {
-                                "total": 0, "positive": 0, "neutral": 0, "negative": 0
-                            }
-                        stats["by_collection"][collection]["total"] += 1
-                        stats["by_collection"][collection][rating] = \
-                            stats["by_collection"][collection].get(rating, 0) + 1
-                    
-                    # Track routing corrections
-                    if entry.get("suggested_collection"):
-                        stats["routing_corrections"].append({
-                            "query": entry["query"],
-                            "searched": entry["collections_searched"],
-                            "suggested": entry["suggested_collection"]
-                        })
- 
-                    # Phase 2: by_perspective
-                    persp = entry.get("perspective") or "none"
-                    if persp not in stats["by_perspective"]:
-                        stats["by_perspective"][persp] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
-                    stats["by_perspective"][persp]["total"] += 1
-                    stats["by_perspective"][persp][rating] = \
-                        stats["by_perspective"][persp].get(rating, 0) + 1
- 
-                    # Phase 2: by_routing_agent
-                    agent = entry.get("routing_agent") or "unknown"
-                    if agent not in stats["by_routing_agent"]:
-                        stats["by_routing_agent"][agent] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
-                    stats["by_routing_agent"][agent]["total"] += 1
-                    stats["by_routing_agent"][agent][rating] = \
-                        stats["by_routing_agent"][agent].get(rating, 0) + 1
-            
-            # Calculate satisfaction rate (weighted: positive = 1.0, neutral = 0.5)
-            if stats["total"] > 0:
-                stats["satisfaction_rate"] = (stats.get("positive", 0) + 0.5 * stats.get("neutral", 0)) / stats["total"]
-            else:
-                stats["satisfaction_rate"] = 0.0
-            
-            # Calculate average star rating
-            if stats["star_ratings"]:
-                stats["avg_star_rating"] = sum(stats["star_ratings"]) / len(stats["star_ratings"])
-            
-            # Calculate average star rating by category
-            for category, data in stats["by_category"].items():
-                if data["star_ratings"]:
-                    stats["category_star_ratings"][category] = \
-                        sum(data["star_ratings"]) / len(data["star_ratings"])
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"Failed to get feedback stats: {e}")
-            return stats
-    
-    def get_routing_improvements(self) -> List[Dict[str, Any]]:
+        for entry in entries:
+            stats["total"] += 1
+
+            # Count by rating
+            rating = entry.get("rating", "neutral")
+            stats[rating] = stats.get(rating, 0) + 1
+
+            # Track star ratings
+            star_rating = entry.get("star_rating")
+            if star_rating is not None:
+                stats["star_ratings"].append(star_rating)
+
+            # Track by category
+            category = entry.get("category")
+            if category:
+                if category not in stats["by_category"]:
+                    stats["by_category"][category] = {
+                        "total": 0, "positive": 0, "neutral": 0, "negative": 0, "star_ratings": []
+                    }
+                stats["by_category"][category]["total"] += 1
+                stats["by_category"][category][rating] = \
+                    stats["by_category"][category].get(rating, 0) + 1
+                if star_rating is not None:
+                    stats["by_category"][category]["star_ratings"].append(star_rating)
+
+            # Count by query type
+            query_type = entry.get("query_type", "unknown")
+            if query_type not in stats["by_query_type"]:
+                stats["by_query_type"][query_type] = {
+                    "total": 0, "positive": 0, "neutral": 0, "negative": 0
+                }
+            stats["by_query_type"][query_type]["total"] += 1
+            stats["by_query_type"][query_type][rating] = \
+                stats["by_query_type"][query_type].get(rating, 0) + 1
+
+            # Count by collection
+            for collection in entry.get("collections_searched", []):
+                if collection not in stats["by_collection"]:
+                    stats["by_collection"][collection] = {
+                        "total": 0, "positive": 0, "neutral": 0, "negative": 0
+                    }
+                stats["by_collection"][collection]["total"] += 1
+                stats["by_collection"][collection][rating] = \
+                    stats["by_collection"][collection].get(rating, 0) + 1
+
+            # Track routing corrections
+            if entry.get("suggested_collection"):
+                stats["routing_corrections"].append({
+                    "query": entry.get("query", ""),
+                    "searched": entry.get("collections_searched", []),
+                    "suggested": entry["suggested_collection"]
+                })
+
+            # Phase 2: by_perspective
+            persp = entry.get("perspective") or "none"
+            if persp not in stats["by_perspective"]:
+                stats["by_perspective"][persp] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
+            stats["by_perspective"][persp]["total"] += 1
+            stats["by_perspective"][persp][rating] = \
+                stats["by_perspective"][persp].get(rating, 0) + 1
+
+            # Phase 2: by_routing_agent
+            agent = entry.get("routing_agent") or "unknown"
+            if agent not in stats["by_routing_agent"]:
+                stats["by_routing_agent"][agent] = {"total": 0, "positive": 0, "neutral": 0, "negative": 0}
+            stats["by_routing_agent"][agent]["total"] += 1
+            stats["by_routing_agent"][agent][rating] = \
+                stats["by_routing_agent"][agent].get(rating, 0) + 1
+
+        # Calculate satisfaction rate (weighted: positive = 1.0, neutral = 0.5)
+        if stats["total"] > 0:
+            stats["satisfaction_rate"] = (stats.get("positive", 0) + 0.5 * stats.get("neutral", 0)) / stats["total"]
+        else:
+            stats["satisfaction_rate"] = 0.0
+
+        # Calculate average star rating
+        if stats["star_ratings"]:
+            stats["avg_star_rating"] = sum(stats["star_ratings"]) / len(stats["star_ratings"])
+
+        # Calculate average star rating by category
+        for category, data in stats["by_category"].items():
+            if data["star_ratings"]:
+                stats["category_star_ratings"][category] = \
+                    sum(data["star_ratings"]) / len(data["star_ratings"])
+
+        return stats
+
+    def get_routing_improvements(self, stats: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Analyze feedback to suggest routing improvements.
-        
+
         Returns:
             List of suggested routing improvements
         """
         improvements = []
-        stats = self.get_feedback_stats()
+        if stats is None:
+            stats = self.get_feedback_stats()
         
         # Analyze routing corrections
         for correction in stats.get("routing_corrections", []):
@@ -440,6 +524,12 @@ class FeedbackCollector:
         return improvements
 
     def get_gap_analysis(self) -> Dict[str, Any]:
+        """The gap analysis below, from one read. Raises FeedbackReadError when the votes cannot be read."""
+        entries = self.entries()
+        return self._gaps_from_entries(entries, self._stats_from_entries(entries))
+
+    @staticmethod
+    def _gaps_from_entries(entries: List[Dict[str, Any]], stats: Dict[str, Any]) -> Dict[str, Any]:
         """
         Identify queries that are underserved — negative feedback combined with
         RAG fallback routing, or perspectives with consistently low satisfaction.
@@ -456,28 +546,17 @@ class FeedbackCollector:
             "low_satisfaction_agents": [],
             "unhandled_intents": [],
         }
-        if not self.feedback_file.exists():
-            return gap
-
         rag_agents = {"rag_fallback", "general", "unknown"}
-        try:
-            with open(self.feedback_file, "r") as f:
-                for line in f:
-                    entry = json.loads(line)
-                    if entry.get("rating") == "negative":
-                        agent = entry.get("routing_agent") or "unknown"
-                        if agent in rag_agents:
-                            gap["rag_fallback_negatives"].append({
-                                "query": entry["query"][:120],
-                                "query_type": entry.get("query_type"),
-                                "perspective": entry.get("perspective"),
-                                "timestamp": entry.get("timestamp"),
-                            })
-        except Exception as exc:
-            logger.error(f"get_gap_analysis: {exc}")
-            return gap
-
-        stats = self.get_feedback_stats()
+        for entry in entries:
+            if entry.get("rating") == "negative":
+                agent = entry.get("routing_agent") or "unknown"
+                if agent in rag_agents:
+                    gap["rag_fallback_negatives"].append({
+                        "query": (entry.get("query") or "")[:120],
+                        "query_type": entry.get("query_type"),
+                        "perspective": entry.get("perspective"),
+                        "timestamp": entry.get("timestamp"),
+                    })
 
         for persp, data in stats.get("by_perspective", {}).items():
             if data["total"] >= 5:
@@ -623,15 +702,11 @@ class FeedbackCollector:
             True if export was successful
         """
         try:
-            if not self.feedback_file.exists():
-                logger.warning("No feedback file to export")
+            feedback_entries = self.entries()
+            if not feedback_entries:
+                logger.warning("No feedback to export")
                 return False
-            
-            feedback_entries = []
-            with open(self.feedback_file, 'r') as f:
-                for line in f:
-                    feedback_entries.append(json.loads(line))
-            
+
             if output_file.suffix == '.json':
                 with open(output_file, 'w') as f:
                     json.dump(feedback_entries, f, indent=2)
@@ -657,7 +732,12 @@ class FeedbackCollector:
 
 
 class FeedbackWriteError(Exception):
-    """The primary feedback record (user_feedback.jsonl) could not be written."""
+    """The primary feedback record (the trellis-feedback item) could not be written."""
+
+
+class FeedbackReadError(Exception):
+    """The votes could not be read (the trellis-feedback store is unreachable, say). The message says
+    why; a caller shows it instead of statistics, never zeros that look like "no votes"."""
 
 
 # ── MLflow, best effort and off every request path (Phase 0 S4) ─────────────────

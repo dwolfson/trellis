@@ -9,6 +9,7 @@
     if (v === 'light' || v === 'paper' || v === 'dark') l = v; } catch (e) {} document.documentElement.setAttribute('data-look', l); })();</script>
   <title>Egeria Advisor — Admin</title>
   <script src="/static/auth.js?v=20260908a"></script>
+  <script src="/static/feedback_review.js?v=20261111a"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/static/trellis-ui/tokens.js"></script>
   <script src="/static/ea_tailwind.js?v=20261111a"></script>
@@ -128,6 +129,7 @@
         <select id="fb-filter-triage" onchange="loadFeedbackReview()" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200">
           <option value="all">All statuses</option>
           <option value="new">New</option>
+          <option value="triaged">Triaged</option>
           <option value="known_issue">Known issue</option>
           <option value="actioned">Actioned</option>
           <option value="deferred">Deferred</option>
@@ -474,11 +476,19 @@ async function pullRepo(name) {
 
 // ── Maintenance ────────────────────────────────────────────────────────────
 async function maintenance(action) {
-  const r = await fetch(`/api/admin/maintenance/${encodeURIComponent(action)}`, { method: 'POST', headers: _adminHeaders() });
-  const data = await r.json();
   const msg = document.getElementById('maint-msg');
-  msg.textContent = data.message || data.status;
-  msg.className = `text-xs mt-2 ${data.status === 'ok' ? 'text-emerald-400' : 'text-red-400'}`;
+  let r = null, data = {};
+  try {
+    r = await fetch(`/api/admin/maintenance/${encodeURIComponent(action)}`, { method: 'POST', headers: _adminHeaders() });
+    try { data = await r.json(); } catch { data = {}; }
+  } catch (e) {
+    data = { detail: `not sent: ${(e && e.message) || e}` };
+  }
+  // A failure is a non-2xx with the reason in `detail` (409 busy, 500 failed, 400 unknown action).
+  const ok = !!(r && r.ok) && data.status === 'ok';
+  const why = typeof data.detail === 'string' ? data.detail : (data.detail ? JSON.stringify(data.detail) : '');
+  msg.textContent = ok ? (data.message || 'Done.') : `${action}: ${why || data.message || (r ? 'HTTP ' + r.status : 'failed')}`;
+  msg.className = `text-xs mt-2 ${ok ? 'text-emerald-400' : 'text-red-400'}`;
   msg.classList.remove('hidden');
   // check/repair_draft_doc_ids return a per-draft report — log it for detail
   // beyond the one-line summary shown in the UI.
@@ -646,6 +656,11 @@ async function loadFeedbackAnalysis() {
     el.innerHTML = `<div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-xs text-slate-500 lg:col-span-3">Unable to load feedback data${e && e.message === _ADMIN_ONLY_WORDS ? ': ' + _esc(_ADMIN_ONLY_WORDS) : ''}.</div>`;
     return;
   }
+  // A-F1: the store says whether it was read. not_read / none carry their own sentence.
+  if (data.state && data.state !== 'ok') {
+    el.innerHTML = `<div class="bg-slate-800 rounded-lg border border-slate-700 p-4 text-xs text-slate-500 lg:col-span-3">${_esc(data.message || data.state)}</div>`;
+    return;
+  }
 
   const stats = data.stats || {};
   const gaps  = data.gaps  || {};
@@ -781,121 +796,16 @@ async function loadFeedbackAnalysis() {
 }
 
 // ── Feedback Review ────────────────────────────────────────────────────────
-const _TRIAGE_OPTIONS = [
-  { value: 'new',          label: 'New',          cls: 'text-sky-400' },
-  { value: 'known_issue',  label: 'Known issue',  cls: 'text-amber-400' },
-  { value: 'actioned',     label: 'Actioned',     cls: 'text-emerald-400' },
-  { value: 'deferred',     label: 'Deferred',     cls: 'text-slate-400' },
-  { value: 'not_an_issue', label: 'Not an issue', cls: 'text-slate-500' },
-];
-
-function _triageCls(status) {
-  return (_TRIAGE_OPTIONS.find(o => o.value === status) || _TRIAGE_OPTIONS[0]).cls;
-}
-
+// The rows, their triage and every empty state are built by feedback_review.js, by item id (A-F1).
 async function loadFeedbackReview() {
   const el = document.getElementById('fb-review-body');
   if (!el) return;
-  // Don't rebuild while the user is editing a textarea — the refresh would wipe their text.
-  if (el.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
-  let records = [];
-  try {
-    const r = await fetch('/api/feedback/extended', { headers: _adminHeaders() });
-    if (r.status === 403) throw new Error(_ADMIN_ONLY_WORDS);
-    if (!r.ok) throw new Error(r.statusText);
-    const data = await r.json();
-    records = data.records || [];
-  } catch (e) {
-    el.innerHTML = `<div class="p-4 text-xs text-slate-500">Unable to load feedback records${e && e.message === _ADMIN_ONLY_WORDS ? ': ' + _esc(_ADMIN_ONLY_WORDS) : ''}.</div>`;
-    return;
-  }
-
-  // Apply filters
-  const voteFilter   = document.getElementById('fb-filter-vote')?.value || 'all';
-  const triageFilter = document.getElementById('fb-filter-triage')?.value || 'all';
-  let filtered = records.filter((rec, idx) => { rec._idx = idx; return true; });
-  if (voteFilter !== 'all') filtered = filtered.filter(r => String(r.vote) === voteFilter);
-  if (triageFilter !== 'all') filtered = filtered.filter(r => (r.triage_status || 'new') === triageFilter);
-
-  if (!filtered.length) {
-    el.innerHTML = `<div class="p-4 text-xs text-slate-500">No records match current filter (${records.length} total).</div>`;
-    return;
-  }
-
-  // Newest first
-  filtered = filtered.slice().reverse();
-
-  const rows = filtered.map(rec => {
-    const idx = rec._idx;
-    const voteIcon   = rec.vote === 1 ? '👍' : rec.vote === -1 ? '👎' : (rec.vote === 0 ? '😐' : '—');
-    const triageCls  = _triageCls(rec.triage_status || 'new');
-    const triageOpts = _TRIAGE_OPTIONS.map(o =>
-      `<option value="${o.value}"${(rec.triage_status || 'new') === o.value ? ' selected' : ''}>${o.label}</option>`
-    ).join('');
-    const ts = _esc(rec.timestamp ? String(rec.timestamp).slice(0, 19).replace('T', ' ') : '—');
-    const perspective = _esc(rec.perspective || '—');
-    const intent = _esc(rec.intent_override || 'auto');
-    const queryType  = _esc(rec.query_type || '—');
-    const agent      = _esc(rec.routing_agent || '—');
-    const query      = _esc(rec.query || '');
-    const respText   = _esc(rec.response_text || '');
-    const comments   = _esc(rec.analysis_comments || '');
-    const respId = `resp-${idx}`;
-    const commentId = `comment-${idx}`;
-
-    return `<tr class="border-t border-slate-700/50 align-top hover:bg-slate-750/30" data-idx="${idx}">
-      <td class="px-3 py-2 text-sm">${voteIcon}</td>
-      <td class="px-3 py-2 text-xs text-slate-400 whitespace-nowrap">${ts}</td>
-      <td class="px-3 py-2 text-xs">
-        <div class="font-medium text-slate-200 max-w-xs">${query}</div>
-        <div class="text-slate-500 mt-0.5">${perspective} / ${intent} → <span class="font-mono">${queryType}</span> <span class="text-slate-500">[${agent}]</span></div>
-        ${respText ? `<details class="mt-1"><summary class="cursor-pointer text-slate-500 hover:text-slate-300">Response ▸</summary><pre id="${respId}" class="mt-1 text-xs text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto bg-slate-900/60 rounded p-2">${respText}</pre></details>` : ''}
-      </td>
-      <td class="px-3 py-2">
-        <select onchange="fbUpdateTriage(${idx}, this.value)" class="text-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 ${triageCls} w-full">
-          ${triageOpts}
-        </select>
-      </td>
-      <td class="px-3 py-2 min-w-[200px]">
-        <textarea id="${commentId}" rows="2" placeholder="Analysis notes…"
-          class="w-full text-xs bg-slate-900/60 border border-slate-700 rounded px-2 py-1 text-slate-300 resize-y"
-          onblur="fbSaveComment(${idx}, this.value)"
-        >${comments}</textarea>
-      </td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-slate-700 text-xs text-slate-500 uppercase tracking-wider">
-          <th class="text-left px-3 py-2 w-6"></th>
-          <th class="text-left px-3 py-2 whitespace-nowrap">Time</th>
-          <th class="text-left px-3 py-2">Query / Routing</th>
-          <th class="text-left px-3 py-2 w-36">Triage</th>
-          <th class="text-left px-3 py-2">Analysis notes</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="px-3 py-2 text-xs text-slate-500 border-t border-slate-700/50">${filtered.length} of ${records.length} records</div>
-  `;
-}
-
-async function fbUpdateTriage(idx, value) {
-  await fetch(`/api/feedback/extended/${idx}`, {
-    method: 'PATCH',
-    headers: _adminHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ triage_status: value }),
-  }).catch(() => {});
-}
-
-async function fbSaveComment(idx, value) {
-  await fetch(`/api/feedback/extended/${idx}`, {
-    method: 'PATCH',
-    headers: _adminHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ analysis_comments: value }),
-  }).catch(() => {});
+  if (!window.FeedbackReview) { el.textContent = 'Feedback review did not load (feedback_review.js).'; return; }
+  await window.FeedbackReview.load(el, {
+    headers: () => _adminHeaders(),
+    vote: document.getElementById('fb-filter-vote')?.value || 'all',
+    status: document.getElementById('fb-filter-triage')?.value || 'all',
+  });
 }
 
 // ── Job modal ──────────────────────────────────────────────────────────────
