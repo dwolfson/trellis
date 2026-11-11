@@ -417,16 +417,15 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
     if action in ("sync_specs", "refresh_specs"):
         # "Sync report specs from Egeria": fill the EGERIA tier from EA's consumer folder
         # (advisor/egeria_spec_sync.py). refresh_specs is the old name, kept for callers.
-        from starlette.concurrency import run_in_threadpool
-        from advisor.egeria_spec_sync import SyncBusy, sync_now
+        # Started in the background (G2); poll GET /api/admin/specs/sync for the outcome.
+        from advisor.egeria_spec_sync import SyncBusy, start_sync
         try:
-            held = await run_in_threadpool(sync_now)
+            st = start_sync()
         except SyncBusy as exc:
             return {"status": "error", "message": str(exc)}
-        ok = held.get("state") == "ok"
-        summary = held.get("message") or (f"{held['count']} report spec(s) held in Egeria, from "
-                                         f"{', '.join(held.get('folders') or [])}")
-        return {"status": "ok" if ok else "error", "message": summary, "egeria_held": held}
+        return {"status": "ok", "message": st["message"] + " The outcome shows in the report catalog's "
+                                                    "'held in Egeria' line once it finishes.",
+                "sync": st, "status_url": "/api/admin/specs/sync"}
 
     if action == "clear_cache":
         try:

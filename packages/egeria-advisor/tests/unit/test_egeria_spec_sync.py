@@ -263,8 +263,12 @@ def test_reports_api_carries_sources_and_absence_message():
     import asyncio
     from advisor.web.reports import list_reports
     ess.sync_now(client_factory=lambda: FakeEgeria(folder=False))
-    data = asyncio.run(list_reports(include_dre=False))
+    data = asyncio.run(list_reports(None, include_dre=False))
     assert data["egeria_held"]["reason"] == "folder_not_found"
+    # B6: anonymous -> restricted specs are "sign in", never an empty list; used_by says its state.
+    assert data["restricted"]["state"] == "not_signed_in" and data["restricted"]["message"]
+    assert data["used_by"]["state"] in ("ok", "partial", "not_read", "unsupported")
+    assert data["catalog_status"]["registry"] == "ok"
     assert "not found" in data["egeria_held"]["message"]
     listed = {n for names in data["catalog"].values() for n in names}
     assert listed and set(data["sources"]) == listed

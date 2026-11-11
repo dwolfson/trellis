@@ -808,6 +808,7 @@ async function loadReports() {
     det.appendChild(ul);
     el.appendChild(det);
   }
+  if (window.SpecsPublish) SpecsPublish.onCatalog(data, el);  // B6: used-by, restricted, publish/withdraw
 }
 
 // ── Report spec sources (EGERIA tier, brief B3) ──────────────────────────────
@@ -3802,5 +3803,6 @@ function initReportCanvasResize() {
 <script src="/static/plan_canvas.js?v=20260713b"></script>
 <script src="/static/plan_editor.js?v=20260713a"></script>
 <script src="/static/report_spec_canvas.js?v=20260629i"></script>
+<script src="/static/specs_publish.js?v=20261111a"></script>
 </body>
 </html>
