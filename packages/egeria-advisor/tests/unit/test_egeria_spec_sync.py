@@ -55,11 +55,14 @@ class FakeEgeria:
     def get_collection_members(self, collection_guid=None, start_from=0, page_size=0,
                                output_format="JSON", **_kwargs):
         # Pages like Egeria (pyegeria >= 6.2.36 walks a folder page by page until an
-        # empty page): a page past the end is empty, never the first page again.
+        # empty page): a page past the end is empty, never the first page again. Empty is
+        # the str "No elements found", not [], because that is what live Egeria returns
+        # for an empty slice (checked against 6.2.36).
         if collection_guid != FOLDER_GUID:
             return "No elements found"
         members = list(self.members.values())
-        return members[start_from:start_from + page_size] if page_size else members[start_from:]
+        page = members[start_from:start_from + page_size] if page_size else members[start_from:]
+        return page or "No elements found"
 
     def get_collection_by_guid(self, guid, output_format="JSON"):
         return self.members.get(guid) or "No elements found"
