@@ -30,9 +30,10 @@ router = APIRouter()
 @router.post("/api/query")
 async def query_endpoint(request: Request, req: QueryRequest) -> Dict[str, Any]:
     """Process a natural-language query and return the response dict."""
-    from advisor.auth import get_current_user, get_egeria_credentials
+    from advisor.auth import get_current_user, get_egeria_credentials, is_anonymous
     current_user = get_current_user(request)
-    egeria_authenticated = current_user is not None
+    # Anonymous mode's stand-in user is not an Egeria identity (A-I1): live paths say "sign in".
+    egeria_authenticated = current_user is not None and not is_anonymous(current_user)
     egeria_credentials = get_egeria_credentials(request)
 
     user_query = req.query.strip()
@@ -101,9 +102,10 @@ async def query_stream_endpoint(request: Request, req: QueryRequest) -> Streamin
       data: {"type":"done","result":{...}}
       data: [DONE]
     """
-    from advisor.auth import get_current_user, get_egeria_credentials
+    from advisor.auth import get_current_user, get_egeria_credentials, is_anonymous
     current_user = get_current_user(request)
-    egeria_authenticated = current_user is not None
+    # Anonymous mode's stand-in user is not an Egeria identity (A-I1): live paths say "sign in".
+    egeria_authenticated = current_user is not None and not is_anonymous(current_user)
     egeria_credentials = get_egeria_credentials(request)
 
     user_query = req.query.strip()

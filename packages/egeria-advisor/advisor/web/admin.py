@@ -409,6 +409,9 @@ async def get_job(job_id: str) -> Dict[str, Any]:
 
 @router.post("/api/admin/maintenance/{action}")
 async def maintenance_action(action: str) -> Dict[str, Any]:
+    """Run one maintenance action. {"status": "ok", "message"} when it was done (or, for sync_specs,
+    started); otherwise a non-2xx with the reason in `detail`: 409 when a spec sync is already running,
+    500 when the action failed, 400 for an unknown action. A failure is never a 200 (A-F1)."""
     if action == "refresh_perspectives":
         from advisor.perspective_manager import invalidate
         invalidate()
@@ -422,7 +425,8 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
         try:
             st = start_sync()
         except SyncBusy as exc:
-            return {"status": "error", "message": str(exc)}
+            # The same answer as POST /api/admin/specs/sync: a conflict, not a 200 saying "error".
+            raise HTTPException(status_code=409, detail=str(exc))
         return {"status": "ok", "message": st["message"] + " The outcome shows in the report catalog's "
                                                     "'held in Egeria' line once it finishes.",
                 "sync": st, "status_url": "/api/admin/specs/sync"}
@@ -431,9 +435,9 @@ async def maintenance_action(action: str) -> Dict[str, Any]:
         try:
             from advisor.query_cache import get_query_cache
             get_query_cache().clear()
-            return {"status": "ok", "message": "Query cache cleared"}
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+        except Exception as exc:  # noqa: BLE001 -- reported to the admin with its reason
+            raise HTTPException(status_code=500, detail=f"Query cache not cleared: {type(exc).__name__}: {exc}")
+        return {"status": "ok", "message": "Query cache cleared"}
 
     if action == "invalidate_index":
         from advisor.report_pipeline import _question_index

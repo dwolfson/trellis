@@ -298,3 +298,16 @@ def ea_test_db(ea_test_schema, monkeypatch):
     monkeypatch.setattr(code_symbol_store, "_store", None)
     yield db
     db.disconnect()
+
+
+#: EA's own Egeria service account is on the sign-in refusal list from A-I1 (2026-11-11). It is read from
+#: settings.egeria_user: EGERIA_USER, whose default is garygeeke. Tests sign in as ordinary demo users
+#: (garygeeke among them) and a developer's shell may export EGERIA_USER, so every test runs with a fixed
+#: service account no test signs in as. A test about the service account sets its own.
+TEST_SERVICE_ACCOUNT = "ea-test-service-account"
+
+
+@pytest.fixture(autouse=True)
+def _pinned_ea_service_account(monkeypatch):
+    from advisor.config import settings
+    monkeypatch.setattr(settings, "egeria_user", TEST_SERVICE_ACCOUNT)

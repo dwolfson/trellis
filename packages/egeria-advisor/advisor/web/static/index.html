@@ -2332,6 +2332,9 @@ async function feedbackClick(e) {
     routing_agent: btn.dataset.routingAgent || null,
     intent_override: btn.dataset.intentOverride || null,
     response_text: _feedbackAnswerText(fb),
+    // A-F1: session + exchange + vote is the vote's idempotency key, so Retry on this row is the same vote.
+    session_id: (window._eaFeedbackSession ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
+    exchange_id: (fb.dataset.exchangeId ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
   };
   // Keep the buttons so a failed send can be retried; acknowledge the click at once.
   if (!fb._buttons) fb._buttons = [...fb.querySelectorAll('button')];
