@@ -630,19 +630,24 @@ def _cached_run(key: str, compute: Callable[[], Dict[str, Any]], refresh: bool) 
 
 
 def _execute(spec: str, *, analytic: bool, params: Dict[str, Any], fmt: str, creds: Dict[str, str],
-             pipeline: Any, title: str) -> Dict[str, Any]:
-    """Run one spec as the viewer and make its tile. Never raises for a run that fails: says so."""
+             pipeline: Any, title: str, run_as: Optional[str] = None) -> Dict[str, Any]:
+    """Run one spec as the viewer and make its tile. Never raises for a run that fails: says so.
+
+    `run_as` is the name the executor knows the spec by when it is not the label: a spec no tier held,
+    which pyegeria's resolver fetched from Egeria as this viewer, runs as "egeria:<label>@v<N>"
+    (pyegeria 6.2.34, ResolvedPlacement.fetched_as). The tile still names the label."""
+    name = run_as or spec
     # A chart format is asked for as such (pyegeria draws it); TABLE is asked for as DICT and drawn by EA.
     exec_fmt = "DICT" if fmt == "TABLE" else ("REPORT" if fmt == "MARKDOWN" else fmt)
     try:
         if analytic:
-            raw, error = pipeline.exec_spec_raw(spec, output_type=exec_fmt, extra_params=dict(params),
+            raw, error = pipeline.exec_spec_raw(name, output_type=exec_fmt, extra_params=dict(params),
                                                 egeria_credentials=creds, exact_params=True)
         else:
             rest = dict(params)
             search = rest.pop("search_string", None) or rest.pop("searchString", None) or "*"
             rest.pop("searchString", None)
-            raw, error = pipeline.exec_spec_raw(spec, search_string=search, output_type=exec_fmt,
+            raw, error = pipeline.exec_spec_raw(name, search_string=search, output_type=exec_fmt,
                                                 extra_params=rest or None, egeria_credentials=creds)
     except ConnectionError as exc:   # Egeria unreachable, or the executor raised: the run failed, in words
         raw, error = None, str(exc) or type(exc).__name__
@@ -713,12 +718,14 @@ def run_placement(creds: Optional[Dict[str, str]], name: str, position: int, *,
     if pipeline is None:
         from advisor.report_pipeline import get_report_pipeline
         pipeline = get_report_pipeline()
-    key = "run|" + "|".join([credential_identity(conn), pl.spec or "", fmt, "a" if analytic else "f",
+    # A spec fetched from Egeria as this viewer (no tier held it) runs under the name pyegeria gave it.
+    run_as = getattr(pl, "fetched_as", None) or None
+    key = "run|" + "|".join([credential_identity(conn), run_as or pl.spec or "", fmt, "a" if analytic else "f",
                              json.dumps(effective, sort_keys=True, default=str)])
 
     def compute() -> Dict[str, Any]:
         return _execute(pl.spec, analytic=analytic, params=effective, fmt=fmt, creds=creds,
-                        pipeline=pipeline, title=pl.title)
+                        pipeline=pipeline, title=pl.title, run_as=run_as)
 
     out = _cached_run(key, compute, refresh)
     return {**out, "output_format": fmt, "format_note": fmt_note, "spec": pl.spec,

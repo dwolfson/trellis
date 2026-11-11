@@ -255,6 +255,26 @@ def test_the_viewer_sees_a_kpi_tile_for_an_analytic_placement(viewers):
     assert pipe.calls[0][1]["extra_params"] == {"type_name": "Asset"} and pipe.calls[0][1]["exact_params"]
 
 
+def test_a_spec_fetched_as_the_viewer_runs_under_the_name_pyegeria_gave_it(viewers, monkeypatch):
+    """pyegeria 6.2.34: a spec no tier holds is fetched from Egeria as the viewer and runs as
+    "egeria:<label>@v<N>" (ResolvedPlacement.fetched_as). Run by its bare label, the executor says
+    "Unknown report spec" -- what the live 'Analytic - Generic Metric Trend' placement did before."""
+    real = ed._resolved
+
+    def fetched(*a, **kw):
+        resolved, answer = real(*a, **kw)
+        if resolved is not None:
+            pl = next(p for p in resolved.placements if p.position == 1)
+            pl.fetched_as = f"egeria:{pl.spec}@v2"
+        return resolved, answer
+    monkeypatch.setattr(ed, "_resolved", fetched)
+    pipe = RawPipeline()
+    out = ed.run_placement(PETER, DEMO, 1, pipeline=pipe)
+    assert out["state"] == "ok" and pipe.calls[0][0] == f"egeria:{out['spec']}@v2"
+    assert not out["spec"].startswith("egeria:")                 # the tile still names the spec's label
+    assert ed.run_placement(PETER, DEMO, 1, pipeline=pipe)["cache"]["state"] == "hit"
+
+
 # ── ⚙ overrides ───────────────────────────────────────────────────────────────
 
 def test_overrides_change_the_run_and_its_cache_key(viewers):
