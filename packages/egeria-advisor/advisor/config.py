@@ -444,6 +444,9 @@ class AdvisorSettings(BaseSettings):
     # per-request session credentials are present.
     egeria_user: str = Field(default="garygeeke", alias="EGERIA_USER")
     egeria_password: str = Field(default="secret", alias="EGERIA_PASSWORD")
+    # Optional login-form prefill (GET /api/auth/defaults, which is public). Never the service account
+    # above: that id is refused at sign-in (advisor.auth.service_account_ids), so it is never offered (A-I1).
+    advisor_login_default_user: str = Field(default="", alias="ADVISOR_LOGIN_DEFAULT_USER")
 
     # Comma-separated extra origins allowed to call the API cross-origin, on top of
     # localhost (always allowed for local dev). Needed when this Advisor is embedded

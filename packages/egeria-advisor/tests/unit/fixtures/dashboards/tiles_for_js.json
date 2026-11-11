@@ -1,0 +1,290 @@
+{
+ "_source": "Made by advisor.egeria_dashboards._tile() from the fixtures in this directory; see test_dashboard_tiles.py.",
+ "kpi_count": {
+  "kind": "kpi",
+  "value": 68739,
+  "display": "68739"
+ },
+ "kpis_unmeasured": {
+  "kind": "kpis",
+  "items": [
+   {
+    "label": "contextualisedCount",
+    "value": 272,
+    "display": "272"
+   },
+   {
+    "label": "assetTotal",
+    "value": null,
+    "display": "not measured"
+   },
+   {
+    "label": "contextualisedPct",
+    "value": null,
+    "display": "not measured"
+   }
+  ],
+  "unmeasured": [
+   "Asset: the native count timed out, and the find fallback stopped at its 500-element page cap, so there are at least 500"
+  ]
+ },
+ "chart_pie": {
+  "kind": "chart",
+  "spec": {
+   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+   "title": "Assets by Type Breakdown",
+   "description": "Assets by Type Breakdown",
+   "data": {
+    "values": [
+     {
+      "category": "Data Stores",
+      "count": 2014
+     },
+     {
+      "category": "Data Sets",
+      "count": 2009
+     },
+     {
+      "category": "Software Components",
+      "count": 588
+     },
+     {
+      "category": "Infrastructure",
+      "count": 150
+     },
+     {
+      "category": "APIs",
+      "count": 5
+     },
+     {
+      "category": "Processes",
+      "count": 64500
+     }
+    ]
+   },
+   "mark": {
+    "type": "arc",
+    "tooltip": true,
+    "innerRadius": 50
+   },
+   "encoding": {
+    "theta": {
+     "field": "count",
+     "type": "quantitative"
+    },
+    "color": {
+     "field": "category",
+     "type": "nominal"
+    },
+    "tooltip": [
+     {
+      "field": "category",
+      "type": "nominal",
+      "title": "Category"
+     },
+     {
+      "field": "count",
+      "type": "quantitative",
+      "title": "Count"
+     }
+    ]
+   }
+  }
+ },
+ "markdown_mermaid": {
+  "kind": "markdown",
+  "markdown": "# Common Collection Information\nAttributes generic to all Collections.\n\n```mermaid\nflowchart TD\n%%{init: {\"flowchart\": {\"htmlLabels\": false}} }%%\n\n1(\"*Digital Product*<br/>**null Reference Data Set**\")\n2[\"*Search Keyword*<br/>**Reference Data**\"]\n1==>|\"Search Keyword Link\"|2\n3[\"*Subscribing Action Process*<br/>**Create Ongoing update subscription for Reference Data Set - null**\"]\n1==>|\"Create Subscription [Resource List]\"|3\n4[\"*Subscribing Action Process*<br/>**Create Weekly refresh subscription for Reference Data Set - null**\"]\n1==>|\"Create Subscription [Resource List]\"|4\n5[\"*Subscribing Action Process*<br/>**Create Daily refresh subscription for Reference Data Set - null**\"]\n1==>|\"Create Subscription [Resource List]\"|5\n```\n"
+ },
+ "markdown_records": {
+  "kind": "markdown",
+  "markdown": "| Zone Membership | Category | Description | Display Name | Legal | Qualified Name | URL | Version Identifier |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n|  | Roadmap | Punch list of remaining work for the Local Dashboards / Egeria Overview feature  | Local Dashboards - Next Steps | None | Coco Pharmaceuticals::WorkItemList::Local-Dashboards---Next-Steps::1.0 | None | 1.0 |"
+ },
+ "trend_exact": {
+  "kind": "trend",
+  "points": [
+   {
+    "label": "13 Aug",
+    "date": "13 Aug 2026",
+    "value": 200,
+    "display": "200",
+    "exact": true,
+    "capped": false,
+    "at_least": null,
+    "how": "native",
+    "reasons": []
+   },
+   {
+    "label": "27 Sep",
+    "date": "27 Sep 2026",
+    "value": 200,
+    "display": "200",
+    "exact": true,
+    "capped": false,
+    "at_least": null,
+    "how": "native",
+    "reasons": []
+   },
+   {
+    "label": "11 Nov",
+    "date": "11 Nov 2026",
+    "value": 1065,
+    "display": "1065",
+    "exact": true,
+    "capped": false,
+    "at_least": null,
+    "how": "native",
+    "reasons": []
+   }
+  ],
+  "latest": "1065",
+  "bounds": 0,
+  "inexact": 0
+ },
+ "trend_capped": {
+  "kind": "trend",
+  "points": [
+   {
+    "label": "13 Aug",
+    "date": "13 Aug 2026",
+    "value": null,
+    "display": "≥500",
+    "exact": false,
+    "capped": true,
+    "at_least": 500,
+    "how": "find-capped",
+    "reasons": [
+     "the native count failed (RuntimeError), and the find fallback stopped at its 500-element page cap, so there are at least 500"
+    ]
+   },
+   {
+    "label": "27 Sep",
+    "date": "27 Sep 2026",
+    "value": null,
+    "display": "≥500",
+    "exact": false,
+    "capped": true,
+    "at_least": 500,
+    "how": "find-capped",
+    "reasons": [
+     "the native count failed (RuntimeError), and the find fallback stopped at its 500-element page cap, so there are at least 500"
+    ]
+   },
+   {
+    "label": "11 Nov",
+    "date": "11 Nov 2026",
+    "value": 1065,
+    "display": "1065",
+    "exact": true,
+    "capped": false,
+    "at_least": null,
+    "how": "native",
+    "reasons": []
+   }
+  ],
+  "latest": "1065",
+  "bounds": 2,
+  "inexact": 2,
+  "unmeasured": [
+   "GlossaryTerm: the native count failed (RuntimeError), and the find fallback stopped at its 500-element page cap, so there are at least 500"
+  ]
+ },
+ "trend_not_measured": {
+  "kind": "trend",
+  "points": [
+   {
+    "label": "13 Aug",
+    "date": "13 Aug 2026",
+    "value": null,
+    "display": "not measured",
+    "exact": false,
+    "capped": false,
+    "at_least": null,
+    "how": "not-measured",
+    "reasons": [
+     "the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see)"
+    ]
+   },
+   {
+    "label": "27 Sep",
+    "date": "27 Sep 2026",
+    "value": null,
+    "display": "not measured",
+    "exact": false,
+    "capped": false,
+    "at_least": null,
+    "how": "not-measured",
+    "reasons": [
+     "the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see)"
+    ]
+   },
+   {
+    "label": "11 Nov",
+    "date": "11 Nov 2026",
+    "value": 1065,
+    "display": "1065",
+    "exact": true,
+    "capped": false,
+    "at_least": null,
+    "how": "native",
+    "reasons": []
+   }
+  ],
+  "latest": "1065",
+  "bounds": 0,
+  "inexact": 2,
+  "unmeasured": [
+   "GlossaryTerm: the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see)"
+  ]
+ },
+ "absent_trend": {
+  "kind": "absent",
+  "message": "The trend was not measured: the target routine failed at every snapshot. Not measured: GlossaryTerm: the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see).",
+  "unmeasured": [
+   "GlossaryTerm: the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see)"
+  ],
+  "subtitle": "not established · GlossaryTerm: the native count failed (RuntimeError), and a repository-population count has no fallback (the find fallback only sees what the viewer may see)"
+ },
+ "saved_cached": {
+  "kind": "kpi",
+  "value": 37,
+  "display": "37",
+  "capped": false,
+  "at_least": null,
+  "as_of": "2026-11-10T18:02:11+00:00",
+  "mode": "cached",
+  "state": "measured",
+  "reason": "",
+  "subtitle": "as of 2026-11-10T18:02:11+00:00",
+  "markdown": "*No results returned for spec.*"
+ },
+ "saved_capped": {
+  "kind": "kpi",
+  "value": null,
+  "display": "≥30",
+  "capped": true,
+  "at_least": 30,
+  "as_of": "2026-11-10T18:02:11+00:00",
+  "mode": "cached",
+  "state": "measured",
+  "reason": "",
+  "subtitle": "as of 2026-11-10T18:02:11+00:00 · at least 30: the read stopped at its bound",
+  "markdown": "*No results returned for spec.*"
+ },
+ "saved_live": {
+  "kind": "kpi",
+  "value": 1200,
+  "display": "1200",
+  "capped": false,
+  "at_least": null,
+  "as_of": "2026-11-11T08:44:32+00:00",
+  "mode": "live",
+  "state": "measured",
+  "reason": "",
+  "subtitle": "as of 2026-11-11T08:44:32+00:00",
+  "markdown": "*No results returned for spec.*"
+ },
+ "empty": {
+  "kind": "empty",
+  "message": "'Collections' ran and found nothing."
+ }
+}

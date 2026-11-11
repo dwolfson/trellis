@@ -1403,192 +1403,10 @@ function setSidebarTab(name) {
     document.getElementById('sidebar-' + t).classList.toggle('hidden', t !== name);
   });
   localStorage.setItem('ea_sidebar_tab', name);
-  if (name === 'dashboards' && !_dashboardsLoaded) loadDashboards(false);
+  if (name === 'dashboards' && window.EADashboards) EADashboards.ensureLoaded();
 }
 
-// ── Dashboards (brief B5): Dashboard Sheets held in Egeria, read only ─────────
-// Every read is the signed-in user's own (their Egeria token): a sheet, Report or
-// spec in a zone they cannot see is not shown, or shows as "restricted: not visible
-// to you", never runnable. "No sheets", "could not read" and "not visible" are three
-// different answers and are said differently.
-let _dashboardsLoaded = false;
-let _dashboardSheets = {};
-const _DASH_SPAN = { '1': 'span 1', '2': 'span 2', '3': 'span 3', 'full': '1 / -1' };
-
-function _dashSignInMessage(r, fallback) {
-  return r.status === 401 ? 'Sign in to see dashboards: they are read from Egeria as you.' : fallback;
-}
-
-async function loadDashboards(refresh) {
-  const status = document.getElementById('dashboard-status');
-  const list = document.getElementById('dashboard-list');
-  status.className = 'px-3 pb-1 text-xs text-slate-500 shrink-0';
-  status.textContent = 'Reading Dashboard Sheets from Egeria…';
-  list.innerHTML = '';
-  let data;
-  try {
-    const r = await fetch(`/api/dashboards${refresh ? '?refresh=true' : ''}`, { headers: Auth.getHeaders() });
-    if (!r.ok) {
-      const detail = (await r.json().catch(() => ({}))).detail;
-      status.className = 'px-3 pb-1 text-xs text-amber-400 shrink-0';
-      status.textContent = _dashSignInMessage(r, `Could not read Dashboard Sheets: ${detail || r.status}`);
-      return;
-    }
-    data = await r.json();
-  } catch (e) {
-    status.className = 'px-3 pb-1 text-xs text-red-400 shrink-0';
-    status.textContent = `Could not reach the Advisor: ${e}`;
-    return;
-  }
-  _dashboardsLoaded = true;
-  if (data.state === 'read_failed') {
-    status.className = 'px-3 pb-1 text-xs text-red-400 shrink-0';
-    status.textContent = data.message;
-    return;
-  }
-  if (data.state === 'no_sheets') {
-    status.textContent = data.message;
-    return;
-  }
-  status.textContent = `${data.sheets.length} sheet${data.sheets.length === 1 ? '' : 's'} visible to ${data.viewer}`;
-  _dashboardSheets = {};
-  data.sheets.forEach(s => {
-    _dashboardSheets[s.name] = s;
-    const btn = document.createElement('button');
-    btn.className = 'text-left px-2 py-1 rounded hover:bg-slate-700 transition-colors text-slate-300';
-    btn.innerHTML = `<div class="text-sm">${_esc(s.heading)}</div>` +
-      `<div class="text-[10px] text-slate-500">${_esc(s.name)} · ${s.placement_count} placement${s.placement_count === 1 ? '' : 's'}` +
-      (s.breaks.length ? ' · <span class="text-amber-400">chain breaks</span>' : '') + '</div>';
-    btn.title = [s.description, s.breaks.length ? 'Breaks: ' + s.breaks.join('; ') : ''].filter(Boolean).join('\n');
-    btn.onclick = () => openDashboard(s.name, null);
-    list.appendChild(btn);
-  });
-}
-
-async function openDashboard(name, perspective) {
-  const q = perspective ? `?perspective=${encodeURIComponent(perspective)}` : '';
-  let data;
-  try {
-    const r = await fetch(`/api/dashboards/${encodeURIComponent(name)}${q}`, { headers: Auth.getHeaders() });
-    if (!r.ok) {
-      const detail = (await r.json().catch(() => ({}))).detail;
-      appendMessage('assistant', _dashSignInMessage(r, `Could not read Dashboard Sheet **${name}**: ${detail || r.status}`));
-      return;
-    }
-    data = await r.json();
-  } catch (e) {
-    appendMessage('assistant', `Could not reach the Advisor: ${e}`);
-    return;
-  }
-  if (data.state !== 'ok') { appendMessage('assistant', data.message); return; }
-  renderDashboard(data.sheet);
-}
-
-function _dashBadge(source) {
-  if (!source) return '';
-  const style = _SPEC_SOURCE_STYLE[source] || 'bg-slate-700 text-slate-300';
-  return `<span class="ml-1 px-1 rounded text-[10px] align-middle ${style}">${_esc(_SPEC_SOURCE_LABEL[source] || source)}</span>`;
-}
-
-function renderDashboard(sheet) {
-  const messages = document.getElementById('messages');
-  const wrap = document.createElement('div');
-  wrap.className = 'msg-assistant pl-3 pr-2 py-2 rounded-r-lg bg-slate-800/60';
-  const summary = _dashboardSheets[sheet.name] || {};
-  const perspectives = summary.perspectives || [];
-  let head = `<div class="flex items-center justify-between gap-2 mb-1">` +
-    `<div><div class="text-xs font-semibold text-emerald-400">Dashboard · held in Egeria · read as ${_esc(sheet.viewer || '')}</div>` +
-    `<div class="text-base text-slate-100">${_esc(sheet.heading)}</div></div>`;
-  if (perspectives.length) {
-    head += `<select class="dash-perspective bg-slate-900 border border-slate-600 rounded text-xs text-slate-300 px-1 py-0.5">` +
-      `<option value="">All perspectives</option>` +
-      perspectives.map(p => `<option ${p === sheet.perspective ? 'selected' : ''}>${_esc(p)}</option>`).join('') + `</select>`;
-  }
-  head += '</div>';
-  if (sheet.description) head += `<div class="text-xs text-slate-400 mb-2">${_esc(sheet.description)}</div>`;
-  if (sheet.breaks.length) head += `<div class="text-xs text-amber-400 mb-2">Chain breaks: ${_esc(sheet.breaks.join('; '))}</div>`;
-  wrap.innerHTML = head;
-  const sel = wrap.querySelector('.dash-perspective');
-  if (sel) sel.onchange = () => openDashboard(sheet.name, sel.value || null);
-
-  if (!sheet.placements.length) {
-    const none = document.createElement('div');
-    none.className = 'text-xs text-slate-400';
-    none.textContent = `This sheet has no placements${sheet.perspective ? ` for perspective ${sheet.perspective}` : ''}.`;
-    wrap.appendChild(none);
-  }
-  const grid = document.createElement('div');
-  grid.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;';
-  sheet.placements.forEach(p => grid.appendChild(_dashTile(sheet, p)));
-  wrap.appendChild(grid);
-  messages.appendChild(wrap);
-  messages.scrollTop = messages.scrollHeight;
-}
-
-function _dashTile(sheet, p) {
-  const tile = document.createElement('div');
-  tile.style.gridColumn = _DASH_SPAN[p.span] || 'span 1';
-  const panel = p.emphasis === 'panel';
-  tile.className = 'rounded border p-2 text-xs ' + (p.kind === 'restricted'
-    ? 'border-slate-700 bg-slate-900/40 text-slate-500'
-    : panel ? 'border-slate-600 bg-slate-900/70' : 'border-slate-700 bg-slate-900/50');
-  if (p.kind === 'text') {
-    tile.innerHTML = `<div class="msg-body prose prose-invert text-sm max-w-none">${renderMarkdown(preprocessMarkdown(p.content || ''))}</div>`;
-    return tile;
-  }
-  const title = `<div class="font-semibold text-slate-200 ${panel ? 'text-sm' : ''}">${_esc(p.title)}</div>`;
-  if (p.kind === 'restricted') {
-    tile.innerHTML = title + `<div class="mt-1">🔒 restricted: ${_esc(p.reason || 'not visible to you')}</div>`;
-    tile.title = `The ${p.restricted_element === 'ReportSpec' ? 'report spec' : 'Report'} this placement shows is in a zone you cannot see.`;
-    return tile;
-  }
-  if (p.kind === 'missing') {
-    tile.innerHTML = title + `<div class="mt-1 text-amber-400">missing: ${_esc(p.reason || 'the Report is no longer in Egeria')}</div>`;
-    return tile;
-  }
-  let html = title + `<div class="text-[10px] text-slate-500 mt-0.5">spec ${_esc(p.spec || 'none')}${_dashBadge(p.source)}</div>`;
-  if (p.report && p.report.description) html += `<div class="text-slate-400 mt-1">${_esc(p.report.description)}</div>`;
-  if (p.error) html += `<div class="text-red-400 mt-1">${_esc(p.error)}</div>`;
-  else if (!p.runnable) html += `<div class="text-amber-400 mt-1">${_esc(p.refusal || 'This spec cannot run here.')}</div>`;
-  else html += `<button class="dash-run mt-1 px-2 py-0.5 rounded bg-cyan-800 hover:bg-cyan-700 text-white">Run</button>`;
-  html += `<div class="dash-out mt-1"></div>`;
-  tile.innerHTML = html;
-  const run = tile.querySelector('.dash-run');
-  if (run) run.onclick = () => _runDashPlacement(sheet, p, tile, run);
-  return tile;
-}
-
-async function _runDashPlacement(sheet, p, tile, btn) {
-  const out = tile.querySelector('.dash-out');
-  btn.disabled = true;
-  btn.textContent = 'Running…';
-  try {
-    const r = await fetch(`/api/dashboards/${encodeURIComponent(sheet.name)}/placements/${p.position}/run`, {
-      method: 'POST', headers: { ...Auth.getHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ perspective: sheet.perspective || null }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      out.innerHTML = `<div class="text-amber-400">${_esc(_dashSignInMessage(r, data.detail || String(r.status)))}</div>`;
-    } else if (data.state !== 'ok') {
-      out.innerHTML = `<div class="text-amber-400">${_esc(data.message)}</div>`;
-    } else {
-      out.innerHTML = `<div class="msg-body prose prose-invert text-xs max-w-none overflow-x-auto">${renderMarkdown(preprocessMarkdown(data.response || 'No output.'))}</div>`;
-      out.querySelectorAll('code.language-mermaid').forEach(el => {
-        const c = document.createElement('div');
-        c.className = 'mermaid my-2';
-        c.textContent = el.textContent;
-        el.closest('pre').replaceWith(c);
-      });
-      mermaid.run({ nodes: out.querySelectorAll('.mermaid') });
-    }
-  } catch (e) {
-    out.innerHTML = `<div class="text-red-400">Could not reach the Advisor: ${_esc(String(e))}</div>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Run again';
-  }
-}
+// ── Dashboards (briefs B5, B7a): static/dashboards_view.js (EADashboards) ─────
 
 // ── Send / query ───────────────────────────────────────────────────────────────
 function sendQuery() {
@@ -2513,6 +2331,9 @@ async function feedbackClick(e) {
     routing_agent: btn.dataset.routingAgent || null,
     intent_override: btn.dataset.intentOverride || null,
     response_text: _feedbackAnswerText(fb),
+    // A-F1: session + exchange + vote is the vote's idempotency key, so Retry on this row is the same vote.
+    session_id: (window._eaFeedbackSession ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
+    exchange_id: (fb.dataset.exchangeId ||= (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`)),
   };
   // Keep the buttons so a failed send can be retried; acknowledge the click at once.
   if (!fb._buttons) fb._buttons = [...fb.querySelectorAll('button')];
@@ -3814,5 +3635,6 @@ function initReportCanvasResize() {
 <script src="/static/plan_editor.js?v=20260713a"></script>
 <script src="/static/report_spec_canvas.js?v=20260629i"></script>
 <script src="/static/specs_publish.js?v=20261111a"></script>
+<script src="/static/dashboards_view.js?v=20261111a"></script>
 </body>
 </html>

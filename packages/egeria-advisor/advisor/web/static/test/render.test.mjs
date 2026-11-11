@@ -1,8 +1,8 @@
 /** EA Phase 0, S2: untrusted Markdown is rendered inert, and the feedback buttons tell the truth.
  *
- *  Runs the REAL vendored marked + DOMPurify and the REAL render.js in a jsdom window, and the REAL
- *  _dashTile / feedbackClick functions cut out of the shipped index.html (not re-typed), so a change
- *  to the page is what gets tested. Only fetch and Auth are stubbed.
+ *  Runs the REAL vendored marked + DOMPurify and the REAL render.js in a jsdom window, the REAL dashTile
+ *  (static/dashboards_view.js), and the REAL feedbackClick cut out of the shipped index.html (not
+ *  re-typed), so a change to the page is what gets tested. Only fetch and Auth are stubbed.
  *
  *  Run:  node --test advisor/web/static/test/render.test.mjs
  *  jsdom is not an EA dependency: it is resolved from $EA_JSDOM_DIR (a node_modules directory, e.g.
@@ -151,14 +151,14 @@ test('without DOMPurify or marked the text is shown as written, never as HTML', 
   }
 });
 
-test('a dashboard text placement from Egeria renders inert (the real _dashTile)', { skip: SKIP }, () => {
+test('a dashboard text placement from Egeria renders inert (the real dashTile, static/dashboards_view.js)', { skip: SKIP }, () => {
   const w = makeWindow();
-  w.eval([cutConst('_DASH_SPAN'), cut('_esc'), cut('preprocessMarkdown'), cut('_dashTile'),
-    'window._dashTile = _dashTile;'].join('\n'));
+  w.eval([cut('_esc'), cut('preprocessMarkdown'), 'window.preprocessMarkdown = preprocessMarkdown;'].join('\n'));
+  w.eval(read('dashboards_view.js'));     // B7a moved the dashboards UI out of index.html
   const sheet = { name: 's', heading: 'S' };
   const p = { kind: 'text', span: '1', emphasis: 'kpi',
     content: '## Note\n<img src=x onerror="window.__pwned=1">\n<script>window.__pwned=2</script>\n[x](javascript:window.__pwned=3)\n<!-- TODO: fill in -->' };
-  const tile = w._dashTile(sheet, p);
+  const tile = w.EADashboards.dashTile(sheet, p);
   w.document.body.appendChild(tile);
   assertInert(w, tile.innerHTML);
   assert.equal(tile.querySelector('h2').textContent, 'Note');

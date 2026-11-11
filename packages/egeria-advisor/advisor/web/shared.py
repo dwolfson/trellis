@@ -24,15 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
-from pydantic import BaseModel
-
-
-def _extended_feedback_path() -> Path:
-    """Path to the extended-feedback JSONL log, under the resolved writable
-    advisor data root (ADVISOR_DATA_PATH) rather than a bare relative
-    ``data/`` path — see advisor.config.resolve_advisor_data_root()."""
-    from advisor.config import resolve_advisor_data_root
-    return resolve_advisor_data_root() / "feedback" / "feedback_extended.jsonl"
+from pydantic import BaseModel, Field
 
 
 _STATIC = Path(__file__).parent / "static"
@@ -79,6 +71,10 @@ class FeedbackRequest(BaseModel):
     routing_agent: Optional[str] = None
     response_text: Optional[str] = None   # actual response shown to user
     intent_override: Optional[str] = None  # intent selector value from UI ("auto", "explain", etc.)
+    # A-F1: the vote's idempotency key is session + exchange + vote (advisor.feedback_store.vote_key),
+    # so a retried send is one item. A client that sends neither gets a plain submit.
+    session_id: Optional[str] = Field(default=None, max_length=64)
+    exchange_id: Optional[str] = Field(default=None, max_length=64)
 
 
 # ── intent → badge metadata ────────────────────────────────────────────────────

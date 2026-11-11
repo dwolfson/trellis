@@ -15,6 +15,7 @@ trimming, to keep the files small; no field was renamed or invented.
 | `get_actor_profiles_by_name_found.json` | `get_actor_profiles_by_name("Erin Overview")` | `class`, `elementHeader`, `properties` |
 | `get_all_technology_types_head.json` | `get_all_technology_types()`: the first 3 | none |
 | `refusals.json` | the text of three non-answers | none |
+| `sso_token_check.json` | `get_my_profile()` with a bearer token, the Portal SSO check (A-I1, 2026-11-11): a valid erinoverview token; a garbage token and a forged, unsigned JWT (both `PyegeriaUnauthorizedException`, 401); a closed port (`PyegeriaConnectionException`) | only the exception text, whitespace-collapsed to 500 characters |
 
 `refusals.json` holds three entries:
 - the string pyegeria returns for a name that matches nothing;

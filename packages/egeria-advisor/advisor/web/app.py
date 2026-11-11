@@ -99,7 +99,7 @@ def _install_login_required_middleware() -> None:
 #: route added under it is gated by default; plus the feedback triage reads and edits. NOT `POST /api/feedback`
 #: (voting is for every signed-in user), and not `/admin` (the static page: every call it makes is gated).
 ADMIN_PATH_PREFIXES = ("/api/admin/",)
-ADMIN_EXACT_PATHS = ("/api/feedback/extended", "/api/feedback/analysis")
+ADMIN_EXACT_PATHS = ("/api/feedback/analysis",)  # A-F1: /api/feedback/v2 checks admin itself
 
 
 def _install_admin_path_middleware() -> None:
