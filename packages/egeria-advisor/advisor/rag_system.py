@@ -1761,13 +1761,8 @@ class RAGSystem:
     def _add_perspective_prefix(query: str, perspective: Optional[str]) -> str:
         if not perspective:
             return query
-        labels = {
-            "developer": "Software Developer",
-            "data_engineer": "Data Engineer",
-            "data_steward": "Data Steward",
-            "governance_officer": "Governance Officer",
-        }
-        label = labels.get(perspective, perspective.replace("_", " ").title())
+        from advisor.perspective_manager import display_name_for_key
+        label = display_name_for_key(perspective) or perspective.replace("_", " ").title()
         return f"[User role: {label}]\n{query}"
 
     # ---------------------------------------------------------------------- #

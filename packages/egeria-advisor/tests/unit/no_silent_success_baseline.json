@@ -20,7 +20,6 @@
   "advisor/agents/plan_elicitor.py::start": 1,
   "advisor/agents/report_spec_elicitor.py::process": 1,
   "advisor/agents/tools.py::_legacy_templates_root": 1,
-  "advisor/agents/tools.py::_load_perspective_families": 1,
   "advisor/auth.py::_validation_config": 1,
   "advisor/command_keyword_index.py::_find_legacy_template_root": 1,
   "advisor/dashboard/terminal_dashboard.py::create_query_stats_panel": 2,

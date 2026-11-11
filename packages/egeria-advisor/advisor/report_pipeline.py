@@ -400,10 +400,13 @@ class QuestionSpecIndex:
         # relevant to the selected role ranks higher — but a report is never hidden
         # just because the role isn't tagged on it.
         if perspective:
-            persp_lower = perspective.strip().lower()
+            # Tags are role names ("Data Steward"); match them through the perspective's names and
+            # role profile (A-P P-1). Comparing the raw key ("data_steward") never matched.
+            from advisor.perspective_manager import perspective_tags
+            wanted = perspective_tags(perspective) | {"any"}
             for i, (_, persp_list, _) in enumerate(entries):
-                normed = [p.strip().lower() for p in persp_list]
-                if persp_lower in normed or "any" in normed:
+                normed = {p.strip().lower() for p in persp_list}
+                if normed & wanted:
                     scores[i] = float(scores[i]) + self._PERSPECTIVE_BOOST
 
         # Collect best score per unique spec name
