@@ -29,7 +29,7 @@ CDN = re.compile(r"cdn\.|jsdelivr|unpkg|cdnjs|googleapis\.com", re.I)
 # exemption is visible and is removed when S1's page lands: the test below fails once it is clean.
 CDN_EXEMPT = {"admin.html": "S1 owns admin.html in Phase 0; its Tailwind <script> is still on the CDN"}
 
-S2_FILES = ["index.html", "plan_editor.js", "report_spec_canvas.js", "render.js"]
+S2_FILES = ["index.html", "plan_editor.js", "report_spec_canvas.js", "render.js", "dashboards_view.js"]
 
 
 def _page_files():
@@ -88,7 +88,11 @@ def test_marked_parse_only_inside_render_js():
 def test_every_markdown_innerhtml_goes_through_render_markdown():
     """The sites the brief lists: each now assigns renderMarkdown(...) output."""
     index = (STATIC / "index.html").read_text()
-    assert index.count("renderMarkdown(") >= 6
+    # Two of the brief's sites (a dashboard text placement, a dashboard run's output) moved with the
+    # dashboards UI to dashboards_view.js (B7a), where every Markdown render is md() -> renderMarkdown.
+    assert index.count("renderMarkdown(") >= 4
+    dash = (STATIC / "dashboards_view.js").read_text()
+    assert "root.renderMarkdown(pre)" in dash and dash.count("md(") >= 3
     assert "renderMarkdown(_ped.outcome)" in (STATIC / "plan_editor.js").read_text()
 
 
@@ -101,7 +105,7 @@ def test_no_inline_handler_built_from_values(name):
     assert bad == []
 
 
-@pytest.mark.parametrize("name", ["plan_editor.js", "report_spec_canvas.js"])
+@pytest.mark.parametrize("name", ["plan_editor.js", "report_spec_canvas.js", "dashboards_view.js"])
 def test_no_inline_onclick_in_js_modules(name):
     assert 'onclick="' not in (STATIC / name).read_text()
 
@@ -141,8 +145,10 @@ def test_node_render_harness():
         if required:
             pytest.fail(f"EA_RENDER_HARNESS_REQUIRED=1 but {missing}: the security harness did not run")
         pytest.skip(missing)
-    r = subprocess.run(["node", "--test", str(STATIC / "test" / "render.test.mjs")],
-                       capture_output=True, text=True, timeout=120)
+    # Every harness file: render.test.mjs (S2) and dashboards_view.test.mjs (B7a), and any added later.
+    files = sorted(str(f) for f in (STATIC / "test").glob("*.test.mjs"))
+    assert any(f.endswith("render.test.mjs") for f in files)
+    r = subprocess.run(["node", "--test", *files], capture_output=True, text=True, timeout=180)
     assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]
     assert re.search(r"^# fail 0$", r.stdout, re.M) and re.search(r"^# skipped 0$", r.stdout, re.M), r.stdout[-2000:]
     assert re.search(r"^# pass [1-9]\d*$", r.stdout, re.M), r.stdout[-2000:]
