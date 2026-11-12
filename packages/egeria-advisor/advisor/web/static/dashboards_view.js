@@ -114,6 +114,11 @@
     }
     if (root.EADashAuthor) root.EADashAuthor.mountSidebar();
     status.textContent = `${data.sheets.length} sheet${data.sheets.length === 1 ? '' : 's'} visible to ${data.viewer}`;
+    if (data.message) {
+      // pyegeria's folder notes: a configured folder not found, not visible or only partly read.
+      const note = el('div', 'dash-list-notes text-amber-400', data.message);
+      status.appendChild(note);
+    }
     sheets = {};
     data.sheets.forEach(s => {
       sheets[s.name] = s;

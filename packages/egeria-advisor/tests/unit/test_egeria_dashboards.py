@@ -197,6 +197,82 @@ def test_refused_token_is_sign_in_again(viewers):
         ed.show_sheet(ERIN, DEMO)
 
 
+# ── list: a configured folder's own reason (Architect F3) ──────────────────────
+
+EA_FOLDER = "DashboardFolder::Consumer::EgeriaAdvisor"
+LISTING_NOT_FOUND = _HERE / "fixtures" / "dashboards" / "listing_folder_not_found_2026-11-11.json"
+
+
+def _captured_listing(monkeypatch, sheets=()):
+    """pyegeria's real DashboardSheetListing, with the notes and folders captured read-only from hedwig's
+    Egeria (pyegeria 6.2.36, no EA consumer folder there), returned by the resolver EA calls."""
+    import json
+
+    from pyegeria.view import dashboard_resolver
+    from pyegeria.view.dashboards import DashboardSheetListing
+    cap = json.loads(LISTING_NOT_FOUND.read_text())
+    listing = DashboardSheetListing(list(sheets), notes=cap["notes"], folders=cap["folders"])
+    monkeypatch.setattr(dashboard_resolver, "list_dashboard_sheets_for_viewer", lambda client, folders=None: listing)
+    return cap
+
+
+def test_folder_not_found_says_the_folders_reason_not_no_sheets(viewers, monkeypatch):
+    cap = _captured_listing(monkeypatch)
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "no_sheets"
+    assert cap["notes"][0] in out["message"]                      # the folder's own words, verbatim
+    assert "not found, or not visible to erinoverview" in out["message"]
+    assert "Egeria holds no Dashboard Sheets" not in out["message"]
+    assert out["notes"] == cap["notes"]
+    assert out["folders"] == cap["folders"]
+    assert out["folders"][0]["qualifiedName"] == EA_FOLDER and out["folders"][0]["status"] == "not found"
+
+
+def test_folder_notes_survive_the_cache(viewers, monkeypatch):
+    cap = _captured_listing(monkeypatch)
+    ed.list_sheets(ERIN)
+    again = ed.list_sheets(ERIN)
+    assert again["cached"] is True and again["notes"] == cap["notes"] and cap["notes"][0] in again["message"]
+
+
+def test_notes_with_sheets_are_the_message(viewers, monkeypatch):
+    from pyegeria.view.dashboard_resolver import list_dashboard_sheets_for_viewer
+    real = list_dashboard_sheets_for_viewer(viewers[ERIN_TOKEN], [])
+    assert [s.name for s in real] == [DEMO]
+    cap = _captured_listing(monkeypatch, sheets=real)
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "ok" and [s["name"] for s in out["sheets"]] == [DEMO]
+    assert out["message"] == cap["notes"][0]
+
+
+@pytest.mark.parametrize("folder, words", [
+    ({"qualifiedName": EA_FOLDER, "status": "not read", "reason": "Egeria answered 500", "sheets": 0},
+     f"{EA_FOLDER}: Egeria answered 500"),
+    ({"qualifiedName": EA_FOLDER, "status": "not read", "reason": None, "sheets": 0}, f"{EA_FOLDER}: not read"),
+    ({"qualifiedName": EA_FOLDER, "status": None, "reason": None, "sheets": 0}, f"{EA_FOLDER}: not read"),
+])
+def test_an_unread_folder_with_no_notes_says_its_reason_or_status(viewers, monkeypatch, folder, words):
+    from pyegeria.view import dashboard_resolver
+    from pyegeria.view.dashboards import DashboardSheetListing
+    listing = DashboardSheetListing([], notes=[], folders=[folder])
+    monkeypatch.setattr(dashboard_resolver, "list_dashboard_sheets_for_viewer", lambda client, folders=None: listing)
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "no_sheets"
+    assert out["message"] == f"No Dashboard Sheets to show for erinoverview: {words}."
+    assert ": ." not in out["message"]
+
+
+def test_read_folders_with_no_sheets_keep_the_no_sheets_words(viewers, monkeypatch):
+    from pyegeria.view import dashboard_resolver
+    from pyegeria.view.dashboards import DashboardSheetListing
+    listing = DashboardSheetListing([], notes=[], folders=[
+        {"qualifiedName": EA_FOLDER, "status": "read", "reason": None, "sheets": 0}])
+    monkeypatch.setattr(dashboard_resolver, "list_dashboard_sheets_for_viewer", lambda client, folders=None: listing)
+    out = ed.list_sheets(ERIN)
+    assert out["state"] == "no_sheets" and "no Dashboard Sheets that erinoverview can see" in out["message"]
+    assert out["folders"][0]["status"] == "read"
+
+
 # ── show: restricted placements, order, span, emphasis, sources ────────────────
 
 def test_erin_sees_report_and_restricted_peter_sees_two_reports(viewers):

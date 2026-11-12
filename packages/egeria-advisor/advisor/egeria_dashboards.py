@@ -164,11 +164,25 @@ def _sheet_summary(sheet: Any) -> Dict[str, Any]:
     }
 
 
+def _listing_notes(sheets: Any) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """pyegeria's DashboardSheetListing says how it read the configured dashboard folders: `notes` (a folder
+    not found or not visible to the viewer, a sub-folder not read, no folders configured) and `folders`
+    (qualifiedName, status read / partial / not found / not read, reason, sheets). Kept, never dropped:
+    without them a folder EA cannot see reads as "no sheets"."""
+    notes = [str(n) for n in (getattr(sheets, "notes", None) or []) if str(n).strip()]
+    folders = [{"qualifiedName": f.get("qualifiedName"), "status": f.get("status"),
+                "reason": f.get("reason"), "sheets": f.get("sheets")}
+               for f in (getattr(sheets, "folders", None) or []) if isinstance(f, dict)]
+    return notes, folders
+
+
 def list_sheets(creds: Optional[Dict[str, str]], *, refresh: bool = False,
                 client_factory: Optional[Callable[[Dict[str, str]], Any]] = None) -> Dict[str, Any]:
     """The sheets Egeria holds that this viewer can see.
 
-    {"state": "ok" | "no_sheets" | "read_failed", "sheets": [...], "message": str | None, "viewer": id}
+    {"state": "ok" | "no_sheets" | "read_failed", "sheets": [...], "message": str | None, "viewer": id,
+     "notes": [...], "folders": [...]}. With no sheets, a configured folder that was not found or not read
+    makes the message that folder's reason, not "no sheets"; with sheets, any notes are the message.
     Raises SignInRequired (no token) or TokenRefused (Egeria refused it)."""
     conn = _connection(creds)
     key = f"list|{credential_identity(conn)}"
@@ -186,12 +200,24 @@ def list_sheets(creds: Optional[Dict[str, str]], *, refresh: bool = False,
         logger.warning(f"dashboards: listing sheets as {viewer!r} failed: {exc}")
         return {"state": "read_failed", "sheets": [], "viewer": viewer, "cached": False,
                 "message": f"Could not read Dashboard Sheets from Egeria as {viewer}: {_words(exc)}"}
+    notes, folders = _listing_notes(sheets)
     out: Dict[str, Any] = {"state": "ok", "sheets": [_sheet_summary(s) for s in sheets], "viewer": viewer,
-                           "message": None}
+                           "message": None, "notes": notes, "folders": folders}
+    unread = [f for f in folders if f.get("status") != "read"]
     if not out["sheets"]:
         out["state"] = "no_sheets"
-        out["message"] = (f"Egeria holds no Dashboard Sheets that {viewer} can see. None may exist yet, "
-                          "or every one may be in a zone you cannot see.")
+        if unread:
+            # A folder that was not found or not read is not an empty one: say the folder's own reason. With
+            # no notes, each unread folder's own `reason`, else its status ("not read").
+            why = notes or [f"{f.get('qualifiedName') or 'a dashboard folder'}: "
+                            f"{f.get('reason') or f.get('status') or 'not read'}" for f in unread]
+            out["message"] = f"No Dashboard Sheets to show for {viewer}: " + "; ".join(why) + "."
+        else:
+            out["message"] = (f"Egeria holds no Dashboard Sheets that {viewer} can see. None may exist yet, "
+                              "or every one may be in a zone you cannot see."
+                              + (" (" + "; ".join(notes) + ")" if notes else ""))
+    elif notes:
+        out["message"] = "; ".join(notes)
     _cache_put(key, out)
     return {**out, "cached": False}
 

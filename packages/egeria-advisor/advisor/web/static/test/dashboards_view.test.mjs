@@ -251,6 +251,43 @@ test('a nested sheet opens in place; no inline handlers anywhere in the module',
   assert.doesNotMatch(read('dashboards_view.js'), /\son[a-z]+\s*=\s*["']/);
 });
 
+// ── the list: a configured folder's own reason (Architect F3) ─────────────────
+
+const LISTING = JSON.parse(fs.readFileSync(path.resolve(STATIC,
+  '../../../tests/unit/fixtures/dashboards/listing_folder_not_found_2026-11-11.json'), 'utf8'));
+
+test('a folder that is not found says its reason, not "no sheets"', { skip: SKIP }, async () => {
+  const w = makeWindow();
+  const message = `No Dashboard Sheets to show for erinoverview: ${LISTING.notes[0]}.`;
+  w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ state: 'no_sheets', sheets: [], viewer: 'erinoverview',
+    message, notes: LISTING.notes, folders: LISTING.folders }) });
+  await w.EADashboards.loadDashboards(false);
+  const status = w.document.getElementById('dashboard-status');
+  assert.equal(status.textContent, message);
+  assert.match(status.textContent, /DashboardFolder::Consumer::EgeriaAdvisor: not found, or not visible to erinoverview/);
+});
+
+test('with sheets, the folder notes show under the count', { skip: SKIP }, async () => {
+  const w = makeWindow();
+  w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ state: 'ok', viewer: 'erinoverview',
+    sheets: [{ name: 'a', heading: 'A', description: '', placement_count: 1, breaks: [] }],
+    message: LISTING.notes[0], notes: LISTING.notes, folders: LISTING.folders }) });
+  await w.EADashboards.loadDashboards(false);
+  const status = w.document.getElementById('dashboard-status');
+  assert.match(status.textContent, /^1 sheet visible to erinoverview/);
+  assert.equal(status.querySelector('.dash-list-notes').textContent, LISTING.notes[0]);
+});
+
+test('with sheets and no notes, only the count shows', { skip: SKIP }, async () => {
+  const w = makeWindow();
+  w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ state: 'ok', viewer: 'erinoverview',
+    sheets: [{ name: 'a', heading: 'A', description: '', placement_count: 1, breaks: [] }], message: null, notes: [], folders: [] }) });
+  await w.EADashboards.loadDashboards(false);
+  const status = w.document.getElementById('dashboard-status');
+  assert.equal(status.textContent, '1 sheet visible to erinoverview');
+  assert.equal(status.querySelector('.dash-list-notes'), null);
+});
+
 // ── large tables scroll inside their tile (the Portal's .tbl-scroll, #833) ─────
 
 function mdTable(nRows, nCols) {
