@@ -29,6 +29,7 @@ FIX = pathlib.Path(__file__).parent / "fixtures" / "dashboards"
 LIVE = json.loads((FIX / "live_results_2026-11-11.json").read_text())
 TREND = json.loads((FIX / "pyegeria_6234_metric_trend.json").read_text())
 SAVED = json.loads((FIX / "pyegeria_6234_saved_query.json").read_text())
+STRUCTURED = json.loads((FIX / "structured_table_laz_2026_11_12.json").read_text())
 GE = "≥"
 
 
@@ -426,6 +427,10 @@ def _tiles_for_js():
         "saved_capped": tile({"kind": "json", "data": SAVED["cached_capped"]}),
         "saved_live": tile({"kind": "json", "data": SAVED["live_count"]}),
         "empty": tile({"kind": "empty"}, spec="Collections"),
+        # T1: structured TABLE results (pyegeria 6.2.39, laz), drawn by trellis-ui's egeria-table.js
+        "table_risk": tile(STRUCTURED["Risk-DrE-Basic"], "TABLE", "Risk-DrE-Basic"),
+        "table_digital_products": tile(STRUCTURED["Digital-Products"], "TABLE", "Digital-Products"),
+        "table_collections": tile(STRUCTURED["Collections"], "TABLE", "Collections"),
     }
 
 

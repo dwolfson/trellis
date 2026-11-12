@@ -18,9 +18,14 @@
  *   chart     a Vega-Lite spec pyegeria made, embedded with the vendored vega-embed;
  *   trend     metric_trend points: the latest point's display as the headline and a sparkline. A lower
  *             bound ("≥N") is drawn as a hollow marker and is never shown as a bare number (W2);
+ *   table     a TABLE placement: pyegeria's structured table, drawn by the shared renderer (trellis-ui's
+ *             vendored egeria-table.js, the Portal's own): bullets, joined names, long text with "more",
+ *             sub-tables under their row, no column cap, and a footer with "first N of M" / "more may
+ *             exist" and every note. Every column can be dragged wider or narrower (double-click resets);
  *   markdown  sanitised with renderMarkdown (render.js), mermaid blocks drawn;
  *   empty / absent  the sentence is the answer, never a 0.
- * Nothing from the server reaches innerHTML except through renderMarkdown() or esc().
+ * Nothing from the server reaches innerHTML except through renderMarkdown(), esc() or EgeriaTable.renderHtml()
+ * (which escapes every value itself).
  */
 (function (root) {
   'use strict';
@@ -316,6 +321,7 @@
       }
       case 'chart': out.appendChild(chartBox(t.spec)); break;
       case 'trend': out.appendChild(trendBox(t)); break;
+      case 'table': out.appendChild(tableBox(t.table)); break;
       case 'markdown': out.appendChild(markdownBox(t.markdown)); break;
       case 'empty':
       case 'absent':
@@ -349,6 +355,72 @@
     }
     table.replaceWith(wrap);
     wrap.appendChild(table);
+  }
+
+  // ── structured TABLE (T1) ────────────────────────────────────────────────
+  // Drawn by the shared renderer, unchanged from the Portal (trellis-ui/egeria-table.js). EA has no element
+  // view, so no link builder: a related element's name is text, its qualified name the tooltip, and the
+  // renderer's title says there is no link. The table scrolls inside the tile (ea_looks.css, .dash-etable).
+  function tableBox(result) {
+    const box = el('div', 'dash-etable');
+    if (!root.EgeriaTable) {
+      box.appendChild(el('div', 'text-amber-400', 'The table renderer (egeria-table.js) did not load, so this table cannot be drawn.'));
+      return box;
+    }
+    box.innerHTML = root.EgeriaTable.renderHtml(result);
+    root.EgeriaTable.attach(box);
+    attachTableColumnResize(box);
+    // "more" is trimmed where the browser did not cut the text, once the box is laid out
+    setTimeout(() => { try { root.EgeriaTable.trim(box); } catch (e) { /* the toggles stay */ } }, 0);
+    return box;
+  }
+
+  // Every column of a structured table can be resized (owner rule): drag a header cell's right edge,
+  // double-click it to reset the table. Scoped to this box: EA's other tables are not touched.
+  const COL_EDGE = 6, COL_MIN = 40;
+  function nearRightEdge(th, x) {
+    const r = th.getBoundingClientRect();
+    return r.right - x <= COL_EDGE && r.right - x >= -2;
+  }
+  function headerAt(box, target) {
+    const th = target && target.closest ? target.closest('th') : null;
+    return th && box.contains(th) ? th : null;
+  }
+  function attachTableColumnResize(box) {
+    const doc = box.ownerDocument;
+    box.addEventListener('mousemove', (e) => {
+      const th = headerAt(box, e.target);
+      box.style.cursor = th && nearRightEdge(th, e.clientX) ? 'col-resize' : '';
+    });
+    box.addEventListener('mousedown', (e) => {
+      const th = headerAt(box, e.target);
+      if (!th || e.button !== 0 || !nearRightEdge(th, e.clientX)) return;
+      const table = th.closest('table');
+      const cells = Array.from(th.parentElement.cells);
+      const widths = cells.map(c => c.getBoundingClientRect().width);
+      const total = widths.reduce((a, b) => a + b, 0);
+      cells.forEach((c, i) => { c.style.width = widths[i] + 'px'; });
+      table.style.tableLayout = 'fixed';
+      table.style.width = total + 'px';
+      table.style.minWidth = '0';
+      const i = cells.indexOf(th), x0 = e.clientX, w0 = widths[i];
+      e.preventDefault();
+      const move = (ev) => {
+        const w = Math.max(COL_MIN, w0 + ev.clientX - x0);
+        th.style.width = w + 'px';
+        table.style.width = (total - w0 + w) + 'px';
+      };
+      const up = () => { doc.removeEventListener('mousemove', move); doc.removeEventListener('mouseup', up); };
+      doc.addEventListener('mousemove', move);
+      doc.addEventListener('mouseup', up);
+    });
+    box.addEventListener('dblclick', (e) => {
+      const th = headerAt(box, e.target);
+      if (!th || !nearRightEdge(th, e.clientX)) return;
+      const table = th.closest('table');
+      Array.from(th.parentElement.cells).forEach(c => { c.style.width = ''; });
+      table.style.tableLayout = ''; table.style.width = ''; table.style.minWidth = '';
+    });
   }
 
   function markdownBox(text) {
@@ -525,6 +597,7 @@
   }
 
   root.EADashboards = { loadDashboards, ensureLoaded, openDashboard, renderDashboard, dashTile, renderTileBody, runQueue,
+    tableBox,
     isLoaded: () => loaded };
   // index.html's sidebar markup calls these by name.
   root.loadDashboards = loadDashboards;
