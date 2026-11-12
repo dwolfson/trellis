@@ -2221,7 +2221,9 @@ export const getResyncStatus = () => get('/api/egeria/resync/scheduler-status');
 
 /** Runs exactly the named repair steps — nothing runs unless asked for by
  *  name. `steps` is a plain array of `Finding.repair_step` values. */
-export const applyResyncSteps = (steps) => post('/api/egeria/resync/apply', { steps });
+// planHashes: step -> the plan hash its scan showed (`finding.plan_hash`); reattach_by_name refuses without it.
+export const applyResyncSteps = (steps, planHashes = {}) =>
+  post('/api/egeria/resync/apply', { steps, plan_hashes: planHashes });
 
 /* ── Egeria on a resource (parity slice G1) ────────────────────────────────
  * The Publish section of Curate (next/stages/publish.js). The state and the

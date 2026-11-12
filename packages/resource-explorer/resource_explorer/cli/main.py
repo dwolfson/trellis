@@ -1671,6 +1671,25 @@ def record_egeria_reset(
                   + f"). Latest reset now {registry.latest_egeria_reset_at()}.[/green]")
 
 
+@registry_app.command(
+    name="reattach-egeria-by-name",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True, "help_option_names": []},
+    add_help_option=False,
+)
+def reattach_egeria_by_name(ctx: typer.Context):
+    """Re-attach stored Egeria GUIDs by qualifiedName after an Egeria clear (registry writes only; Egeria is read).
+
+    DRY RUN by default: prints a table per registry table (rows, distinct names, each verdict's count), writes a
+    0600 plan file and prints the exact "to apply:" line. --show <verdict> lists the rows of one verdict.
+    Run it AFTER scripts/clear_egeria_pointers_after_reset.py, never before: the clear script blanks every pointer.
+    Pass --help for every flag and guard (resource_explorer/egeria_reattach.py's docstring).
+    """
+    from resource_explorer.egeria_reattach import run
+
+    code = run(list(ctx.args), out=print)
+    raise typer.Exit(code)
+
+
 @app.command(name="egeria-reports")
 def egeria_reports(
     slug: str = typer.Argument(help="Project slug"),

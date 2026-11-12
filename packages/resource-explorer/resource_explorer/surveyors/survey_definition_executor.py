@@ -2005,6 +2005,53 @@ class SurveyDefinitionExecutor:
                       producer, lookup_exc)
         return base
 
+    def _verified_cached_process(self, entity_type: str, slug: str, technology_type: str,
+                                 cached: dict) -> tuple | None:
+        """A cached Survey Definition GUID is never trusted unchecked (brief RE-REATTACH-BY-QN 2026-11-12 §5:
+        after an Egeria clear the cache held GUIDs that pointed at nothing). One read of the GUID:
+
+          * live                       -> use it;
+          * not found, the stored name resolves to one GovernanceActionProcess -> re-cache that GUID, use it;
+          * not found, the name is not in Egeria (or no name is stored) -> drop the row: None, a cold cache;
+          * anything else (unreadable, ambiguous, wrong type) -> refuse; never run with a GUID that may be dead.
+
+        The path taken is logged. The reads are `egeria_reattach.EgeriaReads`, the same as the re-attach tool's."""
+        from resource_explorer.egeria_absence import ABSENT, PRESENT
+        from resource_explorer.egeria_reattach import MISSING, REATTACH, WORDS, EgeriaReads
+        from resource_explorer.surveyors.survey_definition_reader import qualified_process_name
+
+        guid = cached.get("process_guid") or ""
+        name = cached.get("process_qualified_name") or ""
+        connect = getattr(self.reader, "_connect_metadata_expert", None)
+        if not guid or connect is None:
+            return (guid, name) if guid else None
+        reads = EgeriaReads(connect())
+        state, why = reads.element(guid)
+        if state == PRESENT:
+            log.info("survey definition cache: %s/%s/%s uses its cached GUID %s (live)",
+                     entity_type, slug, technology_type, guid)
+            return guid, name
+        if state != ABSENT:
+            raise SurveyDefinitionExecutorError(
+                f"Could not check the cached Survey Definition GUID {guid} in Egeria ({why}); not running with a "
+                "GUID that may point at nothing. This is not a finding that it is gone.")
+        if name:
+            verdict, new_guid, detail = reads.by_name(qualified_process_name(name), "GovernanceActionProcess")
+            if verdict == REATTACH:
+                self.registry.set_survey_definition_guid(entity_type, slug, technology_type, new_guid, name)
+                log.info("survey definition cache: %s/%s/%s cached GUID %s is gone; re-resolved %r by name to %s",
+                         entity_type, slug, technology_type, guid, name, new_guid)
+                return new_guid, name
+            if verdict != MISSING:
+                raise SurveyDefinitionExecutorError(
+                    f"The cached Survey Definition GUID {guid} is gone from Egeria and its name {name!r} could not "
+                    f"be re-resolved: {WORDS[verdict]}{' (' + detail + ')' if detail else ''}.")
+        self.registry.delete_survey_definition_guid(entity_type, slug, technology_type)
+        log.info("survey definition cache: %s/%s/%s cached GUID %s is gone and %s; dropped the row, resolving "
+                 "as on a cold cache", entity_type, slug, technology_type, guid,
+                 f"{name!r} is not in Egeria" if name else "no name was stored")
+        return None
+
     def _resolve_process_guid(
         self,
         entity_type: str,
@@ -2036,7 +2083,9 @@ class SurveyDefinitionExecutor:
         if not refresh_definition:
             cached = self.registry.get_survey_definition_guid(entity_type, slug, technology_type)
             if cached:
-                return cached["process_guid"], cached["process_qualified_name"]
+                live = self._verified_cached_process(entity_type, slug, technology_type, cached)
+                if live is not None:
+                    return live
 
         candidates = self.reader.find_candidate_process_guids(technology_type)
         if not candidates:
