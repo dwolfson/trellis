@@ -6016,6 +6016,15 @@ class ProjectRegistry:
                 ),
             )
 
+    def delete_survey_definition_guid(self, entity_type: str, entity_slug: str, technology_type: str) -> int:
+        """Drop one cached Survey Definition GUID (it pointed at nothing in Egeria); the next resolve is cold."""
+        entity_slug = self._normalize_slug(entity_slug)
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM survey_definition_cache WHERE entity_type = ? AND entity_slug = ? AND technology_type = ?",
+                (entity_type, entity_slug, technology_type))
+            return cur.rowcount or 0
+
     # ── generic runtime settings ("Discover repos to scout" plan, D1) ──────────
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:

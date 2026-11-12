@@ -83,17 +83,21 @@ transaction with rollback on any error. A second run finds nothing to clear and 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import re
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from resource_explorer.catalogue_commit import PROJECT_UNBOUND as UNBOUND_STATUS, _known, _ts  # noqa: E402
+# The guards are shared with resource_explorer.egeria_reattach (re-attach by qualifiedName) and live in one module;
+# every name is imported here, so `S.<name>` and this script's behaviour are unchanged.
+from resource_explorer.registry_guards import (  # noqa: E402,F401
+    _TS, ApplyFailed, Refused, _fsync_dir, _group, _missing_table, _nonempty, _rows, activity_guard,
+    check_live_schema, check_saved_plan, connect, database_name, parse_utc, parse_who_when, plan_hash,
+    registry_url, target_schema, utcnow, write_0600_json,
+)
 
 #: Written into every plan file and into its hash. A plan made by another version of this script is refused with
 #: its own sentence (not the registry-changed one). Bump it when the plan's shape or meaning changes.
@@ -164,101 +168,7 @@ NODE_DATABASE, NODE_REPO, NODE_OTHER = "database", "repo_report", "resource"
 FINALISE_GROUP = "activity_log:finalise"
 
 
-class ApplyFailed(Exception):
-    """A table group failed. Names it and the groups that had already committed."""
-
-    def __init__(self, group: str, committed: list, exc: Exception):
-        super().__init__(f"{type(exc).__name__} in group {group}")
-        self.group, self.committed, self.exc_type = group, committed, type(exc).__name__
-
-
-class Refused(Exception):
-    """A guard stopped the run. Nothing was written (or, if a later group failed, the message says what was)."""
-
-
-# ── connection (no ProjectRegistry: opening one runs the schema ensure, and this script is DDL-free) ─────────
-
-def registry_url() -> str:
-    url = os.environ.get("REGISTRY_DATABASE_URL", "")
-    if not url:
-        raise Refused("REGISTRY_DATABASE_URL is not set; the script names its target only through it")
-    return url
-
-
-def database_name(url: str) -> str:
-    """The NAME only, never the credentials."""
-    if url.startswith("sqlite"):
-        path = url.split("://", 1)[-1].split("?", 1)[0].lstrip("/")
-        return path.rsplit("/", 1)[-1] or "?"
-    return (urlsplit(url).path or "/").lstrip("/") or "?"
-
-
-def target_schema(url: str) -> str:
-    """The schema unqualified table names resolve in: the search_path named by the URL's options (the
-    registry's own parser). SQLite is always 'main'. A Postgres URL with none is refused: the tables would
-    resolve in `public`, which is not where RE keeps them."""
-    if url.startswith("sqlite"):
-        return "main"
-    from urllib.parse import parse_qs, unquote
-    tokens = " ".join(unquote(o) for o in parse_qs(urlsplit(url).query).get("options", [])).split()
-    found = []
-    for i, tok in enumerate(tokens):
-        if tok.startswith("-csearch_path=") or tok.startswith("--search_path="):
-            found.append(tok.split("=", 1)[1])
-        elif tok == "-c" and i + 1 < len(tokens) and tokens[i + 1].startswith("search_path="):
-            found.append(tokens[i + 1].split("=", 1)[1])
-    if not found:
-        raise Refused("REGISTRY_DATABASE_URL names no schema (no ?options=-csearch_path=<schema>); the script "
-                      "will not run against whatever schema the server defaults to")
-    if len(found) > 1:
-        raise Refused("REGISTRY_DATABASE_URL names search_path more than once; libpq would use the last one and "
-                      "this script will not guess which")
-    schema = found[0].strip().strip('"')
-    if "," in schema or not schema:
-        raise Refused("the search_path in REGISTRY_DATABASE_URL must be exactly one schema (no comma list): "
-                      "unqualified table names would resolve across the whole list")
-    from resource_explorer.registry_label import _search_path
-    if _search_path(urlsplit(url).query) != schema:
-        raise Refused("the registry's own parser reads the search_path differently from this script; refusing")
-    return schema
-
-
-def check_live_schema(conn, url: str, schema: str) -> str:
-    """The URL's search_path text is not evidence of where writes go; the open connection is. Postgres: ask it
-    (`current_schema()`) and refuse unless it equals the schema the URL and --schema named. SQLite is 'main'."""
-    if url.startswith("sqlite"):
-        return "main"
-    live = conn.execute("SELECT current_schema() AS s").fetchone()["s"]
-    if live != schema:
-        raise Refused(f"the open connection's current_schema() is {live!r}, not {schema!r} (the schema named by "
-                      "the URL and --schema); unqualified table names would resolve there. Nothing was written.")
-    return live
-
-
-def connect(url: str):
-    from sqlalchemy import create_engine
-    from resource_explorer.registry import ConnectionWrapper
-    import sqlite3
-
-    is_pg = url.startswith("postgresql")
-    raw = create_engine(url, pool_pre_ping=True).raw_connection()
-    if not is_pg:
-        raw.row_factory = sqlite3.Row
-        raw.execute("PRAGMA foreign_keys=ON")
-    return ConnectionWrapper(raw, is_pg)
-
-
-def _missing_table(conn, table: str) -> bool:
-    try:
-        conn.execute(f"SELECT 1 FROM {table} WHERE 1 = 0").fetchall()
-        return False
-    except Exception as exc:
-        conn.raw_conn.rollback()
-        if getattr(exc, "pgcode", None) == "42P01" or "no such table" in str(exc).lower():
-            return True
-        raise Refused(f"could not check whether table {table} exists ({type(exc).__name__}); only an undefined-table "
-                      "error counts as missing. Nothing was written.") from exc
-
+# ── schema check (no ProjectRegistry: opening one runs the schema ensure, and this script is DDL-free) ───────
 
 def check_schema(conn, skip: tuple = ()) -> list[str]:
     """Every table and column the script touches must exist. A missing one stops the run, naming it.
@@ -277,46 +187,18 @@ def check_schema(conn, skip: tuple = ()) -> list[str]:
         want.setdefault(table, set()).update(keys)
     for table, cols in EXTRA_READS.items():
         want.setdefault("egeria_outbox" if table == "egeria_outbox_snapshot" else table, set()).update(cols)
-    for table in sorted(want):
-        for col in sorted(want[table]):
-            try:
-                conn.execute(f"SELECT {col} FROM {table} WHERE 1 = 0").fetchall()
-            except Exception as exc:
-                conn.raw_conn.rollback()
-                raise Refused(f"schema check failed: {table}.{col} is not readable "
-                              f"({type(exc).__name__}); the script will not guess. Nothing was written.") from exc
+    from resource_explorer.registry_guards import check_columns
+    check_columns(conn, want)
     return skipped
 
 
 # ── time ─────────────────────────────────────────────────────────────────────
-
-_TS = re.compile(r"^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?(\.\d+)?Z?$")
-
-
-def parse_utc(text: str, what: str) -> str:
-    m = _TS.match((text or "").strip())
-    if not m:
-        raise Refused(f"{what} must be a UTC time like 2026-10-08T18:30Z, got {text!r}")
-    return f"{m.group(1)}T{m.group(2)}{m.group(3) or ':00'}"
-
-
-def utcnow() -> datetime:
-    return datetime.utcnow()
-
 
 def human_when(reset_at: str) -> str:
     return reset_at[:16].replace("T", " ") + " UTC"
 
 
 # ── the plan ─────────────────────────────────────────────────────────────────
-
-def _nonempty(col: str) -> str:
-    return f"({col} IS NOT NULL AND {col} <> '')"
-
-
-def _rows(conn, sql: str, params=()) -> list[dict]:
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
-
 
 def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, schema: str = "main",
                skipped: list | None = None, live_schema: str = "main") -> dict:
@@ -397,11 +279,6 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
     return plan
 
 
-def plan_hash(plan: dict) -> str:
-    body = {k: v for k, v in plan.items() if k != "hash"}
-    return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
-
-
 def render(plan: dict, title: str) -> str:
     out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} (connection current_schema: {plan['current_schema']}) · reset at {human_when(plan['reset_at'])}", ""]
     out.append(f"{'action':<10}{'table':<44}{'rows':>6}  detail")
@@ -439,67 +316,14 @@ def render(plan: dict, title: str) -> str:
 # ── guards ───────────────────────────────────────────────────────────────────
 
 def parse_cleared_by(token: str, now: datetime) -> tuple[str, str]:
-    who, sep, when = (token or "").partition("/")
-    if not sep or not who.strip() or not when:
-        raise Refused("--cleared-by must be <who>/<UTC time>, e.g. dwolfson/2026-10-08T19:05Z")
-    stamp = parse_utc(when, "--cleared-by time")
-    at = datetime.fromisoformat(stamp)
-    if at > now + timedelta(minutes=5) or at < now - timedelta(hours=24):
-        raise Refused(f"--cleared-by time {stamp} is not within the last 24 hours (now {now:%Y-%m-%dT%H:%M:%S})")
-    return who.strip(), stamp
-
-
-def activity_guard(conn) -> list[str]:
-    """Reasons the registry looks in use. Empty means nothing looks active."""
-    from resource_explorer.run_reconciler import _is_alive, owner_of
-
-    reasons = []
-    for r in _rows(conn, "SELECT id, detail FROM activity_log WHERE status = 'running'"):
-        owner = owner_of(r.get("detail"))
-        alive = _is_alive(owner) if owner else None
-        if alive is not False:
-            reasons.append(f"activity_log row {r['id']} is running ("
-                           + ("its owner process is alive" if alive else "its owner cannot be judged") + ")")
-    for r in _rows(conn, "SELECT id, state FROM runs WHERE state IN ('claimed', 'running')"):
-        reasons.append(f"runs row {r['id']} is {r['state']}")
-    n = _rows(conn, "SELECT COUNT(*) AS n FROM egeria_outbox WHERE status = 'running'")[0]["n"]
-    if n:
-        reasons.append(f"{n} egeria_outbox row(s) are running")
-    return reasons
+    return parse_who_when(token, now, "--cleared-by")
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
 
-def _group(conn, fn):
-    try:
-        fn()
-        conn.commit()
-    except Exception:
-        conn.raw_conn.rollback()
-        raise
-
-
-def _fsync_dir(path: Path) -> None:
-    fd = os.open(str(path), os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def apply_plan(conn, plan: dict, cleared_by: str, snapshot_path: Path, now: datetime) -> dict:
     """Write the snapshot, then change the registry one table group at a time. Returns what was done."""
-    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = snapshot_path.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)            # a pre-existing .tmp keeps its old mode otherwise
-    with os.fdopen(fd, "w") as f:
-        json.dump({"snapshot_of": "rows changed by clear_egeria_pointers_after_reset", "plan": plan}, f,
-                  indent=1, default=str, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, snapshot_path)
-    _fsync_dir(snapshot_path.parent)
+    write_0600_json(snapshot_path, {"snapshot_of": "rows changed by clear_egeria_pointers_after_reset", "plan": plan})
 
     from resource_explorer.run_reconciler import process_identity
     act_id = str(uuid.uuid4())
@@ -637,23 +461,8 @@ def run(argv: list[str], out=print, now: datetime | None = None) -> int:
                     f"--database {name} --schema {schema}{extra} --cleared-by <who>/<UTC>")
                 return 0
             saved = json.loads(Path(args.plan_file).read_text())
-            sp = saved.get("plan") or {}
-            if sp.get("script_version") != SCRIPT_VERSION:
-                raise Refused(f"this plan was made by a different version of the script "
-                              f"({sp.get('script_version') or 'none recorded'}, this is {SCRIPT_VERSION}); "
-                              "run the dry run again")
-            if sp.get("schema") != schema:
-                raise Refused(f"the plan file was made for schema {sp.get('schema')!r}, not {schema!r}")
-            if sp.get("current_schema") != live:
-                raise Refused(f"the plan file was made under current_schema {sp.get('current_schema')!r}, the "
-                              f"connection now reports {live!r}")
-            if sp.get("database") != name:
-                raise Refused(f"the plan file was made for database {sp.get('database')!r}, not {name!r}")
-            if plan_hash(sp) != sp.get("hash") or sp.get("hash") != args.plan_hash:
-                raise Refused("the plan file's hash does not match --plan-hash (or the file was edited)")
-            made = datetime.fromisoformat(saved.get("generated_at", "1970-01-01T00:00:00"))
-            if now - made > timedelta(minutes=args.max_plan_age_minutes) or made > now + timedelta(minutes=1):
-                raise Refused(f"the dry run is older than {args.max_plan_age_minutes} minutes; run it again")
+            check_saved_plan(saved, script_version=SCRIPT_VERSION, schema=schema, live=live, name=name,
+                             plan_hash_arg=args.plan_hash, now=now, max_age_minutes=args.max_plan_age_minutes)
             if plan["hash"] != args.plan_hash:
                 raise Refused("the registry changed since the dry run; run the dry run again "
                               f"(the plan recomputed now has hash {plan['hash'][:12]}, the dry run's was "
