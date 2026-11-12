@@ -863,6 +863,49 @@ other path is refused. There is also an admin route, `POST /api/bootstrap/dr-ege
   Classify, Reclassify, Setup* and *Set* commands run. Everything else (Delete, Remove, Unlink, Detach,
   Declassify, Publish, Run, Process, Import and any verb added later) is refused, whatever the document says.
 
+### Egeria Alignment (Admin → 🔄 Egeria Alignment)
+
+*Added 2026-11-12.* This page finds and repairs drift between RE's registry and Egeria. It is the step after a
+platform reset, and the check to run whenever something "published" cannot be found. The full procedure,
+including the step order and the traps, is in [`egeria-operations.md`](egeria-operations.md): §2.0 for the
+order after an Egeria clear, and §2.3 for each step.
+
+- **Scan (read-only).**
+  - It is the page's Re-scan button, or `GET /api/egeria/resync/scan`.
+  - It runs registry SELECTs and Egeria reads, and nothing else.
+  - It lists each kind of drift with its count, and splits it into repairs (a tick box) and questions for a
+    person (no button).
+  - A lookup that fails is listed as *undetermined*. It is never counted as drift and never cleared.
+- **Apply (writes).**
+  - It is "Apply selected", or `POST /api/egeria/resync/apply`, and runs only the ticked steps, always in
+    dependency order.
+  - The `clear_*` and `flag_*` steps write RE's registry.
+  - `reauthor_survey_definitions`, `catalog_assets`, `republish_survey_results` and
+    `relink_investigation_members` write to Egeria. On a shared platform these need the owner's word.
+- **Unattended.** The scheduler applies only `clear_stale_assets`, `clear_orphan_publish_claims`,
+  `flag_vanished_publishes` and `flag_stale_dbfs_assets`. It runs them at start and about every 600 s.
+  `GET /api/egeria/resync/scheduler-status` shows its last pass. Every other step needs a person.
+
+### Registry commands after an Egeria reset
+
+Both commands write RE's registry only, and never Egeria. On a shared registry each one needs the owner's word.
+[`egeria-operations.md`](egeria-operations.md) §2.0 gives the order they run in.
+
+- **`resource-explorer registry record-egeria-reset --reset-at <UTC> [--old-digest … --new-digest …]`**
+  - It records one reset of Egeria's metadata database, in `egeria_resets`.
+  - Proof rows read before that time then read "published before the <date> reset · not in Egeria now".
+  - It refuses a time in the future, or one not newer than the latest recorded reset.
+  - A mistyped reset is corrected with `--supersedes <id>`.
+- **`resource-explorer registry reattach-egeria-by-name`: coming, not on main yet.**
+  - It is branch `re/reattach-egeria-by-name`.
+  - It re-attaches stored Egeria GUIDs by the qualifiedName kept beside them.
+  - It is a dry run by default, and its apply carries the clear script's guards.
+  - It runs **after** `scripts/clear_egeria_pointers_after_reset.py`, never before.
+  - This entry will be completed from the CLI help once the branch merges.
+
+The clear script itself, `scripts/clear_egeria_pointers_after_reset.py`, is a script and not a CLI command. Its
+use is in `egeria-operations.md` §2.0 step 3.
+
 ### Admin settings at a glance
 
 | Setting | What it does |
