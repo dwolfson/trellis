@@ -7,7 +7,7 @@ markdown rendering (`markdown.js`), the run-envelope renderer with its formattin
 
 `egeria-table.js` is **vendored unchanged** from the Egeria Portal (odpi/egeria-workspaces), so the Portal and
 Egeria Advisor draw a report spec's TABLE the same way. `egeria-table.js.source.json` names the source commit
-and the file's sha256, and EA's `tests/unit/test_vendored_egeria_table.py` fails if the copy drifts. Never edit
+and the file's sha256, and EA's `tests/unit/test_dashboard_structured_table.py` (`test_vendored_egeria_table_is_the_portals_file_unchanged`) fails if the copy drifts. Never edit
 it here: an app's own needs go through its options (`linkBuilder`). To update it, copy the new file as is and
 change the record.
 
