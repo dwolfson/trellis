@@ -260,15 +260,24 @@ order, whatever order you tick them in.
 | 3 | `clear_orphan_publish_claims` | Drops claims naming reports that are gone | registry | **yes** |
 | 4 | `flag_vanished_publishes` | Flags (never deletes) a publish whose report vanished | registry | **yes** |
 | 5 | `flag_stale_dbfs_assets` | Flags a database/file-system asset GUID that no longer resolves; keeps the GUID | registry | **yes** |
-| 6 | `clear_stale_investigations` | Clears dead Project/Collection GUIDs | registry | never |
-| 7 | `clear_stale_contexts` | Resets contexts pointing at dead Projects to `unset`, and blanks their name | registry | never |
+| 6 | `clear_stale_investigations` | Clears dead Project/Collection GUIDs (investigations become `local`)† | registry | never |
+| 7 | `clear_stale_contexts` | Resets contexts pointing at dead Projects to `unset`, and blanks their name† | registry | never |
+
+† **On main today these two erase what re-attach needs, and they are ticked by default.** Untick them after
+an Egeria clear until the re-attach PR merges.
+
+The re-attach branch changes both steps to keep the name. Each blanks only the GUID; the stored
+qualifiedName is kept (the clear script's rule: the name is the decision, the GUID is the pointer). A context,
+or an investigation that was `linked`, becomes `unbound`, which gates a publish exactly as `unset` does.
+`reattach_by_name` can then recover the row once Egeria holds the name again.
 | 8 | `catalog_assets` | Publishes `repo_health` → registers the asset | Egeria; **no downloads** | never |
 | 9 | `republish_survey_results` | Full survey → SurveyReport | Egeria; **slow, downloads archives**, unticked | never |
 | 10 | `relink_investigation_members` | Attaches members to their assets | Egeria | never |
 
 **Coming with re-attach** (branch `re/reattach-egeria-by-name`, not on main yet):
-- A manual step, `reattach_by_name`, placed before `clear_stale_investigations` and `clear_stale_contexts`.
-  Those two blank the pointer and, for a context, the name that re-attach needs.
+- A manual step, `reattach_by_name`, placed before `clear_stale_investigations` and `clear_stale_contexts`
+  in the ordered pass. Re-attaching first means nothing is left for them to clear. With the same change,
+  both steps keep the name (†), so they no longer destroy what a later re-attach needs.
 - It is unticked by default: it rewrites links by name.
 - It is never unattended.
 - Its Apply refuses when the plan changed since the Scan, or while another RE writer is active.
@@ -392,8 +401,11 @@ equivalent: it re-derives current state, and loses the history that
 - **Do not run the clear script after the re-attach.** It blanks every pointer, re-attached ones
   included. The order is the clear script, then the re-attach (§2.0). `scripts/sweep_stale_egeria_guids.py
   --apply` and the Alignment steps `clear_stale_investigations` / `clear_stale_contexts` also clear project
-  and collection pointers (`clear_stale_contexts` blanks the stored name as well), so none of them goes
-  between the clear script and the re-attach either.
+  and collection pointers, so none of them goes between the clear script and the re-attach either.
+- **On main today, `clear_stale_contexts` also blanks the stored name, and it is ticked by default.** So
+  pressing Apply on the Alignment page with the default ticks erases the names re-attach needs, and those
+  rows cannot be recovered by name afterwards. Untick `clear_stale_contexts` and `clear_stale_investigations`
+  after a clear. Once the re-attach PR merges, both steps keep the name (§2.3 †).
 - **Do not run `uv run` or `uv sync --package` inside the 8813 worktree** (`wt-relgraph`). Either can
   re-sync that venv and drop the nine RE survey steps installed in it. Run the scripts from a separate
   trellis checkout or venv.
