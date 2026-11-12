@@ -97,7 +97,7 @@
  },
  "markdown_records": {
   "kind": "markdown",
-  "markdown": "| Zone Membership | Category | Description | Display Name | Legal | Qualified Name | URL | Version Identifier |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n|  | Roadmap | Punch list of remaining work for the Local Dashboards / Egeria Overview feature  | Local Dashboards - Next Steps | None | Coco Pharmaceuticals::WorkItemList::Local-Dashboards---Next-Steps::1.0 | None | 1.0 |"
+  "markdown": "| Zone Membership | Category | Description | Display Name | Legal | Qualified Name | URL | Version Identifier | Authors | Content Status | Purpose |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n|  | Roadmap | Punch list of remaining work for the Local Dashboards / Egeria Overview feature (NEXT-10). Tracked as real Egeria Tasks so it can be browsed like any other dashboard content. | Local Dashboards - Next Steps | None | Coco Pharmaceuticals::WorkItemList::Local-Dashboards---Next-Steps::1.0 | None | 1.0 | None | ACTIVE | None |"
  },
  "trend_exact": {
   "kind": "trend",

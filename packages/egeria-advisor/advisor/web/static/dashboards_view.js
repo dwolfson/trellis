@@ -332,9 +332,29 @@
     }
   }
 
+  // Large tables scroll inside their tile (both ways, header row kept in view) instead of growing the
+  // tile without limit; the twin of the Portal's .tbl-scroll (odpi/egeria-workspaces#833). Every table
+  // is wrapped; the CSS (ea_looks.css, .dash-tbl-scroll) leaves a small one laid out as before. Tables
+  // with TABLE_WIDE_COLS or more columns keep a minimum column width and scroll sideways rather than
+  // wrapping every few characters.
+  const TABLE_WIDE_COLS = 5;
+  function wrapTable(table) {
+    if (table.parentElement && table.parentElement.classList.contains('dash-tbl-scroll')) return;
+    const first = table.rows && table.rows[0];
+    const cols = first ? first.cells.length : 0;
+    const wrap = el('div', 'dash-tbl-scroll');
+    if (cols >= TABLE_WIDE_COLS) {
+      table.classList.add('dash-tbl-wide');
+      table.style.setProperty('--tbl-cols', String(cols));
+    }
+    table.replaceWith(wrap);
+    wrap.appendChild(table);
+  }
+
   function markdownBox(text) {
     const box = el('div', 'msg-body prose prose-invert text-xs max-w-none overflow-x-auto');
     box.innerHTML = md(text || 'No output.');
+    box.querySelectorAll('table').forEach(wrapTable);
     box.querySelectorAll('code.language-mermaid').forEach(c => {
       const d = el('div', 'mermaid my-2');
       d.textContent = c.textContent;

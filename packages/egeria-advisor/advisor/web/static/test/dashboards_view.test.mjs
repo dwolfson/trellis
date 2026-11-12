@@ -287,3 +287,87 @@ test('with sheets and no notes, only the count shows', { skip: SKIP }, async () 
   assert.equal(status.textContent, '1 sheet visible to erinoverview');
   assert.equal(status.querySelector('.dash-list-notes'), null);
 });
+
+// ── large tables scroll inside their tile (the Portal's .tbl-scroll, #833) ─────
+
+function mdTable(nRows, nCols) {
+  const head = '| ' + Array.from({ length: nCols }, (_, c) => `Col ${c}`).join(' | ') + ' |';
+  const sep = '| ' + Array.from({ length: nCols }, () => '---').join(' | ') + ' |';
+  const rows = Array.from({ length: nRows }, (_, r) => '| ' + Array.from({ length: nCols }, (_, c) => `r${r}c${c}`).join(' | ') + ' |');
+  return [head, sep, ...rows].join('\n');
+}
+
+/** A window with EA's looks loaded, so computed styles are the ones a browser would cascade. */
+function styledWindow() {
+  const w = makeWindow();
+  const style = w.document.createElement('style');
+  style.textContent = read('ea_looks.css');
+  w.document.head.appendChild(style);
+  return w;
+}
+
+function tileWith(w, markdown) {
+  const tile = w.document.createElement('div');
+  tile.className = 'dash-tile';
+  w.document.body.appendChild(tile);
+  w.EADashboards.renderTileBody(tile, { kind: 'markdown', markdown }, {});
+  return tile;
+}
+
+test('a large table is wrapped, scrolls both ways inside the tile, and keeps its header in view', { skip: SKIP }, () => {
+  const w = styledWindow();
+  const tile = tileWith(w, mdTable(120, 7) + '\n\n*+3 more rows; +1 more column: Extra*');
+  const wrap = tile.querySelector('.dash-tbl-scroll');
+  assert.ok(wrap, 'the table is wrapped');
+  const table = wrap.querySelector('table');
+  assert.equal(table.parentElement, wrap);
+  assert.equal(table.querySelectorAll('tbody tr').length, 120);       // every row is there, to scroll to
+  const cs = w.getComputedStyle(wrap);
+  assert.equal(cs.overflow, 'auto');
+  assert.equal(cs.maxHeight, '420px');
+  const th = w.getComputedStyle(table.querySelector('thead th'));
+  assert.equal(th.position, 'sticky');
+  assert.equal(th.top, '0px');
+  assert.match(th.background || th.backgroundColor, /rgb\(var\(--ea-card\)\)|rgb\(/);   // opaque: a solid colour
+  assert.equal(w.getComputedStyle(table).borderCollapse, 'separate');  // no strip above the sticky header
+  // 5+ columns: a minimum column width, so it scrolls sideways rather than squeezing.
+  assert.ok(table.classList.contains('dash-tbl-wide'));
+  assert.equal(table.style.getPropertyValue('--tbl-cols'), '7');
+  // The counted overflow the server wrote reads as words under the table, not a row in it.
+  assert.match(tile.textContent, /\+3 more rows; \+1 more column: Extra/);
+  assert.ok(!wrap.textContent.includes('more rows'));
+});
+
+test('a small table is laid out as before: wrapped, but not widened', { skip: SKIP }, () => {
+  const w = styledWindow();
+  const tile = tileWith(w, mdTable(2, 3));
+  const table = tile.querySelector('table');
+  assert.equal(table.parentElement.className, 'dash-tbl-scroll');
+  assert.ok(!table.classList.contains('dash-tbl-wide'));
+  assert.equal(table.getAttribute('style'), null);
+  assert.deepEqual([...table.querySelectorAll('td')].map(td => td.textContent), ['r0c0', 'r0c1', 'r0c2', 'r1c0', 'r1c1', 'r1c2']);
+  assert.equal(tile.querySelectorAll('.dash-tbl-scroll').length, 1);
+});
+
+test('every table in a tile is wrapped once; the Firefox scroll-bar rules are scoped to Firefox', { skip: SKIP }, () => {
+  const w = styledWindow();
+  const tile = tileWith(w, mdTable(1, 2) + '\n\ntext\n\n' + mdTable(1, 6));
+  assert.equal(tile.querySelectorAll('.dash-tbl-scroll').length, 2);
+  assert.equal(tile.querySelectorAll('.dash-tbl-scroll .dash-tbl-scroll').length, 0);
+  const css = read('ea_looks.css');
+  const ff = css.indexOf('@supports (-moz-appearance: none)');
+  assert.ok(ff > 0, 'Firefox rules are inside a Firefox-only feature query');
+  const outside = css.slice(0, ff);
+  assert.ok(!/scrollbar-(width|color)\s*:/.test(outside), 'Chrome would drop ::-webkit-scrollbar if these applied to it');
+  assert.match(css, /\.dash-tbl-scroll::-webkit-scrollbar\s*\{/);
+});
+
+test('a line break the server wrote as <br> in a cell draws as a break in that cell, not a new row', { skip: SKIP }, () => {
+  const w = styledWindow();
+  const tile = tileWith(w, '| Name | Note |\n| --- | --- |\n| first<br>second | x |');
+  const cells = tile.querySelectorAll('tbody td');
+  assert.equal(tile.querySelectorAll('tbody tr').length, 1);
+  assert.equal(cells.length, 2);
+  assert.equal(cells[0].querySelectorAll('br').length, 1);
+  assert.equal(cells[0].textContent, 'firstsecond');
+});
