@@ -222,8 +222,18 @@ def _style_block_text(html_path: Path) -> str:
     return "".join(STYLE_BLOCK_RE.findall(html_path.read_text(encoding="utf-8")))
 
 
+#: Shared files that are not RE's code and are not scanned. Each names why.
+VENDORED_SHARED_UI = {
+    # Vendored byte-identical from odpi/egeria-workspaces (the Portal's structured-TABLE renderer, used by EA's
+    # dashboards); it styles itself with its own injected CSS (its "et-*" classes), so RE's Tailwind build has
+    # nothing to provide, and it must never be edited here (EA's sha256 pin test).
+    "egeria-table.js",
+}
+
+
 def _all_js_files() -> list[Path]:
-    return sorted([*NEXT_DIR.rglob("*.js"), *SHARED_UI.rglob("*.js")])
+    shared = [f for f in SHARED_UI.rglob("*.js") if f.relative_to(SHARED_UI).as_posix() not in VENDORED_SHARED_UI]
+    return sorted([*NEXT_DIR.rglob("*.js"), *shared])
 
 
 def test_every_class_literal_used_in_next_js_exists_in_committed_css_or_style_block():

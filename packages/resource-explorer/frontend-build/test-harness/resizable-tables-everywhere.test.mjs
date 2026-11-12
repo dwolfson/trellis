@@ -126,6 +126,9 @@ test('every table site in the source has a header row or is named as excluded', 
   for (const f of [...walk(NEXT), ...walk(SHARED_UI)]) {
     const rel = f.startsWith(SHARED_UI) ? relative(SHARED_UI, f) : relative(NEXT, f);
     if (rel === 'colresize.js') continue;
+    // Vendored byte-identical from odpi/egeria-workspaces (the Portal's structured-TABLE renderer, used by EA's
+    // dashboards): it renders its own header rows, EA makes its columns resizable, and it is never edited here.
+    if (rel === 'egeria-table.js') continue;
     const src = readFileSync(f, 'utf-8');
     for (const m of src.matchAll(/`<table\b|<table\b[^>]*>|role="table"/g)) {
       const seg = src.slice(m.index, m.index + 6000);
