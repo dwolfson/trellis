@@ -315,6 +315,13 @@ def counts_summary(plan: dict) -> dict:
     return {t["table"]: {v: n for v, n in t["counts"].items() if n} for t in plan["tables"]}
 
 
+def cannot_reattach_by_name(plan: dict) -> tuple[int, int]:
+    """(rows in SPECS tables with a GUID and no stored qualifiedName, non-empty GUIDs in OUT_OF_SCOPE columns)."""
+    in_scope = sum(t["counts"][NO_NAME] for t in plan["tables"])
+    elsewhere = sum(x["count"] or 0 for x in plan["left_alone"])
+    return in_scope, elsewhere
+
+
 def render(plan: dict, title: str, show: tuple = ()) -> str:
     out = [f"{title} · database: {plan['database']} · schema: {plan['schema']} "
            f"(connection current_schema: {plan['current_schema']})", ""]
@@ -337,6 +344,10 @@ def render(plan: dict, title: str, show: tuple = ()) -> str:
         out.append(f"  {x['table'] + '.' + '/'.join(x['columns']):<62}{n:>6}  {x['words']}")
     out.append("")
     out.append(f"distinct names looked up: {plan['distinct_names_looked_up']}")
+    in_scope, elsewhere = cannot_reattach_by_name(plan)
+    # Its own line, never folded into missing/unreadable: a row with no stored name was not looked up at all.
+    out.append(f"cannot re-attach by name (a GUID with no stored qualifiedName): {in_scope} in the tables above, "
+               f"{elsewhere} in columns that keep no name (left alone)")
     for v in show:
         out.append("")
         out.append(f"rows with verdict {WORDS[v]}:")

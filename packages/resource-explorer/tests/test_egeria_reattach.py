@@ -285,6 +285,15 @@ def test_status_moves_unbound_to_linked_only(env):
     assert row(p, "investigations", slug="inv1")["status_after"] == "linked"
 
 
+def test_a_guid_without_a_name_is_its_own_count_never_unresolved(env):
+    p = plan_of(env)
+    assert R.cannot_reattach_by_name(p) == (1, 1)          # r6 (context); projects.p1 (no name column)
+    assert ctx(p, "r6")["verdict"] == R.NO_NAME and "r6" not in env["world"].name_calls
+    _, cap, _, _ = dry(env)
+    assert ("cannot re-attach by name (a GUID with no stored qualifiedName): 1 in the tables above, "
+            "1 in columns that keep no name (left alone)") in cap.text
+
+
 def test_out_of_scope_columns_are_counted_never_touched(env):
     p = plan_of(env)
     left = {x["table"]: x for x in p["left_alone"]}
