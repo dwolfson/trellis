@@ -644,3 +644,40 @@ def test_the_default_ticked_clear_steps_keep_the_name_and_reattach_then_recovers
     assert dump(reg, "investigations", "slug, egeria_project_status")[1]["egeria_project_status"] == "linked"
     assert next(x for x in dump(reg, "entity_egeria_project_context", "entity_slug, status")
                 if x["entity_slug"] == "r4")["status"] == "linked"
+
+
+def test_every_applied_alignment_step_writes_one_audit_row(env):
+    from unittest.mock import MagicMock
+
+    from resource_explorer.egeria_resync import EgeriaResync, ScanResult
+
+    def get_by_guid(guid, *a, **k):
+        if guid in env["world"].elements:
+            return {"elementHeader": {"guid": guid}}
+        raise not_found_404()
+
+    r = _resync(env)
+    r._clients.update(project=MagicMock(get_project_by_guid=MagicMock(side_effect=get_by_guid)),
+                      collection=MagicMock(get_collection_by_guid=MagicMock(side_effect=get_by_guid)))
+
+    def audit_rows():
+        with env["reg"]._conn() as c:
+            return [dict(x) for x in c.execute(
+                "SELECT entity_slug, status, summary, detail FROM activity_log WHERE operation = ? ORDER BY ts, id",
+                (EgeriaResync.AUDIT_OPERATION,)).fetchall()]
+
+    r.apply(["reattach_by_name"])                                        # no hash: refused, and recorded
+    f = r._scan_reattach_by_name(ScanResult())
+    r.apply(["clear_stale_contexts", "reattach_by_name"], {"reattach_by_name": f.plan_hash})
+    rows = audit_rows()
+    assert [x["entity_slug"] for x in rows].count("reattach_by_name") == 2
+    assert [x["entity_slug"] for x in rows].count("clear_stale_contexts") == 1
+    refused = next(x for x in rows if x["entity_slug"] == "reattach_by_name" and x["status"] == "refused")
+    assert json.loads(refused["detail"])["counts"] == {"reattached": 0}
+    done = [x for x in rows if x["entity_slug"] == "reattach_by_name" and x["status"] == "ok"]
+    assert len(done) == 1
+    d = json.loads(done[0]["detail"])
+    assert d["step"] == "reattach_by_name" and d["plan_hash"] == f.plan_hash and d["counts"]["reattached"] == 8
+    assert d["applied_by"] and "reattached 8" in done[0]["summary"]
+    cleared = json.loads(next(x for x in rows if x["entity_slug"] == "clear_stale_contexts")["detail"])
+    assert cleared["counts"]["contexts_cleared"] == 2 and cleared["plan_hash"] == ""

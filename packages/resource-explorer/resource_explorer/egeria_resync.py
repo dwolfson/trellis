@@ -1152,8 +1152,53 @@ class EgeriaResync:
         applied: dict = {}
         for step in REPAIR_STEPS:
             if step in steps:
-                applied[step] = getattr(self, f"_do_{step}")()
+                try:
+                    applied[step] = getattr(self, f"_do_{step}")()
+                except Exception as exc:
+                    self._audit(step, {"error": type(exc).__name__}, "error")
+                    raise
+                self._audit(step, applied[step])
         return {"reachable": True, "unreachable_reason": "", "applied": applied}
+
+    #: activity_log.operation of the audit row each applied repair step writes
+    AUDIT_OPERATION = "egeria_alignment_apply"
+
+    @staticmethod
+    def _who() -> str:
+        try:
+            from resource_explorer.egeria_clients import current_principal
+
+            return current_principal().user_id or "unknown"
+        except Exception:  # noqa: BLE001 - the record says it could not tell
+            return "unknown"
+
+    def _audit(self, step: str, result, status: str | None = None) -> None:
+        """One activity_log row per applied step: who, when, the step, what it reports (its counts) and the plan
+        hash it was applied against. A writing admin action otherwise left no trace (only the publish heals did).
+        Written after the step; a failure to write it is logged, never raised over the step's own result."""
+        import json
+        import uuid
+
+        from resource_explorer.registry import ActivityEntry
+
+        result = result if isinstance(result, dict) else {"result": result}
+        if status is None:
+            status = "error" if result.get("failed") or result.get("error") else (
+                "refused" if result.get("refused") else "ok")
+        plan_hash = result.get("plan_hash") or self._plan_hashes.get(step, "")
+        counts = {k: v for k, v in result.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        who = self._who()
+        try:
+            self._registry.write_activity(ActivityEntry(
+                id=str(uuid.uuid4()), ts=_now(), operation=self.AUDIT_OPERATION, intent="maintenance",
+                entity_type="registry", entity_slug=step, status=status,
+                summary=f"Egeria Alignment {step} applied by {who}: "
+                        + (", ".join(f"{k} {v}" for k, v in counts.items()) or status),
+                detail=json.dumps({"step": step, "applied_by": who, "status": status, "counts": counts,
+                                   "plan_hash": plan_hash, "result": result}, default=str, sort_keys=True),
+            ))
+        except Exception:
+            log.exception("egeria_resync: could not write the audit row for %s", step)
 
     def _do_reauthor_survey_definitions(self) -> dict:
         """Re-execute the survey-definitions batch, then reconcile its links.
@@ -1365,12 +1410,7 @@ class EgeriaResync:
         reads = self._reattach_reads()
         if reads is None:
             return {"reattached": 0, "refused": "no Egeria client for the by-name reads"}
-        try:
-            from resource_explorer.egeria_clients import current_principal
-
-            who = current_principal().user_id or "unknown"
-        except Exception:  # noqa: BLE001 - the record says it could not tell
-            who = "unknown"
+        who = self._who()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         return alignment_apply(self._registry, reads, self._plan_hashes.get("reattach_by_name", ""),
                                f"{who}/{now:%Y-%m-%dT%H:%MZ} (Egeria Alignment)", now)
