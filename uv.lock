@@ -2136,7 +2136,7 @@ requires-dist = [
     { name = "psycopg2-binary", specifier = ">=2.9.9" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pyegeria", specifier = ">=6.2.37" },
+    { name = "pyegeria", specifier = ">=6.2.39" },
     { name = "pygments", specifier = ">=2.17.0" },
     { name = "pygount", specifier = ">=1.6.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -7454,7 +7454,7 @@ wheels = [
 
 [[package]]
 name = "pyegeria"
-version = "6.2.37"
+version = "6.2.39"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "altair" },
@@ -7491,9 +7491,9 @@ dependencies = [
     { name = "validators" },
     { name = "wcwidth" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/8c/f761ce0a722ab5057b758b85b82abef8893c8cd8fb069df3ac0cffbbc6a5/pyegeria-6.2.37.tar.gz", hash = "sha256:20385f742857a92ddc9b60fe54b450da6f02152f0f6fcc1ff55aa9f97f8e04c6", size = 2843801, upload-time = "2026-11-11T19:42:19.937Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6d/e0/02575184f79ca4cb013ba813344422c3b3afec1292d95cb40f384e9b3902/pyegeria-6.2.39.tar.gz", hash = "sha256:5f8d564e10b4c516e65068577c3cb360bac0ea95104a8dc89cd578ca12e6370d", size = 2852325, upload-time = "2026-11-12T08:22:26.834Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/75/32583abdd1203f8a135855de18053e8e9b7782e835c5a7c56cf8b245a879/pyegeria-6.2.37-py3-none-any.whl", hash = "sha256:56736de0bc49bee3a8de7600487aaea9d46d0b63ecbaed793889158ac7617ed1", size = 3366371, upload-time = "2026-11-11T19:42:17.821Z" },
+    { url = "https://files.pythonhosted.org/packages/13/19/28f5f4c89a0139076d1481ee529d9c983b8d273f2c137c01529625b2a554/pyegeria-6.2.39-py3-none-any.whl", hash = "sha256:86cbc2db496023cf4256d32d596c085cbe77a5a1e0177ff1af27beaaa21d51ab", size = 3368367, upload-time = "2026-11-12T08:22:24.817Z" },
 ]
 
 [[package]]
@@ -8613,7 +8613,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
-    { name = "pyegeria", specifier = ">=6.2.37" },
+    { name = "pyegeria", specifier = ">=6.2.39" },
     { name = "pygithub", specifier = ">=2.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
