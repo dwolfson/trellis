@@ -83,12 +83,14 @@ const BLAST_RADIUS = {
     + `whose target no longer resolves in Egeria. THIS CAN UNBIND A REAL EGERIA PROJECT A `
     + `PERSON DELIBERATELY CHOSE — nothing distinguishes a binding this app created from one `
     + `you bound by hand, and a transient Egeria outage can make a live binding look gone. `
-    + `Not reversible by this app: you would need to re-bind it yourself.`,
+    + `The Project's name is kept (only the GUID is blanked, linked becomes unbound), so `
+    + `reattach_by_name can restore the binding when Egeria holds that name again; otherwise `
+    + `you re-bind it yourself.`,
   clear_stale_contexts: (n) =>
     `Clears ${n} entity→Egeria-Project context row(s) that decide whether a resource may `
     + `publish and what it attaches to, where the target Project no longer resolves. Same `
     + `binding risk as clear_stale_investigations above — a bound choice, not just a cached `
-    + `pointer. Not reversible by this app.`,
+    + `pointer. The name is kept and the context becomes unbound, so reattach_by_name can restore it.`,
   catalog_assets: (n) =>
     `CREATES an Egeria asset for ${n} repo(s) — publishes only the repository-health step, `
     + `no archives downloaded. Reversible in Egeria directly (the asset can be deleted there).`,

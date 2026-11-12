@@ -210,7 +210,7 @@ class EgeriaResync:
         if self._clients:
             return True, ""
         try:
-            from pyegeria import AssetMaker, ClassificationExplorer, CollectionManager, MetadataExpert, ProjectManager
+            from pyegeria import AssetMaker, ClassificationExplorer, CollectionManager, ProjectManager
 
             from resource_explorer.egeria_clients import current_principal, egeria_client
 
@@ -226,10 +226,7 @@ class EgeriaResync:
             # shaped response; ClassificationExplorer.get_element_by_guid is
             # the plain existence check.
             ce = clients.of(ClassificationExplorer)
-            # MetadataExpert: the exact unique-name read and the by-GUID read `reattach_by_name` uses
-            # (egeria_lookup.guid_by_qualified_name's client).
-            self._clients = {"asset": am, "project": pm, "collection": cm, "classification": ce,
-                             "expert": clients.of(MetadataExpert)}
+            self._clients = {"asset": am, "project": pm, "collection": cm, "classification": ce}
             return True, ""
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
@@ -516,10 +513,22 @@ class EgeriaResync:
         )
 
     def _reattach_reads(self):
+        """The by-name and by-GUID reads `reattach_by_name` uses, on a MetadataExpert built only when that step
+        scans or applies (the unattended pass never builds one). None when it cannot be built."""
         from resource_explorer.egeria_reattach import EgeriaReads
 
-        expert = self._clients.get("expert")
-        return EgeriaReads(expert) if expert is not None else None
+        if "expert" not in self._clients:
+            try:
+                from pyegeria import MetadataExpert
+
+                from resource_explorer.egeria_clients import current_principal, egeria_client
+
+                self._clients["expert"] = egeria_client(current_principal(), purpose="egeria resync").of(
+                    MetadataExpert)
+            except Exception as exc:  # noqa: BLE001 - reported by the caller, never read as "nothing to do"
+                log.warning("egeria_resync: no MetadataExpert for reattach_by_name: %s", type(exc).__name__)
+                return None
+        return EgeriaReads(self._clients["expert"])
 
     def _scan_reattach_by_name(self, res: ScanResult) -> Finding:
         """Stored GUIDs that a by-qualifiedName read can re-attach: the CLI's dry run, as a finding. Its counts
@@ -530,6 +539,8 @@ class EgeriaResync:
                         repair_step="reattach_by_name")
         reads = self._reattach_reads()
         if reads is None:
+            res.undetermined.append({"kind": "re-attach by name", "ref": "registry",
+                                     "reason": "no Egeria client for the by-name reads"})
             return empty
         try:
             plan = alignment_plan(self._registry, reads)
@@ -621,7 +632,8 @@ class EgeriaResync:
             key="stale_contexts",
             title="Resources bound to an Egeria Project that no longer exists",
             detail="Publishing these would attach them to a Project that is gone. "
-                   "Clearing returns them to 'unset' so the question is asked again.",
+                   "Clearing blanks the dead GUID and marks them unbound (publish is gated until they are "
+                   "rebound); the project's name is kept, so a re-attach by name can recover them.",
             items=stale, repair_step="clear_stale_contexts",
         )
 
@@ -1368,12 +1380,20 @@ class EgeriaResync:
         finding = self._scan_investigation_guids(res)
         invs = [i for i in finding.items if i["kind"] == "investigation"]
         sets = [i for i in finding.items if i["kind"] == "working set"]
+        from resource_explorer.catalogue_commit import PROJECT_LINKED, PROJECT_UNBOUND
+
         with self._registry._conn() as conn:
             for i in invs:
+                # Only the GUID (the pointer) is blanked; egeria_project_qualified_name (the decision) is KEPT, so
+                # `reattach_by_name` can recover the binding if Egeria holds the name again (Architect read-back
+                # 2026-11-12: this step used to run with the defaults ticked and leave nothing to re-attach by).
+                # A `linked` row becomes `unbound` (the clear script's rule); any other status is kept.
                 conn.execute(
-                    "UPDATE investigations SET egeria_project_guid = '', "
-                    "egeria_project_status = 'local' WHERE slug = ?", (i["ref"],))
+                    "UPDATE investigations SET egeria_project_guid = '', egeria_project_status = CASE "
+                    "WHEN egeria_project_status = ? THEN ? ELSE egeria_project_status END WHERE slug = ?",
+                    (PROJECT_LINKED, PROJECT_UNBOUND, i["ref"]))
             for i in sets:
+                # the collection's qualifiedName is kept for the same reason
                 conn.execute(
                     "UPDATE working_sets SET egeria_collection_guid = '' WHERE slug = ?",
                     (i["ref"],))
@@ -1381,20 +1401,24 @@ class EgeriaResync:
                 "undetermined": len(res.undetermined)}
 
     def _do_clear_stale_contexts(self) -> dict:
+        from resource_explorer.catalogue_commit import PROJECT_UNBOUND
+
         res = ScanResult()
         finding = self._scan_contexts(res)
         with self._registry._conn() as conn:
             for item in finding.items:
                 etype, _, eslug = item["ref"].partition(":")
-                # Back to 'unset', not 'personal' or 'declined': the decision
-                # that was made pointed at something gone, so it must be asked
-                # again rather than reinterpreted as an answer never given. ('unset', not 'unbound': this
-                # heal is for a GUID that went stale WITHOUT a reset marker; 'unbound' is only what the
-                # post-reset clean-up script writes. Both gate a publish identically.)
+                # The GUID (the pointer) is blanked and the context becomes `unbound`; the
+                # egeria_project_qualified_name (the decision) is KEPT. That is the clear script's rule, and
+                # it is what lets `reattach_by_name` recover the binding when Egeria holds the name again.
+                # This step used to blank the name and write `unset`: run with the page's defaults ticked,
+                # it erased the only thing a re-attach could use (Architect read-back 2026-11-12).
+                # `unbound` gates a publish exactly as `unset` does (PROJECT_UNANSWERED), and keeps the
+                # name visible (repo_publish.project_words).
                 conn.execute(
-                    "UPDATE entity_egeria_project_context SET egeria_project_guid = '', "
-                    "egeria_project_qualified_name = '', status = 'unset' "
-                    "WHERE entity_type = ? AND entity_slug = ?", (etype, eslug))
+                    "UPDATE entity_egeria_project_context SET egeria_project_guid = '', status = ? "
+                    "WHERE entity_type = ? AND entity_slug = ? AND egeria_project_guid = ?",
+                    (PROJECT_UNBOUND, etype, eslug, item["guid"]))
         return {"contexts_cleared": len(finding.items),
                 "undetermined": len(res.undetermined)}
 

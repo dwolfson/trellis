@@ -593,3 +593,54 @@ def test_executor_never_runs_with_a_guid_it_could_not_check(env):
     with pytest.raises(SurveyDefinitionExecutorError, match="Could not check the cached"):
         ex._resolve_process_guid("repo", "r1", "t", None, False)
     assert env["reg"].get_survey_definition_guid("repo", "r1", "t")["process_guid"] == OLD
+
+
+# ── the manual clear steps keep the name, so a re-attach can still recover the row (Architect read-back) ──────
+
+def test_the_default_ticked_clear_steps_keep_the_name_and_reattach_then_recovers(env):
+    from unittest.mock import MagicMock
+
+    from resource_explorer.egeria_resync import ScanResult
+
+    w = env["world"]
+    ins(env["reg"], "investigations", slug="inv2", display_name="I2", created_at="2026-09-01",
+        egeria_project_guid=OLD, egeria_project_qualified_name=LIVE_QN, egeria_project_status="linked")
+
+    def get_by_guid(guid, *a, **k):
+        if w.down or guid == FLAKY_GUID:
+            raise PyegeriaConnectionException()
+        if guid in w.elements:
+            return {"elementHeader": {"guid": guid}}
+        raise not_found_404()
+
+    r = _resync(env)
+    r._clients.update(project=MagicMock(get_project_by_guid=MagicMock(side_effect=get_by_guid)),
+                      collection=MagicMock(get_collection_by_guid=MagicMock(side_effect=get_by_guid)))
+    # what "Scan -> Apply with the defaults" runs: both clear steps, without the unticked re-attach
+    out = r.apply(["clear_stale_investigations", "clear_stale_contexts"])["applied"]
+    assert out["clear_stale_contexts"]["contexts_cleared"] == 2          # r4, r6 (dead OLD); f4 undetermined
+    reg = env["reg"]
+    r4 = next(x for x in dump(reg, "entity_egeria_project_context",
+                              "entity_slug, egeria_project_guid, egeria_project_qualified_name, status")
+              if x["entity_slug"] == "r4")
+    assert r4 == {"entity_slug": "r4", "egeria_project_guid": "", "egeria_project_qualified_name": LIVE_QN,
+                  "status": "unbound"}
+    inv2 = next(x for x in dump(reg, "investigations",
+                                "slug, egeria_project_guid, egeria_project_qualified_name, egeria_project_status")
+                if x["slug"] == "inv2")
+    assert inv2 == {"slug": "inv2", "egeria_project_guid": "", "egeria_project_qualified_name": LIVE_QN,
+                    "egeria_project_status": "unbound"}
+    ws = dump(reg, "working_sets", "slug, egeria_collection_guid, egeria_collection_qualified_name")[0]
+    assert ws == {"slug": "ws1", "egeria_collection_guid": "", "egeria_collection_qualified_name": SET_QN}
+    # f4's GUID could not be checked: untouched (unreachable is never stale)
+    assert ctx(plan_of(env), "f4")["old_guid"] == FLAKY_GUID
+    # the re-attach recovers every one of them
+    f = r._scan_reattach_by_name(ScanResult())
+    applied = r.apply(["reattach_by_name"], {"reattach_by_name": f.plan_hash})["applied"]["reattach_by_name"]
+    assert applied["reattached"] >= 3
+    p = plan_of(env)
+    assert ctx(p, "r4")["verdict"] == R.OK and row(p, "investigations", slug="inv2")["verdict"] == R.OK
+    assert row(p, "working_sets", slug="ws1")["verdict"] == R.OK
+    assert dump(reg, "investigations", "slug, egeria_project_status")[1]["egeria_project_status"] == "linked"
+    assert next(x for x in dump(reg, "entity_egeria_project_context", "entity_slug, status")
+                if x["entity_slug"] == "r4")["status"] == "linked"
