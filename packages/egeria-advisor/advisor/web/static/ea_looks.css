@@ -172,3 +172,21 @@
 @supports (-moz-appearance: none) {
   :root .dash-tbl-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--ea-raised-hi)) rgb(var(--ea-surface)); }
 }
+
+/* The shared structured TABLE (trellis-ui egeria-table.js, vendored unchanged from the Portal; T1): its colour
+   variables from EA's look, and the same scroll box as EA's other tile tables (420px in a tile, always-visible
+   bars). Column edges are dragged by dashboards_view.js (attachTableColumnResize). */
+:root .dash-etable {
+  --border: rgb(var(--ea-raised)); --card: rgb(var(--ea-card)); --muted: rgb(var(--ea-muted));
+  --accent: rgb(var(--ea-accent-fg)); --subtle: rgb(var(--ea-surface));
+  color: rgb(var(--ea-ink));
+}
+:root .dash-tile .dash-etable .et-scroll { max-height: 420px; }
+:root .dash-etable .et-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+:root .dash-etable .et-scroll::-webkit-scrollbar-track { background: rgb(var(--ea-surface)); border-radius: 5px; }
+:root .dash-etable .et-scroll::-webkit-scrollbar-thumb {
+  background: rgb(var(--ea-raised-hi)); border-radius: 5px; border: 2px solid rgb(var(--ea-surface));
+}
+@supports (-moz-appearance: none) {
+  :root .dash-etable .et-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--ea-raised-hi)) rgb(var(--ea-surface)); }
+}

@@ -39,9 +39,11 @@ test('the harness can run (jsdom found)', { skip: !REQUIRED && SKIP }, () => {
 });
 
 const read = (rel) => fs.readFileSync(path.join(STATIC, rel), 'utf8');
+// trellis-ui's vendored copy of the Portal's structured-TABLE renderer (T1), loaded as index.html loads it
+const EGERIA_TABLE = fs.readFileSync(path.join(REPO, 'packages/trellis-ui/trellis_ui/static/egeria-table.js'), 'utf8');
 const GE = '≥';
 
-function makeWindow() {
+function makeWindow(opts = {}) {
   const dom = new jsdom.JSDOM('<!doctype html><html><body><div id="messages"></div>' +
     '<div id="dashboard-status"></div><div id="dashboard-list"></div></body></html>', { runScripts: 'outside-only' });
   const w = dom.window;
@@ -51,6 +53,7 @@ function makeWindow() {
   w.Auth = { getHeaders: () => ({ Authorization: 'Bearer t' }) };
   w.embedded = [];
   w.vegaEmbed = (el, spec, opts) => { w.embedded.push({ el, spec, opts }); return Promise.resolve({}); };
+  if (opts.table !== false) w.eval(EGERIA_TABLE);
   w.eval(read('dashboards_view.js'));
   return w;
 }
@@ -370,4 +373,96 @@ test('a line break the server wrote as <br> in a cell draws as a break in that c
   assert.equal(cells.length, 2);
   assert.equal(cells[0].querySelectorAll('br').length, 1);
   assert.equal(cells[0].textContent, 'firstsecond');
+});
+
+
+// ── T1: TABLE tiles draw through the shared renderer ────────────────────────────
+
+test('a TABLE tile is drawn by egeria-table.js, never as a markdown table', { skip: SKIP }, () => {
+  const out = draw(makeWindow(), TILES.table_risk);
+  const box = out.querySelector('.dash-etable');
+  assert.ok(box && box.querySelector('table.et-table'));
+  assert.equal(out.querySelectorAll('.msg-body table, .dash-tbl-scroll table').length, 0);
+  // the author's columns, all of them (no cap), and one row per result row
+  const heads = [...box.querySelectorAll('table.et-table > thead th')].map(th => th.textContent);
+  assert.deepEqual(heads, TILES.table_risk.table.columns.map(c => c.name));
+  assert.equal(box.querySelectorAll('table.et-table > tbody > tr:not(.et-sub)').length, TILES.table_risk.table.rows.length);
+  // a list column is bullets in the cell
+  assert.ok(box.querySelector('ul.et-bullets li'));
+  // the footer: never "All N of N" on one page
+  assert.equal(box.querySelector('.et-count').textContent, "12 rows (one page; Egeria doesn't promise it is the last).");
+});
+
+test('a TABLE tile shows every pyegeria note and "more may exist"', { skip: SKIP }, () => {
+  const dp = draw(makeWindow(), TILES.table_digital_products);
+  const notes = [...dp.querySelectorAll('.et-notes li')].map(li => li.textContent);
+  assert.deepEqual(notes, TILES.table_digital_products.table.notes);
+  const col = draw(makeWindow(), TILES.table_collections);
+  assert.equal(col.querySelector('.et-count').textContent, 'First 100; more may exist.');
+  assert.ok([...col.querySelectorAll('.et-notes li')].some(li => /more may exist/.test(li.textContent)));
+});
+
+test('related elements are names with their qualified name, and no link (EA has no element view)', { skip: SKIP }, () => {
+  const out = draw(makeWindow(), TILES.table_digital_products);
+  assert.equal(out.querySelectorAll('.dash-etable a').length, 0);
+  const first = TILES.table_digital_products.table.rows[0].used_by_digital_products[0];
+  const span = [...out.querySelectorAll('.dash-etable span[title]')].find(s => s.textContent === first.displayName);
+  assert.ok(span && span.title.startsWith(first.qualifiedName) && /No link/.test(span.title));
+});
+
+test('every column of a TABLE tile can be dragged wider, and a double-click resets it', { skip: SKIP }, () => {
+  const w = makeWindow();
+  const out = draw(w, TILES.table_risk);
+  const box = out.querySelector('.dash-etable');
+  const ths = [...box.querySelectorAll('table.et-table > thead th')];
+  ths.forEach((th, i) => { th.getBoundingClientRect = () => ({ left: i * 100, right: (i + 1) * 100, width: 100 }); });
+  const table = box.querySelector('table.et-table');
+  const target = ths[1];
+  const fire = (node, type, x) => node.dispatchEvent(new w.MouseEvent(type, { bubbles: true, clientX: x, button: 0 }));
+  fire(target, 'mousedown', 198);                 // 2px inside its right edge
+  fire(w.document, 'mousemove', 258);
+  fire(w.document, 'mouseup', 258);
+  assert.equal(target.style.width, '160px');
+  assert.equal(ths[0].style.width, '100px');      // the others are frozen where they were
+  assert.equal(table.style.tableLayout, 'fixed');
+  assert.equal(table.style.width, (ths.length * 100 + 60) + 'px');
+  fire(target, 'mousedown', 150);                 // the middle of a header is not an edge
+  fire(w.document, 'mousemove', 400);
+  fire(w.document, 'mouseup', 400);
+  assert.equal(target.style.width, '160px');
+  fire(target, 'dblclick', 198);
+  assert.equal(target.style.width, '');
+  assert.equal(table.style.tableLayout, '');
+});
+
+test('a sub-table opens under its row, in this tile only', { skip: SKIP }, () => {
+  const w = makeWindow();
+  const t = { kind: 'table', table: { kind: 'table', total: 1, total_basis: 'counted', shown: 1, notes: [],
+    columns: [{ key: 'n', name: 'Name', type: 'scalar', render: 'text' },
+              { key: 's', name: 'Steps', type: 'table', render: 'subtable' }],
+    rows: [{ n: 'Plan', s: [{ Step: 'one' }, { Step: 'two' }] }] } };
+  const a = draw(w, t), b = draw(w, t);
+  b.querySelector('[data-et-sub]').click();
+  assert.equal(b.querySelector('tr.et-sub').hidden, false);
+  assert.equal(a.querySelector('tr.et-sub').hidden, true);
+});
+
+test('without the renderer a TABLE tile says so, never blank', { skip: SKIP }, () => {
+  const out = draw(makeWindow({ table: false }), TILES.table_risk);
+  assert.match(out.textContent, /table renderer \(egeria-table\.js\) did not load/);
+});
+
+test('a drill-down that answers with a structured table draws it', { skip: SKIP }, async () => {
+  const w = makeWindow();
+  w.fetch = async (url) => ({ ok: true, status: 200,
+    json: async () => ({ state: 'ok', tile: url.endsWith('/detail') ? TILES.table_collections : TILES.kpi_count, cache: {} }) });
+  const sheet = sheetOf(1);
+  sheet.placements[0].detail_spec = 'Collections';
+  const wrap = w.EADashboards.renderDashboard(sheet);
+  await wrap._ready;
+  const tile = wrap.querySelector('.dash-tile');
+  tile.querySelector('.dash-drill').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.ok(tile.querySelector('.dash-detail .dash-etable table.et-table'));
+  assert.equal(tile.querySelector('.dash-detail .et-count').textContent, 'First 100; more may exist.');
 });

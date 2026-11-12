@@ -648,8 +648,13 @@ class ReportPipeline:
         extra_params: Optional[Dict[str, Any]] = None,
         egeria_credentials: Optional[Dict[str, str]] = None,
         exact_params: bool = False,
+        table_shape: Optional[str] = None,
     ) -> Tuple[Any, Optional[str]]:
         """Run a named report spec: (pyegeria's raw result, None), or (None, why it did not run).
+
+        `table_shape="structured"` with output_type TABLE asks pyegeria (>= 6.2.37) for the structured table
+        ({"kind": "table", "columns", "rows", "total", "total_basis", "shown", "notes"}); when it is not given,
+        exec_report_spec gets no table_shape at all, exactly as before.
 
         The raw result is exec_report_spec's own shape ({"kind": "json"|"text"|"empty"|"absent", ...}), so
         a caller that renders it itself (a dashboard tile: a KPI, a chart, a trend) sees the data, not a
@@ -716,6 +721,7 @@ class ReportPipeline:
                 user=conn["user_id"],
                 user_pass=conn["user_pwd"],
                 token=bearer,
+                **({"table_shape": table_shape} if table_shape else {}),
             )
         except ValueError as e:
             # Unknown report, unsupported output_format, or missing action —

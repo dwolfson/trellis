@@ -17,6 +17,8 @@ What is here (each file says more in its own header):
   markdown.js   markdown to sanitised HTML (needs /static/vendor/marked.min.js, which both apps vendor)
   envelope.js   the run-envelope renderer
   format.js     the time and number formatting envelope.js and RE's pages share
+  egeria-table.js  pyegeria's structured TABLE (kind "table") as a table: VENDORED unchanged from the
+                Egeria Portal (egeria-table.js.source.json names the commit and sha256); never edited here
 """
 from __future__ import annotations
 

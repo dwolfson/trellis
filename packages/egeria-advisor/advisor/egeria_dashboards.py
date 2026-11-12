@@ -354,6 +354,9 @@ _NOT_VISIBLE_MARK = object()
 #   chart  a ready-made Vega-Lite spec (SERIES / BAR / PIE): pyegeria draws it, the page embeds it
 #   trend  a metric_trend series: each point keeps pyegeria's own `display` and `measurement`, so a lower
 #          bound is "≥N" and is never drawn as a bare number (W2, pyegeria 6.2.34)
+#   table  a TABLE placement: pyegeria's structured table as is ({"columns", "rows", "total", "total_basis",
+#          "shown", "notes"}), drawn by the shared renderer (trellis-ui's vendored egeria-table.js, the same
+#          one the Portal uses); no markdown round trip (T1)
 #   markdown  everything else: text kinds as written, a list of records as a table (EA's own table)
 #   empty / absent  ran and found nothing / not established: the sentence is the answer, never a "0"
 # Absence is said in words: an `unmeasured` note (a count pyegeria could not measure) rides on any tile.
@@ -512,6 +515,11 @@ def _tile(raw: Any, fmt: str, spec: str, pipeline: Any) -> Dict[str, Any]:
         tile = {"kind": "empty", "message": absence.get("sentence") or f"'{spec}' ran and found nothing."}
     elif kind == "absent":
         tile = {"kind": "absent", "message": raw.get("content") or absence.get("sentence") or "Not established."}
+    elif kind == "table":
+        # pyegeria's structured TABLE (table_shape="structured"): native values, per-column render, the
+        # "first N of M" / "more may exist" basis and every note, passed through for the page to draw.
+        tile = {"kind": "table", "table": {"kind": "table", **{k: raw.get(k) for k in
+                ("columns", "rows", "total", "total_basis", "shown", "notes")}}}
     elif kind == "text":
         tile = markdown(raw.get("content") or "", fmt)
     elif kind == "json" and "data" in raw:
@@ -665,8 +673,11 @@ def _execute(spec: str, *, analytic: bool, params: Dict[str, Any], fmt: str, cre
     which pyegeria's resolver fetched from Egeria as this viewer, runs as "egeria:<label>@v<N>"
     (pyegeria 6.2.34, ResolvedPlacement.fetched_as). The tile still names the label."""
     name = run_as or spec
-    # A chart format is asked for as such (pyegeria draws it); TABLE is asked for as DICT and drawn by EA.
-    exec_fmt = "DICT" if fmt == "TABLE" else ("REPORT" if fmt == "MARKDOWN" else fmt)
+    # A chart format is asked for as such (pyegeria draws it). TABLE on a find spec asks pyegeria for its
+    # structured table (T1: no DICT-then-markdown round trip); an analytic spec's TABLE stays DICT (its
+    # answers are counts, charts and saved-query results, which the structured table does not carry).
+    structured = fmt == "TABLE" and not analytic
+    exec_fmt = ("TABLE" if structured else "DICT") if fmt == "TABLE" else ("REPORT" if fmt == "MARKDOWN" else fmt)
     try:
         if analytic:
             raw, error = pipeline.exec_spec_raw(name, output_type=exec_fmt, extra_params=dict(params),
@@ -676,7 +687,8 @@ def _execute(spec: str, *, analytic: bool, params: Dict[str, Any], fmt: str, cre
             search = rest.pop("search_string", None) or rest.pop("searchString", None) or "*"
             rest.pop("searchString", None)
             raw, error = pipeline.exec_spec_raw(name, search_string=search, output_type=exec_fmt,
-                                                extra_params=rest or None, egeria_credentials=creds)
+                                                extra_params=rest or None, egeria_credentials=creds,
+                                                **({"table_shape": "structured"} if structured else {}))
     except ConnectionError as exc:   # Egeria unreachable, or the executor raised: the run failed, in words
         raw, error = None, str(exc) or type(exc).__name__
     if error:
