@@ -121,7 +121,14 @@ def parse_report_spec_markdown(content: str) -> FormatSet:
     """
     Parse a Report Spec Document (.md) into a FormatSet model.
     Reuses md_processing's UniversalExtractor to extract commands and attributes.
+
+    A document pyegeria wrote (EA_SPEC_AUTHORING_V2: it carries a `### Microflow`) is read through its
+    microflow by pyegeria instead, so every caller of this function reads both kinds.
     """
+    if "### Microflow" in content:
+        from advisor.spec_authoring_v2 import format_set_from_document
+        m = re.search(r"^### Display Name\s*\n(.+)$", content, flags=re.M)
+        return format_set_from_document(content, (m.group(1).strip() if m else "ea-spec"))
     extractor = UniversalExtractor(content)
     commands = extractor.extract_commands()
     

@@ -339,3 +339,11 @@ def test_a_question_that_names_its_type_is_built_not_asked(flag_on, stores, monk
     r = ReportSpecElicitor().start("Which teams have no leader?")
     assert r["phase"] == "confirm_action" and "Team" in r["response"]
     assert "names Team elements" in fake.prompts[1]
+
+
+def test_eas_parser_reads_a_v2_document_for_every_other_caller():
+    """web/reports.py and report_spec_docs.py still call parse_report_spec_markdown on inbox documents."""
+    from advisor.report_spec_parser import parse_report_spec_markdown
+    fs = parse_report_spec_markdown(v2.serialize(_spec()))
+    assert fs.target_type == "Project" and fs.action.function == "ProjectManager.find_projects"
+    assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "status"]
