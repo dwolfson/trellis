@@ -9,7 +9,7 @@
   "advisor/agents/governance_plan_agent.py::_handle_legacy_generate": 2,
   "advisor/agents/governance_plan_agent.py::_infer_type_from_context": 1,
   "advisor/agents/governance_plan_agent.py::_parse_dr_egeria_response": 2,
-  "advisor/agents/governance_plan_agent.py::execute": 2,
+  "advisor/agents/governance_plan_agent.py::_run_plan": 2,
   "advisor/agents/outcome_reporter.py::_run_reports": 1,
   "advisor/agents/plan_elicitor.py::_generate_plan": 1,
   "advisor/agents/plan_elicitor.py::_handle_confirm_commands": 1,

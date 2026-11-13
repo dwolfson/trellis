@@ -33,6 +33,7 @@ import os
 os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
 
 import asyncio
+import re
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -276,6 +277,132 @@ def _is_online(worker: Any) -> bool:
     return str(getattr(status, "value", status) or "").upper() == "ONLINE"
 
 
+# ── version parity (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §1.6) ─────────────────────────────
+#: The deployment every worker without a commit of its own serves (the host worker on laz).
+DEFAULT_DEPLOYMENT = "RE Survey Flow/re-survey-step-deployment"
+#: Workers already warned about (no advertised commit): once per worker per process.
+_PARITY_UNCHECKED_WARNED: set[str] = set()
+_WORKER_SHA = re.compile(r"^re-worker-([0-9a-f]{12})(?:-|$)")
+
+
+def sha_deployment(sha12: str) -> str:
+    """The deployment a container worker on commit `sha12` creates for itself at start (entrypoint role
+    `prefect-worker`): its flows load from the image's own source and land on its own work queue."""
+    return f"re-survey-step-{sha12}"
+
+
+def sha_work_queue(sha12: str) -> str:
+    return f"re-{sha12}"
+
+
+#: The deployments a worker creates for its own commit, and nothing else: prune touches only these.
+_COMMIT_DEPLOYMENT = re.compile(r"^re-survey-step-[0-9a-f]{12}$")
+#: A deployment with a flow run in one of these states is in use: never pruned.
+_ACTIVE_RUN_STATES = ("SCHEDULED", "PENDING", "RUNNING", "PAUSED", "CANCELLING")
+
+
+async def prune_commit_deployments(keep: int, pool: str) -> dict[str, list[str]]:
+    """Delete RE's per-commit deployments (`re-survey-step-<sha12>`, RE's flow, on `pool`) beyond the newest
+    `keep` by creation time (Architect ruling 2026-11-13, READBACK-re-launchd-worker-8f5af544 §D).
+
+    Never deleted: the default deployment, any other flow's or pool's, the newest `keep`, any with a flow run
+    that is scheduled, pending, running, paused or cancelling, and any whose commit has an ONLINE worker
+    (`re-worker-<sha12>-*`): an idle worker on an older commit keeps the deployment it serves (read-back of
+    6888a58c). Returns {"kept", "deleted", "skipped_active", "skipped_online_worker"}, by name; the caller logs
+    each deleted name. A standing Prefect write: workers run it after their own deploy."""
+    from prefect.client.schemas.filters import (
+        DeploymentFilter, DeploymentFilterId, FlowFilter, FlowFilterName, FlowRunFilter, FlowRunFilterState,
+        FlowRunFilterStateType,
+    )
+    from prefect.client.schemas.objects import StateType
+
+    if keep < 1:
+        raise ValueError("keep must be at least 1: a worker's own deployment is never pruned")
+    flow_name = DEFAULT_DEPLOYMENT.split("/", 1)[0]
+    out: dict[str, list[str]] = {"kept": [], "deleted": [], "skipped_active": [], "skipped_online_worker": []}
+    async with re_prefect_client() as client:
+        served = {worker_sha(w) for w in await client.read_workers_for_work_pool(pool) if _is_online(w)} - {""}
+        deployments = await client.read_deployments(flow_filter=FlowFilter(name=FlowFilterName(any_=[flow_name])))
+        ours = [d for d in deployments
+                if _COMMIT_DEPLOYMENT.match(str(getattr(d, "name", ""))) and getattr(d, "work_pool_name", None) == pool]
+        ours.sort(key=lambda d: str(getattr(d, "created", "") or ""), reverse=True)
+        out["kept"] = [d.name for d in ours[:keep]]
+        active = FlowRunFilter(state=FlowRunFilterState(type=FlowRunFilterStateType(
+            any_=[StateType[s] for s in _ACTIVE_RUN_STATES])))
+        for d in ours[keep:]:
+            if d.name.rsplit("-", 1)[-1] in served:
+                out["skipped_online_worker"].append(d.name)
+                continue
+            runs = await client.read_flow_runs(
+                deployment_filter=DeploymentFilter(id=DeploymentFilterId(any_=[d.id])),
+                flow_run_filter=active, limit=1)
+            if runs:
+                out["skipped_active"].append(d.name)
+                continue
+            await client.delete_deployment(d.id)
+            out["deleted"].append(d.name)
+    return out
+
+
+def worker_sha(worker: Any) -> str:
+    """The commit a worker advertises in its name (`re-worker-<sha12>-<host>`), or "" for one that
+    advertises none (a host worker, which runs the checkout's own code)."""
+    name = getattr(worker, "name", "")
+    m = _WORKER_SHA.match(name) if isinstance(name, str) else None
+    return m.group(1) if m else ""
+
+
+async def _choose_deployment(client: Any, pool_default: str) -> Any:
+    """The deployment a step's flow run goes to, or RuntimeError with the reason (run_prefect_step then
+    runs the step locally and records why). Read only: nothing is created here.
+
+      - a worker that advertises THIS RE's commit is ONLINE: its own deployment (its own queue, so only
+        a worker on the same code picks the run up);
+      - else a worker that advertises no commit is ONLINE: the default deployment, as before;
+      - else ONLINE workers exist but all run other code: refused, naming both commits. Running a step
+        on different code would be silent drift (§1.6);
+      - else: no ONLINE worker at all (PREFECT-POLL-TIMEOUT: a run would sit Scheduled forever).
+    """
+    from resource_explorer.build_info import re_sha_short
+
+    try:
+        deployment = await client.read_deployment_by_name(DEFAULT_DEPLOYMENT)
+    except Exception as e:
+        raise RuntimeError(
+            f"Prefect deployment '{DEFAULT_DEPLOYMENT}' not found. "
+            f"Did you run 'resource-explorer prefect deploy'? Error: {e}"
+        )
+    pool = getattr(deployment, "work_pool_name", None) or pool_default
+    online = [w for w in await client.read_workers_for_work_pool(pool) if _is_online(w)]
+    own = re_sha_short()
+    advertised = sorted({worker_sha(w) for w in online} - {""})
+    if own and own in advertised:
+        name = f"RE Survey Flow/{sha_deployment(own)}"
+        try:
+            return await client.read_deployment_by_name(name)
+        except Exception as e:
+            raise RuntimeError(
+                f"a Prefect worker on this Resource Explorer's code ({own}) is online but its deployment "
+                f"'{name}' is missing: {e}"
+            )
+    unchecked = sorted(str(getattr(w, "name", "") or "?") for w in online if not worker_sha(w))
+    if unchecked:
+        # Allowed, never silent (Architect ruling 2026-11-13): said once per worker, and the pool banner line
+        # names it for as long as it lasts (bootstrap.PrefectPoolStatus.parity_unchecked).
+        for name in unchecked:
+            if name not in _PARITY_UNCHECKED_WARNED:
+                _PARITY_UNCHECKED_WARNED.add(name)
+                logging.warning("commit parity not checked: worker %s advertises none; dispatching to the "
+                                "default deployment (this Resource Explorer runs %s)", name, own or "commit unknown")
+        return deployment
+    if advertised:
+        raise RuntimeError(
+            f"no online Prefect worker runs this Resource Explorer's code ({own or 'commit unknown'}); "
+            f"online workers on pool {pool} run {', '.join(advertised)}"
+        )
+    raise RuntimeError(f"no online Prefect worker for pool {pool}; run `make prefect-up`")
+
+
 async def _cancel_flow_run_best_effort(client: Any, flow_run_id: Any) -> str:
     """Try to cancel `flow_run_id`; return "" on success or a short failure
     description. Never raises."""
@@ -318,26 +445,10 @@ async def _run_prefect_step_api(
     config = get_config()
     if timeout_seconds is None:
         timeout_seconds = _step_timeout_seconds()
-    deployment_name = "RE Survey Flow/re-survey-step-deployment"
-
     async with re_prefect_client() as client:
-        # 1. Fetch the deployment ID
-        try:
-            deployment = await client.read_deployment_by_name(deployment_name)
-        except Exception as e:
-            raise RuntimeError(
-                f"Prefect deployment '{deployment_name}' not found. "
-                "Did you run 'resource-explorer prefect deploy'? Error: {e}"
-            )
-
-        # 1b. Fail fast: a pool with no ONLINE worker would leave the run
-        # Scheduled forever. Read-only; nothing is created yet.
-        pool = getattr(deployment, "work_pool_name", None) or config.prefect.work_pool
-        workers = await client.read_workers_for_work_pool(pool)
-        if not any(_is_online(w) for w in workers):
-            raise RuntimeError(
-                f"no online Prefect worker for pool {pool}; run `make prefect-up`"
-            )
+        # 1. Which deployment, and fail fast: a pool with no ONLINE worker (or none on this RE's code)
+        # would leave the run Scheduled forever, or run it on other code. Read-only; nothing is created yet.
+        deployment = await _choose_deployment(client, config.prefect.work_pool)
 
         # 2. Trigger the flow run — tagged so the admin "⚡ Prefect" panel can
         # group/filter flow-runs by the resource they belong to. Not the RE

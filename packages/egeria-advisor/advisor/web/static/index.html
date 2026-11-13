@@ -9,7 +9,7 @@
     if (v === 'light' || v === 'paper' || v === 'dark') l = v; } catch (e) {} document.documentElement.setAttribute('data-look', l); })();</script>
   <title>Egeria Advisor</title>
   <script src="/static/vendor/tailwindcss-play.min.js?v=3.4.17"></script>
-  <script src="/static/auth.js?v=20260905a"></script>
+  <script src="/static/auth.js?v=20261112a"></script>
   <script src="/static/vendor/marked.min.js?v=18.0.9"></script>
   <script src="/static/vendor/purify.min.js?v=3.4.17"></script>
   <script src="/static/render.js?v=20261110a"></script>
@@ -1038,14 +1038,12 @@ async function loadPlans() {
         e.stopPropagation();
         // Direct REST call (not a faked chat message) — see BACKLOG.md.
         execBtn.disabled = true; execBtn.textContent = '…';
-        appendMessage('you', `Execute plan ${plan.doc_id}`);
         try {
-          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/execute`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-            body: JSON.stringify({ draft_id: plan.draft_id || null }),
-          });
-          const result = await r.json();
+          // the plan confirm gate: shown and confirmed first (runPlanConfirmed, plan_editor.js)
+          const result = await runPlanConfirmed(`/api/plans/${encodeURIComponent(plan.doc_id)}/execute`,
+                                                { draft_id: plan.draft_id || null });
+          if (result.cancelled) return;
+          appendMessage('you', `Execute plan ${plan.doc_id}`);
           const wrap = appendMessage('assistant', result.response || '', {});
           _applyQueryResult(`execute the plan ${plan.doc_id}`, result, wrap);
         } catch (err) {
@@ -1085,14 +1083,12 @@ async function loadPlans() {
       rerunBtn.textContent = '▶';
       rerunBtn.onclick = async e => {
         e.stopPropagation();
-        if (!confirm(`Re-run "${plan.title || plan.doc_id}" now? This submits its commands to Egeria again.`)) return;
         rerunBtn.disabled = true; rerunBtn.textContent = '…';
         try {
-          const r = await fetch(`/api/plans/${encodeURIComponent(plan.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({}));
-            throw new Error(err.detail || `Server error ${r.status}`);
-          }
+          // the plan confirm gate: shown and confirmed first (runPlanConfirmed, plan_editor.js)
+          const res = await runPlanConfirmed(`/api/plans/${encodeURIComponent(plan.doc_id)}/rerun`, {});
+          if (res.cancelled) return;
+          if (res.state === 'refused') throw new Error(res.response);
           await loadPlans();
           openPlanEditor(plan.doc_id, null);
         } catch (err) {
@@ -2519,14 +2515,12 @@ function initCanvasButtons() {
     // instead of an execute command. See BACKLOG.md.
     const btn = document.getElementById('pcanvas-execute-btn');
     btn.disabled = true; btn.textContent = '⏳ Executing…';
-    appendMessage('you', `Execute plan ${docId}`);
     try {
-      const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-        body: JSON.stringify({ draft_id: _ctx?.draft_id || null }),
-      });
-      const result = await r.json();
+      // the plan confirm gate: shown and confirmed first (runPlanConfirmed, plan_editor.js)
+      const result = await runPlanConfirmed(`/api/plans/${encodeURIComponent(docId)}/execute`,
+                                            { draft_id: _ctx?.draft_id || null });
+      if (result.cancelled) return;
+      appendMessage('you', `Execute plan ${docId}`);
       const wrap = appendMessage('assistant', result.response || '', {});
       _applyQueryResult(`execute the plan ${docId}`, result, wrap);
       // Execution moves the plan to outbox under a new "_executed_<ts>" doc_id —
@@ -3636,7 +3630,7 @@ function initReportCanvasResize() {
 
 <script src="/static/artifact_canvas.js?v=20260713a"></script>
 <script src="/static/plan_canvas.js?v=20260713b"></script>
-<script src="/static/plan_editor.js?v=20260713a"></script>
+<script src="/static/plan_editor.js?v=20261113b"></script>
 <script src="/static/report_spec_canvas.js?v=20260629i"></script>
 <script src="/static/specs_publish.js?v=20261111a"></script>
 <script src="/static/trellis-ui/egeria-table.js?v=3b8ac7e2"></script>

@@ -944,30 +944,138 @@ async function _validatePlanDoc() {
 
 // ── Execute ───────────────────────────────────────────────────────────────────
 
+/** The plan confirm gate (server: GovernancePlanAgent.prepare_execute). The first POST runs nothing and
+ *  returns the plan as it would run; the user confirms that command sequence; the second POST carries
+ *  {pending_id, digest} and runs it once. A plan edited in between is refused by the server, in words.
+ *  Returns the server's result, or {cancelled: true}. Throws on an HTTP error (with the server's detail).
+ *  Shared by every Execute / Re-run button (index.html and this file). */
+async function runPlanConfirmed(url, body) {
+  const post = async (b) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(b),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `Server error ${r.status}`);
+    return data;
+  };
+  const shown = await post(body || {});
+  if (!shown || !shown.confirm_required) return shown;       // not found, refused, sign in: the server says
+  const choice = await planConfirmDialog(shown);
+  if (!choice.ok) return { cancelled: true, response: 'Cancelled: the plan was not run, and nothing was written.' };
+  const confirmBody = { ...(body || {}), pending_id: shown.pending_id, digest: shown.plan_digest };
+  if (choice.ack) confirmBody.ack_non_idempotent = true;
+  return post(confirmBody);
+}
+
+/** How many command names the confirm dialog lists before it says "first N of M commands". */
+const PLAN_CONFIRM_LIST_MAX = 30;
+
+/** The plan confirm dialog: what will run, by name ("first N of M commands" when there are more), the
+ *  full Command Sequence (scrollable, never cut), and on a re-run that repeats non-idempotent commands a
+ *  checkbox that must be ticked before Run is enabled. Every server value reaches the page as textContent.
+ *  Resolves {ok, ack}. */
+function planConfirmDialog(shown) {
+  return new Promise(resolve => {
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    };
+    const section = String(shown.command_section || '');
+    const names = Array.isArray(shown.command_names) && shown.command_names.length
+      ? shown.command_names
+      : [...section.matchAll(/^##\s+(.+?)\s*$/gm)].map(m => m[1]);
+    const total = names.length;
+    const listed = names.slice(0, PLAN_CONFIRM_LIST_MAX);
+    const unsafe = Array.isArray(shown.non_idempotent) ? shown.non_idempotent : [];
+    const ackNeeded = !!shown.ack_required && unsafe.length > 0;
+
+    const overlay = el('div', 'fixed inset-0 z-50 flex items-center justify-center bg-black/60');
+    overlay.dataset.planConfirm = 'dialog';
+    const panel = el('div', 'bg-slate-800 text-slate-100 rounded-lg shadow-xl p-4 w-[min(42rem,92vw)] max-h-[85vh] overflow-y-auto text-sm space-y-3');
+    panel.appendChild(el('h3', 'text-base font-semibold', `${shown.rerun ? 'Run plan again' : 'Run plan'} ${shown.doc_id || ''}?`));
+    panel.appendChild(el('p', '', `${total} command(s) will be processed in Egeria as you.`));
+    const summary = el('p', 'text-slate-400 text-xs', total > listed.length
+      ? `First ${listed.length} of ${total} commands:` : `All ${total} commands:`);
+    summary.dataset.planConfirm = 'count';
+    panel.appendChild(summary);
+    const ol = el('ol', 'list-decimal pl-6 space-y-0.5');
+    listed.forEach(n => ol.appendChild(el('li', '', n)));
+    panel.appendChild(ol);
+    if (total > listed.length) panel.appendChild(el('p', 'text-slate-400 text-xs', `…and ${total - listed.length} more, in the full Command Sequence below.`));
+    const details = el('details', '');
+    details.appendChild(el('summary', 'cursor-pointer text-slate-300', 'Show the full Command Sequence'));
+    const pre = el('pre', 'mt-2 max-h-64 overflow-auto bg-slate-900 p-2 rounded text-xs whitespace-pre-wrap', section.trim());
+    pre.dataset.planConfirm = 'script';
+    details.appendChild(pre);
+    panel.appendChild(details);
+
+    let ack = null;
+    if (ackNeeded) {
+      const warn = el('div', 'border border-amber-500 rounded p-2 space-y-1');
+      warn.dataset.planConfirm = 'unsafe';
+      warn.appendChild(el('p', 'text-amber-300 font-semibold', 'This is a re-run, and these commands are not safe to run twice:'));
+      const ul = el('ul', 'list-disc pl-6');
+      unsafe.forEach(u => ul.appendChild(el('li', '', `${u.command}${u.count > 1 ? ` (×${u.count})` : ''}: ${u.why}`)));
+      warn.appendChild(ul);
+      const label = el('label', 'flex items-center gap-2 mt-1');
+      ack = el('input', '');
+      ack.type = 'checkbox';
+      ack.dataset.planConfirm = 'ack';
+      label.appendChild(ack);
+      label.appendChild(el('span', '', 'I understand these commands will run again, and want to re-run the plan anyway.'));
+      warn.appendChild(label);
+      panel.appendChild(warn);
+    }
+
+    const buttons = el('div', 'flex justify-end gap-2 pt-1');
+    const cancel = el('button', 'px-3 py-1 rounded bg-slate-600 hover:bg-slate-500', 'Cancel');
+    cancel.type = 'button';
+    cancel.dataset.planConfirm = 'cancel';
+    const run = el('button', 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 disabled:opacity-40', shown.rerun ? 'Run again' : 'Run');
+    run.type = 'button';
+    run.dataset.planConfirm = 'run';
+    run.disabled = ackNeeded;
+    if (ack) ack.addEventListener('change', () => { run.disabled = !ack.checked; });
+    buttons.appendChild(cancel);
+    buttons.appendChild(run);
+    panel.appendChild(buttons);
+    overlay.appendChild(panel);
+
+    const done = (result) => { overlay.remove(); resolve(result); };
+    cancel.addEventListener('click', () => done({ ok: false, ack: false }));
+    run.addEventListener('click', () => {
+      if (run.disabled) return;
+      done({ ok: true, ack: !!(ack && ack.checked) });
+    });
+    document.body.appendChild(overlay);
+  });
+}
+
 async function _executePlanDoc() {
-  if (!confirm(`Execute plan ${_ped.doc_id}?\nThis will submit all commands to Dr.Egeria.`)) return;
-  if (_ped.dirty) await _savePlanEdits();
+  if (_ped.dirty) await _savePlanEdits();     // saved first, so what is confirmed is what is stored
   const docId = _ped.doc_id;
   const draftId = _ped.draft_id;
-  closePlanEditor();
   // Direct REST call (not a faked chat message) — "execute the plan X" sent
   // as chat text can be intercepted by context-based routing (e.g. an open
   // Plan Canvas session for the same plan) and mistaken for a plan-
   // modification instruction instead of an execute command. See BACKLOG.md.
-  if (typeof appendMessage === 'function') appendMessage('you', `Execute plan ${docId}`);
+  let result;
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-      body: JSON.stringify({ draft_id: draftId || null }),
-    });
-    const result = await r.json();
-    if (typeof appendMessage === 'function') {
-      const wrap = appendMessage('assistant', result.response || '', {});
-      if (typeof _applyQueryResult === 'function') _applyQueryResult(`execute the plan ${docId}`, result, wrap);
-    }
+    result = await runPlanConfirmed(`/api/plans/${encodeURIComponent(docId)}/execute`, { draft_id: draftId || null });
   } catch (e) {
     if (typeof appendMessage === 'function') appendMessage('assistant', `**Error:** ${e.message}`);
+    return;
+  }
+  if (result.cancelled) return;
+  closePlanEditor();
+  if (typeof appendMessage === 'function') {
+    appendMessage('you', `Execute plan ${docId}`);
+    const wrap = appendMessage('assistant', result.response || '', {});
+    if (typeof _applyQueryResult === 'function') _applyQueryResult(`execute the plan ${docId}`, result, wrap);
   }
 }
 
@@ -1001,12 +1109,12 @@ async function pedRecoverForEditing() {
 // ── Re-run Now (outbox → outbox, no inbox detour) ─────────────────────────────
 
 async function pedRerunNow() {
-  if (!confirm(`Re-run "${_ped.doc_id}" now?\nThis submits its commands to Egeria again, as-is, and appends a new outcome.`)) return;
   const bar = document.getElementById('ped-recovery-bar');
   if (bar) bar.innerHTML = '<span class="text-emerald-300">Re-running…</span>';
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
-    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    const res = await runPlanConfirmed(`/api/plans/${encodeURIComponent(_ped.doc_id)}/rerun`, {});
+    if (res.cancelled) { if (bar) bar.innerHTML = ''; return; }
+    if (res.state === 'refused') throw new Error(res.response);
     await openPlanEditor(_ped.doc_id, null);
     if (typeof loadPlans === 'function') loadPlans();
     _showToast('Plan re-executed — outcome updated.');

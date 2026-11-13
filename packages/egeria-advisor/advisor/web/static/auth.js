@@ -341,3 +341,9 @@ const Auth = (() => {
 
   return { init, isAuthenticated, getToken, getHeaders, getUser, showLogin, hideLogin, doLogout, handle401, updateUserDisplay };
 })();
+
+// A top-level `const` is a global binding but NOT a property of window, so `window.Auth` / `root.Auth` were
+// undefined. dashboards_view.js, dashboards_author.js and specs_publish.js read it that way and sent their
+// requests with no Authorization header; the 401 that followed went through handle401 above and signed the
+// user out of the whole of EA. Export it explicitly so both spellings name the same object.
+window.Auth = Auth;

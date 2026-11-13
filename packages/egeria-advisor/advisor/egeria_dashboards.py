@@ -665,6 +665,31 @@ def _cached_run(key: str, compute: Callable[[], Dict[str, Any]], refresh: bool) 
         flight.event.set()
 
 
+def _snake_key(key: str) -> str:
+    """camelCase -> snake_case exactly as the Portal's snakeKey (local-dashboards.html): every capital
+    becomes "_" + its lower case. A key already in snake_case is unchanged."""
+    return re.sub(r"[A-Z]", lambda m: "_" + m.group(0).lower(), key)
+
+
+def _snake_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """A Report's parameters as pyegeria's executor names them.
+
+    Egeria holds a Report's parameters as additionalProperties in camelCase (`collectionQname`,
+    `pageSize`, ...), and pyegeria's find functions take snake_case keyword arguments. The Portal
+    snake-cases every key before it runs a placement; EA passed them through unchanged, so a spec
+    whose required argument is not search_string never saw it ("Give collection_guid, collection_qname
+    or collection_name": the Tasks tile on local-dashboards-next-steps, found live on 8880 2026-11-12).
+    Values are passed as stored, as the Portal does. Analytic params are already the analytic function's
+    own argument names and are not changed (the Portal does not change them either)."""
+    out: Dict[str, Any] = {}
+    for key, value in params.items():
+        snake = _snake_key(key)
+        if snake in out and snake != key and snake in params:
+            continue   # both spellings stored: the one already in snake_case is the one pyegeria names
+        out[snake] = value
+    return out
+
+
 def _execute(spec: str, *, analytic: bool, params: Dict[str, Any], fmt: str, creds: Dict[str, str],
              pipeline: Any, title: str, run_as: Optional[str] = None) -> Dict[str, Any]:
     """Run one spec as the viewer and make its tile. Never raises for a run that fails: says so.
@@ -683,9 +708,8 @@ def _execute(spec: str, *, analytic: bool, params: Dict[str, Any], fmt: str, cre
             raw, error = pipeline.exec_spec_raw(name, output_type=exec_fmt, extra_params=dict(params),
                                                 egeria_credentials=creds, exact_params=True)
         else:
-            rest = dict(params)
-            search = rest.pop("search_string", None) or rest.pop("searchString", None) or "*"
-            rest.pop("searchString", None)
+            rest = _snake_params(params)
+            search = rest.pop("search_string", None) or "*"
             raw, error = pipeline.exec_spec_raw(name, search_string=search, output_type=exec_fmt,
                                                 extra_params=rest or None, egeria_credentials=creds,
                                                 **({"table_shape": "structured"} if structured else {}))
