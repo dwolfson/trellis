@@ -277,6 +277,9 @@ class PrefectPoolStatus:
     live_count: int = 0
     registered_count: int = 0
     never_heard_from: int = 0
+    #: False when the server answered that the pool does not exist (404): reachable, but the fix is to create
+    #: the pool, not to start the server. None until a check has answered either way.
+    pool_exists: bool | None = None
     last_heartbeat: str = ""
     summary: str = ""
     #: When live_count == 0: what runs in Resource Explorer's own process instead of on a
@@ -449,6 +452,15 @@ def _prefect_enabled() -> bool | None:
         return None
 
 
+def _is_not_found(exc: BaseException) -> bool:
+    """Prefect's answer that the object does not exist: an HTTP 404 (PrefectHTTPStatusError) or its
+    ObjectNotFound, as distinct from not reaching the server at all."""
+    if type(exc).__name__ == "ObjectNotFound":
+        return True
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
+
+
 def _live_factor() -> float:
     try:
         from resource_explorer.config import get_config
@@ -561,18 +573,31 @@ def check_prefect_pool_workers(pool: str | None = None, *, now: datetime | None 
         else:
             log.debug("bootstrap: Prefect work pool %r: %s", pool, status.summary)
     except Exception as exc:
-        # The server could not be asked: never a 0 that reads as an empty pool, and never silence.
-        # Runs still happen (the local fallback), but none of them is recorded in Prefect.
-        status.reachable = False
-        status.last_check_error = str(exc)
-        status.summary = "server not reachable; the pool could not be checked"
-        status.runs_locally_instead = prefect_pool_runs_locally_instead_safe()
-        if _prefect_pool_logged_state != "unreachable":
-            log.warning("bootstrap: Prefect work pool %r: %s (%s). %s", pool, status.summary, exc,
-                        unreachable_words(status.runs_locally_instead))
-            _prefect_pool_logged_state = "unreachable"
+        if _is_not_found(exc):
+            # The server answered: this pool does not exist. Not "server not reachable" (read-back of 377c3353):
+            # the fix differs. Every dispatched step runs locally; whole-definition runs are still recorded.
+            status.reachable = True
+            status.pool_exists = False
+            status.last_check_error = str(exc)
+            status.summary = f"pool {pool} doesn't exist"
+            status.runs_locally_instead = prefect_pool_runs_locally_instead_safe()
+            if _prefect_pool_logged_state != "pool_missing":
+                log.warning("bootstrap: Prefect work pool %r: %s. Nothing waits: %s", pool, status.summary,
+                            runs_locally_words(status.runs_locally_instead))
+                _prefect_pool_logged_state = "pool_missing"
         else:
-            log.debug("bootstrap: could not check Prefect pool %r workers: %s", pool, exc)
+            # The server could not be asked: never a 0 that reads as an empty pool, and never silence.
+            # Runs still happen (the local fallback), but none of them is recorded in Prefect.
+            status.reachable = False
+            status.last_check_error = str(exc)
+            status.summary = "server not reachable; the pool could not be checked"
+            status.runs_locally_instead = prefect_pool_runs_locally_instead_safe()
+            if _prefect_pool_logged_state != "unreachable":
+                log.warning("bootstrap: Prefect work pool %r: %s (%s). %s", pool, status.summary, exc,
+                            unreachable_words(status.runs_locally_instead))
+                _prefect_pool_logged_state = "unreachable"
+            else:
+                log.debug("bootstrap: could not check Prefect pool %r workers: %s", pool, exc)
 
     with _prefect_pool_status_lock:
         global _prefect_pool_status
@@ -1838,6 +1863,8 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
             "live_count": pool_st.live_count if pool_st.reachable else None,
             "registered_count": pool_st.registered_count if pool_st.reachable else None,
             "never_heard_from": pool_st.never_heard_from if pool_st.reachable else None,
+            # False: the server answered the pool does not exist. None: not known (unread or unreachable).
+            "pool_exists": False if pool_st.pool_exists is False else (True if pool_st.reachable else None),
             "worker_count": pool_st.worker_count if pool_st.reachable else None,
             "summary": pool_st.summary,
             "runs_locally_instead": list(pool_st.runs_locally_instead),

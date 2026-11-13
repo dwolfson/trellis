@@ -150,6 +150,11 @@ export function prefectPoolLine(status) {
   if (p.reachable === false) {
     return { kind: 'unreachable', word: `Prefect: ${p.summary || 'server not reachable'}`, runsLocally: p.runs_locally_words || '' };
   }
+  if (p.reachable === true && p.pool_exists === false) {
+    // The server answered: this pool does not exist. Its own words, because the fix is to create the pool,
+    // not to start the server (read-back of 377c3353).
+    return { kind: 'pool_missing', word: `Prefect: ${p.summary || 'pool does not exist'}`, runsLocally: p.runs_locally_words || '' };
+  }
   if (p.reachable !== true) return null;
   if (p.live_count === 0) {
     return { kind: 'no_live', word: `Prefect: ${p.summary || 'no live worker'}`, runsLocally: p.runs_locally_words || '' };

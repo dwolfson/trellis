@@ -99,3 +99,13 @@ test('a live worker that advertises no commit is a warning line in the server wo
   mod.renderBootstrapBanner(document, STATUS(POOL({ live_count: 1, parity_unchecked: [] })));
   assert.equal(document.getElementById('bootstrap-banner'), null, 'a worker on a known commit: no line');
 });
+
+test('a pool the server says does not exist is its own warning, not "server not reachable"', async () => {
+  const { document, mod } = await loadShell();
+  mod.renderBootstrapBanner(document, STATUS(POOL({ reachable: true, pool_exists: false, live_count: 0, registered_count: 0,
+    summary: "pool resource-explorer-pool doesn't exist" })));
+  const line = document.querySelector('[data-prefect-pool-line]');
+  assert.equal(line.dataset.prefectPoolLine, 'pool_missing');
+  assert.equal(text(document.querySelector('[data-prefect-pool-word]')), "Prefect: pool resource-explorer-pool doesn't exist");
+  assert.doesNotMatch(text(line), /not reachable/);
+});
