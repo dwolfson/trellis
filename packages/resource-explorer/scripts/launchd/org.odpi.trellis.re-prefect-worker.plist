@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  Copyright Contributors to the ODPi Egeria project.
+
+  A launchd agent (macOS) that keeps Resource Explorer's Prefect worker for `resource-explorer-pool`
+  running: started at login, restarted if it exits. The interim host worker the owner chose on
+  2026-11-13 ("both host worker and launchd as well as container"); the container worker is the
+  target for container deployments (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §5/§6).
+
+  NOT installed by anything in this repo: installing a login agent is a standing host change and
+  needs the owner's word. The paths below are laz's; replace them for another Mac. Install:
+
+    cp packages/resource-explorer/scripts/launchd/org.odpi.trellis.re-prefect-worker.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.odpi.trellis.re-prefect-worker.plist
+
+  Check:  launchctl print gui/$(id -u)/org.odpi.trellis.re-prefect-worker | grep -E 'state|pid'
+          and the pool: worker `re-host-worker-laz` ONLINE on resource-explorer-pool.
+  Stop:   launchctl bootout gui/$(id -u)/org.odpi.trellis.re-prefect-worker
+
+  Why it is shaped this way:
+  - The venv's own `prefect` binary, never `uv run --package` (which re-resolves the venv down to one
+    package and has dropped RE's survey steps). Whichever venv it names must say "none missing" for
+    both hosts:  <venv>/bin/python -c "from resource_explorer.engine_host import library_steps_line;
+    print(library_steps_line())"  (run from WorkingDirectory below).
+  - `prefect worker start` directly, not `resource-explorer prefect worker` (which shells out to
+    `prefect`): launchd then supervises the worker process itself.
+  - WorkingDirectory is the checkout 8813 runs from. RE's config reads `.env` from the working
+    directory, and the deployment sets each flow run's working directory to that same path, so flow
+    runs see the same settings and code as 8813. No secret is in this file.
+  - ThrottleInterval stops a tight respawn loop while the Prefect server is down.
+  - It serves the pool and nothing else: it creates no pool and no deployment.
+  - The log is not rotated by launchd; the worker writes little (a line per poll error or flow run).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.odpi.trellis.re-prefect-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph/.venv/bin/prefect</string>
+    <string>worker</string>
+    <string>start</string>
+    <string>--pool</string>
+    <string>resource-explorer-pool</string>
+    <string>--type</string>
+    <string>process</string>
+    <string>--name</string>
+    <string>re-host-worker-laz</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/dwolfson/localGit/egeria-v6/trellis/packages/resource-explorer</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PREFECT_API_URL</key>
+    <string>http://localhost:4200/api</string>
+    <!-- Never let Prefect's client start an ephemeral in-process server (the 2026-09-04 leak). -->
+    <key>PREFECT_SERVER_EPHEMERAL_ENABLED</key>
+    <string>false</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/dwolfson/.re-gate/re-prefect-worker-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dwolfson/.re-gate/re-prefect-worker-launchd.log</string>
+</dict>
+</plist>
