@@ -218,7 +218,9 @@ async def execute_plan(request: Request, doc_id: str, body: Optional[Dict[str, A
 
     The plan confirm gate: without body.pending_id this runs NOTHING and returns the plan as it would
     run (query_type "plan_confirm", with pending_id and plan_digest). Post again with
-    {pending_id, digest} to run it, once, as the same sign-in; a changed plan is refused.
+    {pending_id, digest} to run it, once, as the same sign-in; a changed plan is refused. A re-run (rerun,
+    retry) that repeats non-idempotent commands (`ack_required` true, listed in `non_idempotent`) also needs
+    "ack_non_idempotent": true.
     """
     return await _gated_run(request, doc_id, body, action="execute", source_folder="inbox")
 
@@ -273,15 +275,17 @@ async def _gated_run(request: Request, doc_id: str, body: Optional[Dict[str, Any
     body = body or {}
     draft_id = body.get("draft_id") or None
     pending_id, digest = body.get("pending_id"), body.get("digest")
+    ack = body.get("ack_non_idempotent") is True   # a re-run's acknowledgement: exactly true, nothing truthy
     if not pending_id:
         run = partial(agent.prepare_execute, doc_id, source_folder=source_folder, draft_id=draft_id,
                       egeria_credentials=egeria_credentials, action=action)
     elif action == "retry":
         run = partial(agent.retry, doc_id, egeria_credentials=egeria_credentials,
-                      pending_id=pending_id, digest=digest)
+                      pending_id=pending_id, digest=digest, ack_non_idempotent=ack)
     else:
         run = partial(agent.execute, doc_id, source_folder=source_folder, draft_id=draft_id,
-                      egeria_credentials=egeria_credentials, pending_id=pending_id, digest=digest)
+                      egeria_credentials=egeria_credentials, pending_id=pending_id, digest=digest,
+                      ack_non_idempotent=ack)
     return await asyncio.get_event_loop().run_in_executor(None, run)
 
 

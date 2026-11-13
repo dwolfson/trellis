@@ -91,7 +91,7 @@ def test_showing_a_plan_runs_nothing_and_returns_its_digest(docs, ran, gpa):
     assert "## Create Glossary" in out["response"] and "Nothing has been written" in out["response"]
     assert out["plan_digest"] == confirm_gate.text_digest(docs.load(doc))
     assert out["next_context"] == {"task": "plan_execute_confirm", "pending_id": out["pending_id"],
-                                   "digest": out["plan_digest"], "draft_id": "d1"}
+                                   "digest": out["plan_digest"], "draft_id": "d1", "ack_required": False}
 
 
 def test_no_sign_in_no_plan_shown(docs, ran, gpa):
@@ -283,8 +283,9 @@ class RecordingPlanAgent:
     def __init__(self):
         self.confirms, self.cancels = [], []
 
-    def confirm(self, pending_id, digest, perspective=None, egeria_credentials=None):
+    def confirm(self, pending_id, digest, perspective=None, egeria_credentials=None, ack_non_idempotent=False):
         self.confirms.append((pending_id, digest, egeria_credentials))
+        self.acks = getattr(self, "acks", []) + [ack_non_idempotent]
         return {"response": "ran", "next_context": None}
 
     def cancel_execute(self, pending_id, draft_id=None):

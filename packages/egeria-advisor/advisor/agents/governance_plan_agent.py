@@ -431,20 +431,30 @@ class GovernancePlanAgent:
         conn, refused = _plan_conn(doc_id, egeria_credentials)
         if refused:
             return refused
-        n = len(re.findall(r'^##\s+\S', command_section, re.MULTILINE))
+        names = plan_command_names(command_section)
+        n = len(names)
+        rerun = action == "retry" or folder == "outbox"
+        unsafe = non_idempotent_commands(names) if rerun else []
         pending = _PLAN_GATE.register(confirm_gate.caller_identity(conn), content,
                                       {"doc_id": doc_id, "source_folder": folder, "draft_id": draft_id,
-                                       "action": action})
+                                       "action": action, "ack_required": bool(unsafe), "non_idempotent": unsafe})
         verb = {"execute": "execute" if folder == "inbox" else "re-run", "retry": "retry"}[action]
+        reply = (f"Reply **yes** to {verb} exactly this plan, or **no** to cancel." if not unsafe else
+                 "Reply **yes, re-run** to run all of it again anyway, or **no** to cancel. (A plain **yes** "
+                 "is not enough for a re-run that repeats these commands.)")
         return {
             "query": doc_id,
             "response": (
                 f"**Plan `{doc_id}`**: {n} command(s) would be processed in Egeria as **{conn['user_id']}**. "
                 f"**Nothing has been written.**\n\n```markdown\n{command_section.strip()}\n```\n\n"
-                f"Reply **yes** to {verb} exactly this plan, or **no** to cancel. "
-                f"(Plan digest `{pending.digest[:12]}`; good for {PLAN_CONFIRM_TTL_S // 60} minutes. If the plan "
-                f"is edited before you confirm, it will not run.)"
+                + (_unsafe_words(unsafe) + "\n\n" if unsafe else "")
+                + f"{reply} (Plan digest `{pending.digest[:12]}`; good for {PLAN_CONFIRM_TTL_S // 60} minutes. "
+                f"If the plan is edited before you confirm, it will not run.)"
             ),
+            "rerun": rerun,
+            "ack_required": bool(unsafe),
+            "non_idempotent": unsafe,
+            "command_names": names,
             "query_type": "plan_confirm",
             "state": "confirm_required",
             "confirm_required": True,
@@ -456,7 +466,7 @@ class GovernancePlanAgent:
             "pending_id": pending.pending_id,
             "plan_digest": pending.digest,
             "next_context": {"task": "plan_execute_confirm", "pending_id": pending.pending_id,
-                             "digest": pending.digest, "draft_id": draft_id},
+                             "digest": pending.digest, "draft_id": draft_id, "ack_required": bool(unsafe)},
             "sources": [], "num_sources": 0, "retrieval_time": 0.0, "generation_time": 0.0,
             "avg_relevance_score": 0.0, "context_length": len(command_section),
         }
@@ -467,18 +477,20 @@ class GovernancePlanAgent:
         digest: str,
         perspective: str | None = None,
         egeria_credentials: Optional[Dict[str, str]] = None,
+        ack_non_idempotent: bool = False,
     ) -> Dict[str, Any]:
-        """Run the plan a pending action names (chat: "yes" to a shown plan)."""
+        """Run the plan a pending action names (chat: "yes" to a shown plan; "yes, re-run" also acknowledges
+        a re-run's non-idempotent commands)."""
         pending = _PLAN_GATE.pending.get(pending_id) if isinstance(pending_id, str) else None
         if pending is None:
             return _refused(pending_id or "", PLAN_CONFIRM_UNKNOWN)
         pl = pending.payload
         if pl["action"] == "retry":
             return self.retry(pl["doc_id"], perspective=perspective, egeria_credentials=egeria_credentials,
-                              pending_id=pending_id, digest=digest)
+                              pending_id=pending_id, digest=digest, ack_non_idempotent=ack_non_idempotent)
         return self.execute(pl["doc_id"], perspective=perspective, source_folder=pl["source_folder"],
                             draft_id=pl["draft_id"], egeria_credentials=egeria_credentials,
-                            pending_id=pending_id, digest=digest)
+                            pending_id=pending_id, digest=digest, ack_non_idempotent=ack_non_idempotent)
 
     def cancel_execute(self, pending_id: str, draft_id: str | None = None) -> Dict[str, Any]:
         """Drop a shown plan; nothing runs. A draft's Q&A context comes back. (cancel() is the draft's own.)"""
@@ -488,7 +500,7 @@ class GovernancePlanAgent:
                    next_context={"task": "plan_elicitor", "draft_id": draft_id} if draft_id else None)
         return out
 
-    def _gated(self, doc_id, source_folder, action, pending_id, digest, egeria_credentials):
+    def _gated(self, doc_id, source_folder, action, pending_id, digest, egeria_credentials, ack=False):
         """(the pending action, None) when the plan may run now, else (None, a refusal result)."""
         conn, refused = _plan_conn(doc_id, egeria_credentials)
         if refused:
@@ -503,6 +515,13 @@ class GovernancePlanAgent:
         pl = pending.payload
         if (pl["doc_id"], pl["source_folder"], pl["action"]) != (doc_id, source_folder, action):
             return None, _refused(doc_id, PLAN_CONFIRM_OTHER_PLAN)
+        if pl.get("ack_required") and ack is not True:
+            # not consumed: the same shown plan can still be run, with the acknowledgement
+            out = _refused(doc_id, PLAN_ACK_REQUIRED + "\n\n" + _unsafe_words(pl["non_idempotent"]))
+            out.update(ack_required=True, non_idempotent=pl["non_idempotent"],
+                       next_context={"task": "plan_execute_confirm", "pending_id": pending_id, "digest": digest,
+                                     "draft_id": pl.get("draft_id"), "ack_required": True})
+            return None, out
         return pending, None
 
     def execute(
@@ -515,8 +534,10 @@ class GovernancePlanAgent:
         egeria_credentials: Optional[Dict[str, str]] = None,
         pending_id: str | None = None,
         digest: str | None = None,
+        ack_non_idempotent: bool = False,
     ) -> Dict[str, Any]:
-        """Run a plan that was shown (prepare_execute) and confirmed with its digest; once.
+        """Run a plan that was shown (prepare_execute) and confirmed with its digest; once. A re-run that
+        repeats non-idempotent commands also needs ack_non_idempotent=True.
 
         dry_run extracts the commands and writes nothing, so it needs no confirm. Otherwise refused, in
         words, without a pending action this sign-in was shown for this plan, with the shown digest,
@@ -524,7 +545,8 @@ class GovernancePlanAgent:
         if dry_run:
             return self._run_plan(doc_id, perspective=perspective, dry_run=True, source_folder=source_folder,
                                   draft_id=draft_id, egeria_credentials=egeria_credentials)
-        pending, refused = self._gated(doc_id, source_folder, "execute", pending_id, digest, egeria_credentials)
+        pending, refused = self._gated(doc_id, source_folder, "execute", pending_id, digest, egeria_credentials,
+                                       ack=ack_non_idempotent)
         if refused:
             return refused
         with pending.lock:   # one run per pending action; a retry gets the first answer
@@ -827,6 +849,7 @@ class GovernancePlanAgent:
         egeria_credentials: Optional[Dict[str, str]] = None,
         pending_id: str | None = None,
         digest: str | None = None,
+        ack_non_idempotent: bool = False,
     ) -> Dict[str, Any]:
         """
         Move a failed outbox plan back to inbox and re-execute it: only once it was shown
@@ -836,7 +859,8 @@ class GovernancePlanAgent:
         for a fresh execution attempt.
         """
         from advisor.governance_docs import get_doc_manager
-        pending, refused = self._gated(doc_id, "outbox", "retry", pending_id, digest, egeria_credentials)
+        pending, refused = self._gated(doc_id, "outbox", "retry", pending_id, digest, egeria_credentials,
+                                       ack=ack_non_idempotent)
         if refused:
             return refused
         with pending.lock:
@@ -2234,6 +2258,44 @@ PLAN_CONFIRM_OTHER_PLAN = ("That confirmation was for a different plan or action
                            "execute this plan to see it before confirming.")
 PLAN_DOCUMENT_CHANGED = ("The plan document has changed since it was shown, so nothing was run. Ask to execute "
                          "it again to see the current version before confirming.")
+
+
+PLAN_ACK_REQUIRED = ("This re-run repeats commands that are not safe to run twice, so a plain yes is not enough "
+                     "and nothing was run. Acknowledge them to run the plan again anyway (chat: **yes, re-run**).")
+
+
+def plan_command_names(command_section: str) -> List[str]:
+    """The plan's commands, in order: its `## <Command>` headers."""
+    return [m.strip() for m in re.findall(r'^##\s+(.+?)\s*$', command_section, re.MULTILINE)]
+
+
+def non_idempotent_commands(names: List[str]) -> List[Dict[str, Any]]:
+    """The commands a re-run would repeat with a different result: [{command, count, why}], first-seen order.
+
+    pyegeria's compact spec decides when it says (`idempotent`, on the command or its family). Where it says
+    nothing, a Link command is unsafe: running it again adds the relationship again. (MetadataExpert's Create
+    and Link Instance are covered once pyegeria flags them.)"""
+    from advisor import compact_specs
+    found: Dict[str, Dict[str, Any]] = {}
+    for name in names:
+        flag = compact_specs.flag(name, "idempotent")
+        spec = compact_specs.command(name) or {}
+        if flag is False:
+            why = "its Dr.Egeria specification marks it non-idempotent"
+        elif flag is None and (name.split()[:1] == ["Link"] or str(spec.get("verb", "")).lower() == "link"):
+            why = "a Link command: running it again adds the relationship again"
+        else:
+            continue
+        found.setdefault(name, {"command": name, "count": 0, "why": why})["count"] += 1
+    return list(found.values())
+
+
+def _unsafe_words(unsafe: List[Dict[str, Any]]) -> str:
+    lines = ["**This is a re-run, and these commands are not safe to run twice:**"]
+    for u in unsafe:
+        times = f" (×{u['count']})" if u["count"] > 1 else ""
+        lines.append(f"- {u['command']}{times}: {u['why']}")
+    return "\n".join(lines)
 
 
 def _reset_plan_gate_for_tests() -> None:

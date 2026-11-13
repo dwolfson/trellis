@@ -962,11 +962,97 @@ async function runPlanConfirmed(url, body) {
   };
   const shown = await post(body || {});
   if (!shown || !shown.confirm_required) return shown;       // not found, refused, sign in: the server says
-  const cmds = String(shown.command_section || '').trim();
-  const preview = cmds.length > 1500 ? cmds.slice(0, 1500) + '\n…' : cmds;
-  const ok = confirm(`Run plan ${shown.doc_id}?\n${shown.command_count} command(s) will be processed in Egeria as you:\n\n${preview}`);
-  if (!ok) return { cancelled: true, response: 'Cancelled: the plan was not run, and nothing was written.' };
-  return post({ ...(body || {}), pending_id: shown.pending_id, digest: shown.plan_digest });
+  const choice = await planConfirmDialog(shown);
+  if (!choice.ok) return { cancelled: true, response: 'Cancelled: the plan was not run, and nothing was written.' };
+  const confirmBody = { ...(body || {}), pending_id: shown.pending_id, digest: shown.plan_digest };
+  if (choice.ack) confirmBody.ack_non_idempotent = true;
+  return post(confirmBody);
+}
+
+/** How many command names the confirm dialog lists before it says "first N of M commands". */
+const PLAN_CONFIRM_LIST_MAX = 30;
+
+/** The plan confirm dialog: what will run, by name ("first N of M commands" when there are more), the
+ *  full Command Sequence (scrollable, never cut), and on a re-run that repeats non-idempotent commands a
+ *  checkbox that must be ticked before Run is enabled. Every server value reaches the page as textContent.
+ *  Resolves {ok, ack}. */
+function planConfirmDialog(shown) {
+  return new Promise(resolve => {
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    };
+    const section = String(shown.command_section || '');
+    const names = Array.isArray(shown.command_names) && shown.command_names.length
+      ? shown.command_names
+      : [...section.matchAll(/^##\s+(.+?)\s*$/gm)].map(m => m[1]);
+    const total = names.length;
+    const listed = names.slice(0, PLAN_CONFIRM_LIST_MAX);
+    const unsafe = Array.isArray(shown.non_idempotent) ? shown.non_idempotent : [];
+    const ackNeeded = !!shown.ack_required && unsafe.length > 0;
+
+    const overlay = el('div', 'fixed inset-0 z-50 flex items-center justify-center bg-black/60');
+    overlay.dataset.planConfirm = 'dialog';
+    const panel = el('div', 'bg-slate-800 text-slate-100 rounded-lg shadow-xl p-4 w-[min(42rem,92vw)] max-h-[85vh] overflow-y-auto text-sm space-y-3');
+    panel.appendChild(el('h3', 'text-base font-semibold', `${shown.rerun ? 'Run plan again' : 'Run plan'} ${shown.doc_id || ''}?`));
+    panel.appendChild(el('p', '', `${total} command(s) will be processed in Egeria as you.`));
+    const summary = el('p', 'text-slate-400 text-xs', total > listed.length
+      ? `First ${listed.length} of ${total} commands:` : `All ${total} commands:`);
+    summary.dataset.planConfirm = 'count';
+    panel.appendChild(summary);
+    const ol = el('ol', 'list-decimal pl-6 space-y-0.5');
+    listed.forEach(n => ol.appendChild(el('li', '', n)));
+    panel.appendChild(ol);
+    if (total > listed.length) panel.appendChild(el('p', 'text-slate-400 text-xs', `…and ${total - listed.length} more, in the full Command Sequence below.`));
+    const details = el('details', '');
+    details.appendChild(el('summary', 'cursor-pointer text-slate-300', 'Show the full Command Sequence'));
+    const pre = el('pre', 'mt-2 max-h-64 overflow-auto bg-slate-900 p-2 rounded text-xs whitespace-pre-wrap', section.trim());
+    pre.dataset.planConfirm = 'script';
+    details.appendChild(pre);
+    panel.appendChild(details);
+
+    let ack = null;
+    if (ackNeeded) {
+      const warn = el('div', 'border border-amber-500 rounded p-2 space-y-1');
+      warn.dataset.planConfirm = 'unsafe';
+      warn.appendChild(el('p', 'text-amber-300 font-semibold', 'This is a re-run, and these commands are not safe to run twice:'));
+      const ul = el('ul', 'list-disc pl-6');
+      unsafe.forEach(u => ul.appendChild(el('li', '', `${u.command}${u.count > 1 ? ` (×${u.count})` : ''}: ${u.why}`)));
+      warn.appendChild(ul);
+      const label = el('label', 'flex items-center gap-2 mt-1');
+      ack = el('input', '');
+      ack.type = 'checkbox';
+      ack.dataset.planConfirm = 'ack';
+      label.appendChild(ack);
+      label.appendChild(el('span', '', 'I understand these commands will run again, and want to re-run the plan anyway.'));
+      warn.appendChild(label);
+      panel.appendChild(warn);
+    }
+
+    const buttons = el('div', 'flex justify-end gap-2 pt-1');
+    const cancel = el('button', 'px-3 py-1 rounded bg-slate-600 hover:bg-slate-500', 'Cancel');
+    cancel.type = 'button';
+    cancel.dataset.planConfirm = 'cancel';
+    const run = el('button', 'px-3 py-1 rounded bg-violet-700 hover:bg-violet-600 disabled:opacity-40', shown.rerun ? 'Run again' : 'Run');
+    run.type = 'button';
+    run.dataset.planConfirm = 'run';
+    run.disabled = ackNeeded;
+    if (ack) ack.addEventListener('change', () => { run.disabled = !ack.checked; });
+    buttons.appendChild(cancel);
+    buttons.appendChild(run);
+    panel.appendChild(buttons);
+    overlay.appendChild(panel);
+
+    const done = (result) => { overlay.remove(); resolve(result); };
+    cancel.addEventListener('click', () => done({ ok: false, ack: false }));
+    run.addEventListener('click', () => {
+      if (run.disabled) return;
+      done({ ok: true, ack: !!(ack && ack.checked) });
+    });
+    document.body.appendChild(overlay);
+  });
 }
 
 async function _executePlanDoc() {

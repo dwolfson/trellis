@@ -72,6 +72,9 @@ def _serialise_result(result: Dict[str, Any]) -> Dict[str, Any]:
 _DR_EGERIA_CONFIRM_YES = re.compile(
     r"^(yes|y|confirm(ed)?|process( it)?|run it|do it|go ahead|proceed)( please)?[\s.!]*$")
 _DR_EGERIA_CONFIRM_NO = re.compile(r"^(no|n|cancel|stop|never ?mind|don'?t)\b")
+#: A message that is ONLY "yes, re-run": confirms a shown plan AND acknowledges that a re-run repeats its
+#: non-idempotent commands (GovernancePlanAgent.non_idempotent_commands).
+_PLAN_RERUN_ACK = re.compile(r"^(yes|y|confirm(ed)?)[,;:\s]+re-?run( it| anyway| all of it)?( please)?[\s.!]*$")
 
 
 class RAGSystem:
@@ -648,11 +651,15 @@ class RAGSystem:
             _pid = (context or {}).get("pending_id", "")
             _dig = (context or {}).get("digest", "")
             _q = user_query.strip().lower()
-            if _DR_EGERIA_CONFIRM_YES.match(_q):
+            _ack = bool(_PLAN_RERUN_ACK.match(_q))
+            if _ack or _DR_EGERIA_CONFIRM_YES.match(_q):
                 if not egeria_authenticated:
                     return _egeria_required_response(user_query)
+                # a plain "yes" to a re-run that repeats non-idempotent commands is refused by the agent,
+                # which keeps this context so "yes, re-run" can follow
                 result = get_governance_plan_agent().confirm(_pid, _dig, perspective=perspective,
-                                                             egeria_credentials=egeria_credentials)
+                                                             egeria_credentials=egeria_credentials,
+                                                             ack_non_idempotent=_ack)
                 result.setdefault("next_context", None)
                 result.update({"query": user_query, "routing_agent": "governance_plan_agent",
                                "session_id": session_id, "user_id": user_id})
