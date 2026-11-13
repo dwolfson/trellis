@@ -107,19 +107,21 @@ def test_ground_columns_never_returns_none():
 
 
 def test_conditions_are_checked_and_shown_as_columns():
-    cond, notes = v2.ground_conditions({"limit_result_by_status": ["active", "SHINY"], "colour": "red",
-                                        "output_sort_order": "last_update_recent"})
-    assert cond == {"limit_result_by_status": ["ACTIVE"], "output_sort_order": "LAST_UPDATE_RECENT"}
-    assert any("SHINY" in n for n in notes) and any("colour" in n for n in notes)
+    cond, notes, unmet = v2.ground_conditions({"functional_status": ["active", "SHINY"], "colour": "red",
+                                               "output_sort_order": "last_update_recent"}, "Project")
+    assert cond["functional_status"]["property"] == "projectStatus"
+    assert cond["functional_status"]["values"] == ["Active"]
+    assert cond["output_sort_order"] == "LAST_UPDATE_RECENT" and "limit_result_by_status" not in cond
+    assert any("colour" in n for n in notes) and any("'shiny'" in u for u in unmet)
     cols = v2.condition_columns("Project", [{"name": "Name", "key": "display_name"}], cond)
-    assert {"status", "update_time"} <= {c["key"] for c in cols}
+    assert {"project_status", "update_time"} <= {c["key"] for c in cols}
 
 
 def _spec(**kw):
     spec = {"title": "active projects", "draft_id": "draft_report_x", "target_type": "Project",
-            "columns": [{"name": "Name", "key": "display_name"}, {"name": "Status", "key": "status"}],
+            "columns": [{"name": "Name", "key": "display_name"}, {"name": "Status", "key": "project_status"}],
             "answers": {"Heading": "Active Projects", "Description": "Projects now active"},
-            "conditions": {"limit_result_by_status": ["ACTIVE"]}}
+            "conditions": v2.ground_conditions({"functional_status": ["active"]}, "Project")[0]}
     spec.update(kw)
     return spec
 
@@ -133,9 +135,11 @@ def test_build_validate_serialize_and_read_back():
     assert "### Parent ID" not in md
     fs = v2.format_set_from_document(md, "active-projects")
     assert fs.target_type == "Project"
-    assert fs.action.function == "ProjectManager.find_projects"
-    assert fs.action.spec_params["limit_result_by_status"] == ["ACTIVE"]
-    assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "status"]
+    assert fs.action.function == "ClassificationExplorer.find_elements_by_property_value"
+    assert fs.action.spec_params["property_value"] == "Active"
+    assert fs.action.spec_params["property_names"] == ["projectStatus"]
+    assert "limit_result_by_status" not in fs.action.spec_params
+    assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "project_status"]
 
 
 def test_validate_catches_an_ungrounded_column():
@@ -205,8 +209,8 @@ def test_generate_answers_in_the_reply_when_signed_in(fixes_on, stores, monkeypa
     def fake_preview(draft, *, client, max_rows, params=None, **kw):
         seen.update(client=client, max_rows=max_rows, fs=draft.format_set)
         return {"result": {"kind": "table", "columns": [{"key": "display_name", "label": "Name"},
-                                                        {"key": "status", "label": "Status"}],
-                           "rows": [{"display_name": "Campaign X", "status": "ACTIVE"}]},
+                                                        {"key": "project_status", "label": "Status"}],
+                           "rows": [{"display_name": "Campaign X", "project_status": "Active"}]},
                 "capped": False, "shown": 1, "notes": []}
     monkeypatch.setattr("pyegeria.authoring.preview", fake_preview)
     client = object()
@@ -214,9 +218,11 @@ def test_generate_answers_in_the_reply_when_signed_in(fixes_on, stores, monkeypa
     r = el.start("which projects are active", egeria_client=client)
     r = el.process(r["draft_id"], "generate now")
     assert seen["client"] is client and seen["max_rows"] == v2.ANSWER_ROWS
-    assert seen["fs"].action.spec_params["limit_result_by_status"] == ["ACTIVE"]
-    assert "status" in [c.key for f in seen["fs"].formats for c in f.attributes]   # the condition is shown
-    assert "| Campaign X | ACTIVE |" in r["response"] and r["answer"]["ok"]
+    # the LLM's old element-status key is read as a functional status: Project's own projectStatus
+    assert seen["fs"].action.spec_params["property_value"] == "Active"
+    assert "limit_result_by_status" not in seen["fs"].action.spec_params
+    assert "project_status" in [c.key for f in seen["fs"].formats for c in f.attributes]   # shown
+    assert "| Campaign X | Active |" in r["response"] and r["answer"]["ok"]
     assert r["validation"]["dr_egeria"]["success"]
     v2e._CLIENTS.clear()
 
@@ -246,7 +252,7 @@ def test_execute_reads_a_v2_document_through_its_microflow(flag_on, stores, monk
                         lambda md: pytest.fail("EA's parser used on a V2 document"))
     monkeypatch.setattr("advisor.agents.report_spec_agent.register_report_spec", lambda name, fs: None)
     r = ReportSpecAgent().execute(doc_id, dry_run=True)
-    assert r["dry_run"] and "Project" in r["response"] and "find_projects" in r["response"]
+    assert r["dry_run"] and "Project" in r["response"] and "find_elements_by_property_value" in r["response"]
 
 
 def test_flag_off_keeps_the_old_elicitor(stores, monkeypatch):
@@ -356,8 +362,9 @@ def test_eas_parser_reads_a_v2_document_for_every_other_caller(flag_on):
     """web/reports.py and report_spec_docs.py still call parse_report_spec_markdown on inbox documents."""
     from advisor.report_spec_parser import parse_report_spec_markdown
     fs = parse_report_spec_markdown(v2.serialize(_spec()))
-    assert fs.target_type == "Project" and fs.action.function == "ProjectManager.find_projects"
-    assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "status"]
+    assert fs.target_type == "Project" and fs.action.function == "ClassificationExplorer.find_elements_by_property_value"
+    assert fs.action.spec_params["property_value"] == "Active"
+    assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "project_status"]
 
 
 # ── the split: re-base alone vs re-base + elicitor fixes ─────────────────────
@@ -429,8 +436,9 @@ def test_same_question_same_llm_reply_takes_a_different_path_with_and_without_th
         assert r["phase"] == "confirm_action" and "Condition:** none" in r["response"]
     else:
         assert len(fake.prompts) == 2 and "names Team elements" in fake.prompts[1]  # build-when-named retry
-        assert "limit_result_by_status" in prompts
-        assert r["phase"] == "confirm_action" and "ACTIVE" in r["response"]
+        assert "functional_status" in prompts and "limit_result_by_status" not in prompts
+        # Team has no status of its own: not applied, in words, and never sent as the element status
+        assert r["phase"] == "confirm_action" and "Not applied:** Teams have no status" in r["response"]
 
 
 # ── Live finding 2026-11-13: generic-find tables were blank; H08 lacked property_value ──────────────

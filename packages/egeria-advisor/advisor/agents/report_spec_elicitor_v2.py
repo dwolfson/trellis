@@ -43,11 +43,37 @@ def _menu_text(type_name: str, limit: int = 60) -> str:
     return "\n".join(f"- {k}: {label}" for k, label in v2.attribute_menu(type_name)[:limit])
 
 
-_CONDITION_HELP = f"""Conditions you may set (leave out what the question doesn't ask for):
+def _status_words(type_name: Optional[str] = None) -> str:
+    """The status values on offer: the type's own when it is known, else every functional status."""
+    props = v2.status_properties(type_name) if type_name else list(v2.FUNCTIONAL_STATUS_VALUES)
+    if type_name and not props:
+        return f"{type_name} has no status of its own: leave functional_status out"
+    return "; ".join(f"{p}: {', '.join(v2.FUNCTIONAL_STATUS_VALUES[p])}" for p in props)
+
+
+def _condition_help(type_name: Optional[str] = None) -> str:
+    """The conditions the LLM may set. It names status VALUES only; the code picks the property from the
+    type. Egeria's element status (ACTIVE/DELETED) is offered only for deleted elements."""
+    return f"""Conditions you may set (leave out what the question doesn't ask for):
 - "search_string": text the element's names must contain (default "*", everything)
-- "limit_result_by_status": a list from {list(v2.STATUSES)}
+- "functional_status": a list of the status values the question asks for, e.g. ["DRAFT"],
+  ["UNDER_DEVELOPMENT"], ["ACTIVE"]. Only when the question asks about a status or stage ("draft",
+  "approved", "in development", "active", "failed"); not for words like "current", "our" or "all".
+  Values: {_status_words(type_name)}
+- "element_status": only when the user explicitly asks for deleted elements: "DELETED", or
+  "INCLUDE_DELETED" for deleted ones as well as the rest
 - "output_sort_order": one of {list(v2.SORT_ORDERS)}; with PROPERTY_ASCENDING/DESCENDING also
   "order_property_name": the attribute to sort by"""
+
+
+_CONDITION_HELP = _condition_help()
+
+
+def _add_unmet(spec: Dict[str, Any], unmet: List[str]) -> None:
+    """Add words for conditions not applied to the draft's `unmet`, keeping the LLM's own."""
+    have = [spec["unmet"]] if spec.get("unmet") else []
+    items = have + [u for u in unmet if u and u not in have]
+    spec["unmet"] = "; ".join(items) if items else None
 
 
 def _start_rebase_only(query: str, perspective: Optional[str]) -> Dict[str, Any]:
@@ -122,21 +148,22 @@ or
     if not target:
         return _clarify(query, f"I don't know an Egeria type called '{data.get('target_type')}'. Which kind of "
                                f"element do you mean? For example: {', '.join(v2.known_types()[:12])}.")
-    conditions, cnotes = v2.ground_conditions(data.get("conditions") or {})
-    return _create(elicitor, query, data, target, conditions, egeria_client, cnotes)
+    conditions, cnotes, unmet = v2.ground_conditions(data.get("conditions") or {}, target)
+    return _create(elicitor, query, data, target, conditions, egeria_client, cnotes, unmet)
 
 
 def _create(elicitor, query: str, data: Dict[str, Any], target: str, conditions: Dict[str, Any],
-            egeria_client: Any, notes: List[str]) -> Dict[str, Any]:
+            egeria_client: Any, notes: List[str], unmet: Optional[List[str]] = None) -> Dict[str, Any]:
     cols, dropped = v2.ground_columns(target, data.get("columns") or [])
     cols = v2.condition_columns(target, cols, conditions)
-    action = v2.find_action(target)
+    action = v2.find_action(target, conditions)
     dm = get_report_draft_manager()
     spec = dm.create(title=data.get("title") or "custom_report", original_query=query,
                      action_function=action["function"], target_type=target, columns=cols,
                      answers={"Heading": data.get("heading"), "Description": data.get("description")})
     spec["conditions"] = conditions
     spec["unmet"] = data.get("unmet") if data.get("unmet") not in (None, "null", "") else None
+    _add_unmet(spec, unmet or [])
     spec["v2"] = True
     spec["phase"] = "confirm_action"
     spec["phase_label"] = "Confirming report basic configuration"
@@ -154,13 +181,20 @@ def _clarify(query: str, question: str) -> Dict[str, Any]:
 
 
 def _conditions_line(spec: Dict[str, Any]) -> str:
-    c = spec.get("conditions") or {}
-    return ", ".join(f"{k} = {v}" for k, v in c.items()) or "none (everything of this type)"
+    out = []
+    for k, v in (spec.get("conditions") or {}).items():
+        if k == "functional_status" and isinstance(v, dict):
+            out.append(f"{v.get('property')} in {', '.join(v.get('values') or [])} ({v.get('note')})")
+        elif k == "element_status":
+            out.append(f"element status {', '.join(v)} (Egeria's header status)")
+        else:
+            out.append(f"{k} = {v}")
+    return ", ".join(out) or "none (everything of this type)"
 
 
 def confirm_response(elicitor, spec: Dict[str, Any], notes: Optional[List[str]] = None) -> Dict[str, Any]:
     from advisor.agents.report_spec_elicitor import _NAV_CONFIRM, _clarification_result
-    action = v2.find_action(spec["target_type"])
+    action = v2.find_action(spec["target_type"], spec.get("conditions"))
     lines = [f"⚠️ Left out: {n}." for n in notes or []]
     lines += [f"### Proposed Report Spec: **{spec['answers'].get('Heading')}**\n",
               f"- **Target Type:** {spec.get('target_type')}",
@@ -198,7 +232,7 @@ User request: "{user_response}"
 Columns can only use these attributes of {spec['target_type']} (key: label):
 {_menu_text(spec['target_type'])}
 
-{_CONDITION_HELP if v2.fixes_enabled() else ""}
+{_condition_help(spec['target_type']) if v2.fixes_enabled() else ""}
 
 Return ONLY JSON: {{"columns": [{{"name": "...", "key": "..."}}]{', "conditions": {}' if v2.fixes_enabled() else ''}}}
 """
@@ -214,8 +248,11 @@ Return ONLY JSON: {{"columns": [{{"name": "...", "key": "..."}}]{', "conditions"
         spec["columns"], dropped = v2.ground_columns(spec["target_type"], data["columns"])
         notes += dropped
     if "conditions" in data and v2.fixes_enabled():
-        spec["conditions"], cnotes = v2.ground_conditions(data.get("conditions") or {})
+        spec["conditions"], cnotes, unmet = v2.ground_conditions(data.get("conditions") or {},
+                                                                 spec["target_type"])
         notes += cnotes
+        _add_unmet(spec, unmet)
+        spec["action_function"] = v2.find_action(spec["target_type"], spec["conditions"])["function"]
     spec["columns"] = v2.condition_columns(spec["target_type"], spec["columns"], spec.get("conditions") or {})
     return notes
 
@@ -230,9 +267,21 @@ def retarget(spec: Dict[str, Any], user_response: str) -> List[str]:
         if not t:
             return [f"'{m.group(1).strip()}' isn't an Egeria type I can report on"]
         spec["target_type"] = t
-        spec["action_function"] = v2.find_action(t)["function"]
+        cond = dict(spec.get("conditions") or {})
+        status = cond.get("functional_status")
+        if isinstance(status, dict):
+            # the status words were read for the old type: read them again for the new one
+            cond["functional_status"] = status.get("values")
+            cond, cnotes, unmet = v2.ground_conditions(cond, t)
+            spec["conditions"] = cond
+            dropped_status = cnotes
+            _add_unmet(spec, unmet)
+        else:
+            dropped_status = []
+        spec["action_function"] = v2.find_action(t, spec.get("conditions"))["function"]
         spec["columns"], dropped = v2.ground_columns(t, spec.get("columns") or [])
-        return dropped
+        spec["columns"] = v2.condition_columns(t, spec["columns"], spec.get("conditions") or {})
+        return dropped + dropped_status
     return update_from_request(spec, user_response) + notes
 
 

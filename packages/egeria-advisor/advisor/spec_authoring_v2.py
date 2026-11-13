@@ -49,11 +49,41 @@ _ALIASES = {"Term": "GlossaryTerm", "DataProduct": "DigitalProduct", "Product": 
             "Subscription": "DigitalSubscription", "Metric": "GovernanceMetric", "Policy": "GovernancePolicy",
             "Control": "GovernanceControl", "DataProductCatalog": "DigitalProductCatalog"}
 
-#: Find parameters the elicitor may set to apply a question's condition (pyegeria's FIND_PARAMETERS names).
-CONDITION_PARAMS = ("search_string", "limit_result_by_status", "output_sort_order", "order_property_name")
-STATUSES = ("DRAFT", "PREPARED", "PROPOSED", "APPROVED", "REJECTED", "APPROVED_CONCEPT", "UNDER_DEVELOPMENT",
-            "DEVELOPMENT_COMPLETE", "APPROVED_FOR_DEPLOYMENT", "STANDBY", "ACTIVE", "FAILED", "DISABLED",
-            "COMPLETE", "DEPRECATED", "OTHER")
+#: Conditions the elicitor may set. `functional_status` and `element_status` are EA's words, translated
+#: into a finder and its parameters by `find_action`; the others are pyegeria's FIND_PARAMETERS names.
+CONDITION_PARAMS = ("search_string", "functional_status", "element_status", "output_sort_order",
+                    "order_property_name")
+#: Accepted from an older draft or a stray LLM reply, and read as `functional_status`: a status word never
+#: reaches Egeria as the element status (B02, B05, B10, B11, B15, H05 on laz, 2026-11-13).
+LEGACY_STATUS_PARAM = "limit_result_by_status"
+
+#: Functional status (the owner, 2026-11-13: "Make sure EA's elicitor uses functional status"). What a user
+#: means by "draft", "active", "in development" is the status the TYPE's own properties carry. The element
+#: status in the header is only ever ACTIVE or DELETED on laz (every type's validElementStatusList), so it
+#: filters nothing, and a content status sent as one is a 400. Values: laz's valid metadata values, which are
+#: the Egeria enums (STATUS-VALID-VALUES-LAZ-2026-11-13); projectStatus is a string with valid values.
+FUNCTIONAL_STATUS_VALUES: Dict[str, Tuple[str, ...]] = {
+    "contentStatus": ("DRAFT", "PREPARED", "PROPOSED", "APPROVED", "REJECTED", "ACTIVE", "DEPRECATED",
+                      "OBSOLETE", "OTHER"),
+    "deploymentStatus": ("PROPOSED", "UNDER_DEVELOPMENT", "DEVELOPMENT_COMPLETE", "APPROVED_FOR_DEPLOYMENT",
+                         "REJECTED", "STANDBY", "ACTIVE", "DISABLED", "FAILED", "OTHER"),
+    "activityStatus": ("REQUESTED", "APPROVED", "WAITING", "ACTIVATING", "IN_PROGRESS", "PAUSED", "FOR_INFO",
+                       "COMPLETED", "INVALID", "IGNORED", "FAILED", "CANCELLED", "ABANDONED", "OTHER"),
+    "projectStatus": ("Proposed", "Planned", "Approved", "Activating", "Active", "On Hold", "Stalled",
+                      "Completed", "Cancelled"),
+}
+#: The column that shows each property, so a reader can see the filter was applied.
+STATUS_COLUMNS = {"contentStatus": "content_status", "deploymentStatus": "deployment_status",
+                  "activityStatus": "activity_status", "projectStatus": "project_status"}
+#: Words for a value its enum spells otherwise.
+_STATUS_WORDS = {"IN_DEVELOPMENT": "UNDER_DEVELOPMENT", "DEVELOPMENT": "UNDER_DEVELOPMENT",
+                 "BEING_DEVELOPED": "UNDER_DEVELOPMENT", "CANCELED": "CANCELLED", "ONHOLD": "ON_HOLD"}
+#: The element status (header) a user can ask for: deleted elements, alone or with the rest.
+ELEMENT_STATUS_WORDS = {"DELETED": ["DELETED"], "INCLUDE_DELETED": ["ACTIVE", "DELETED"]}
+
+#: The finder that filters each property on the server. A list parameter takes several values; the
+#: property-value finder (`value_param`) matches one value exactly.
+_PROPERTY_VALUE_FIND = "ClassificationExplorer.find_elements_by_property_value"
 SORT_ORDERS = ("ANY", "CREATION_DATE_RECENT", "CREATION_DATE_OLDEST", "LAST_UPDATE_RECENT",
                "LAST_UPDATE_OLDEST", "PROPERTY_ASCENDING", "PROPERTY_DESCENDING")
 
@@ -189,9 +219,13 @@ def base_spec(type_name: str) -> Optional[Tuple[str, Any]]:
     return max(specs, key=lambda s: sum(len(f.attributes or []) for f in s[1].formats or []))
 
 
-def find_action(type_name: str) -> Dict[str, Any]:
-    """{"function", "spec_params", "from"}: how to find `type_name`, from its registered spec or the
-    generic finder scoped by type. Never the LLM's guess."""
+def find_action(type_name: str, conditions: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """{"function", "spec_params", "from", "optional_params"[, "required_params"]}: how to find `type_name`,
+    from its registered spec or the generic finder scoped by type; with a functional-status condition, the
+    finder that filters that property on the server. Never the LLM's guess."""
+    status = (conditions or {}).get("functional_status")
+    if isinstance(status, dict) and status.get("property") and status.get("values"):
+        return status_find_action(type_name, status["property"], status["values"])
     base = base_spec(type_name)
     if base:
         label, fs = base
@@ -204,7 +238,7 @@ def find_action(type_name: str) -> Dict[str, Any]:
 
 
 def _with_run_params(names) -> List[str]:
-    out = [n for n in (names or []) if n not in CONDITION_PARAMS]
+    out = [n for n in (names or []) if n not in CONDITION_PARAMS and n != LEGACY_STATUS_PARAM]
     return out + [n for n in RUN_PARAMS if n not in out]
 
 
@@ -215,6 +249,137 @@ def _generic_optional_params() -> List[str]:
     if fs is not None and fs.action and fs.action.function == GENERIC_FIND:
         return list(fs.action.optional_params or [])
     return []
+
+
+# ── Functional status ───────────────────────────────────────────────────────
+
+def _fields(type_name: str) -> Tuple[str, ...]:
+    entry = _catalog().get(f"{type_name}Properties")
+    return tuple(entry[1]) if entry and entry[0] == "entity" else ()
+
+
+def is_a(type_name: str, ancestor: str) -> bool:
+    """`type_name` is `ancestor` or one of its subtypes. The catalog is generated from Egeria's Properties
+    classes with each class's fields listed inherited-first, so a supertype's fields are a prefix of its
+    subtypes' fields: walking the chain is a prefix test (DataSet -> DataAsset -> Asset -> Referenceable)."""
+    if type_name == ancestor:
+        return True
+    mine, theirs = _fields(type_name), _fields(ancestor)
+    return bool(theirs) and len(theirs) < len(mine) and mine[:len(theirs)] == theirs
+
+
+def status_properties(type_name: str) -> List[str]:
+    """The functional-status properties `type_name` has, its own (the most specific) first: a property
+    declared lower in the supertype chain comes later in the inherited-first field list. DigitalProduct ->
+    [deploymentStatus, contentStatus]; Project -> [projectStatus, contentStatus]; Process -> [activityStatus]."""
+    return [f for f in reversed(_fields(type_name)) if f in FUNCTIONAL_STATUS_VALUES]
+
+
+def _status_key(value: Any) -> str:
+    key = re.sub(r"[\s\-]+", "_", str(value or "").strip()).upper()
+    return _STATUS_WORDS.get(key, key)
+
+
+def _canonical(prop: str, key: str) -> Optional[str]:
+    """`key` as `prop` spells it ("ACTIVE" -> "Active" for projectStatus), or None if it doesn't take it."""
+    return next((v for v in FUNCTIONAL_STATUS_VALUES[prop] if _status_key(v) == key), None)
+
+
+def _plural(type_name: str) -> str:
+    if type_name.endswith("y"):
+        return type_name[:-1] + "ies"
+    return type_name + ("es" if type_name.endswith("s") else "s")
+
+
+def _values_text(prop: str) -> str:
+    return ", ".join(FUNCTIONAL_STATUS_VALUES[prop])
+
+
+def _status_finder(type_name: str, prop: str) -> Tuple[str, Optional[str]]:
+    """(function, list parameter) that filters `prop` on the server for `type_name`; a None list parameter
+    means the property-value finder, which matches one value."""
+    if prop == "contentStatus":
+        if is_a(type_name, "DataAsset"):
+            return "AssetMaker.find_data_assets", "content_status_list"
+        return "ClassificationExplorer.find_authored_elements", "content_status_list"
+    if prop == "deploymentStatus":
+        if is_a(type_name, "Infrastructure"):
+            return "AssetMaker.find_infrastructure", "deployment_status_list"
+        if is_a(type_name, "DigitalProduct"):
+            return "CollectionManager.find_digital_products", "deployment_status_list"
+    if prop == "activityStatus" and is_a(type_name, "Process"):
+        return "AssetMaker.find_processes", "activity_status_list"
+    return _PROPERTY_VALUE_FIND, None
+
+
+def takes_one_value(type_name: str, prop: str) -> bool:
+    return _status_finder(type_name, prop)[1] is None
+
+
+def status_find_action(type_name: str, prop: str, values: List[str]) -> Dict[str, Any]:
+    """The find for `type_name` filtered on `prop` in `values`, on the server, scoped by type, depth 0."""
+    function, list_param = _status_finder(type_name, prop)
+    params: Dict[str, Any] = {"metadata_element_type": type_name, "graph_query_depth": 0}
+    if list_param:
+        params[list_param] = list(values)
+        return {"function": function, "spec_params": params, "from": f"{prop} filter",
+                "optional_params": list(RUN_PARAMS)}
+    # One exact value: starts and ends with it. The value is pinned, so the run's search string (always
+    # passed, as `search_string`) is bound to `property_value` and then overridden, never sent beside it.
+    params.update(property_value=values[0], property_names=[prop], starts_with=True, ends_with=True,
+                  ignore_case=True)
+    return {"function": function, "spec_params": params, "from": f"{prop} filter",
+            "optional_params": list(RUN_PARAMS), "required_params": ["property_value"]}
+
+
+def ground_functional_status(type_name: Optional[str], values: Any
+                             ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """({"property", "values", "note"} or None, unmet words) for status words asked of `type_name`.
+
+    The code, not the LLM, picks the property: of the type's functional-status properties, the one that
+    takes the most of the values, the type's own (most specific) on a tie. A value it doesn't take is
+    reported, in words, as not applied; it never falls back to the element status."""
+    raw = [v for v in (values if isinstance(values, (list, tuple)) else [values]) if str(v or "").strip()]
+    keys = list(dict.fromkeys(_status_key(v) for v in raw))
+    if not keys:
+        return None, []
+    asked = ", ".join(f"'{str(v).strip().lower()}'" for v in raw)
+    if not type_name:
+        return None, [f"status {asked}: no type to read a status from"]
+    props = status_properties(type_name)
+    if not props:
+        return None, [f"{_plural(type_name)} have no status of their own (only Egeria's ACTIVE/DELETED element "
+                      f"status), so status {asked} isn't applied"]
+    takes = {p: [k for k in keys if _canonical(p, k)] for p in props}
+    best = max(props, key=lambda p: (len(takes[p]), -props.index(p)))
+    if not takes[best]:
+        theirs = "; ".join(f"{p}: {_values_text(p)}" for p in props)
+        return None, [f"{_plural(type_name)} have no {asked} status; their statuses are {theirs}"]
+    chosen = [_canonical(best, k) for k in takes[best]]
+    unmet: List[str] = []
+    if takes_one_value(type_name, best) and len(chosen) > 1:
+        unmet.append(f"one {best} search matches one value, so {', '.join(chosen[1:])} isn't applied "
+                     f"(filtered on {chosen[0]})")
+        chosen = chosen[:1]
+    for k in keys:
+        if k in takes[best]:
+            continue
+        other = next((p for p in props if k in takes[p]), None)
+        if other:
+            unmet.append(f"'{k.lower()}' is a {other} value of {type_name}; a report filters one status, here "
+                         f"{best}")
+        else:
+            unmet.append(f"{_plural(type_name)} have no '{k.lower()}' {best}; its values are {_values_text(best)}")
+    both = [c for c in chosen if any(p != best and _canonical(p, _status_key(c)) for p in props)]
+    if len(props) == 1:
+        note = f"{type_name}'s status is {best}"
+    else:
+        note = f"{type_name} has {', '.join(props)}; filtered on {best}"
+    if both:
+        others = sorted({p for p in props if p != best for c in both if _canonical(p, _status_key(c))})
+        note += (f": {', '.join(both)} is also a {' and '.join(others)} value, and {best} is {type_name}'s "
+                 f"most specific status")
+    return {"property": best, "values": chosen, "note": note}, unmet
 
 
 def attribute_menu(type_name: str) -> List[Tuple[str, str]]:
@@ -273,12 +438,17 @@ def ground_columns(type_name: str, columns: List[Dict[str, Any]], *, near: Optio
 
 def condition_columns(type_name: str, columns: List[Dict[str, Any]], conditions: Dict[str, Any]) -> List[Dict[str, Any]]:
     """`columns` plus a column for each condition applied, so the reader can see it was applied: the
-    status for a status filter, the sort attribute for a property sort, the times for a time sort."""
+    functional-status property a status filter used, the sort attribute for a property sort, the times for a time sort."""
     menu = dict(attribute_menu(type_name))
     have = {c["key"] for c in columns}
     want = []
-    if conditions.get("limit_result_by_status"):
-        want.append(next((k for k in ("status", "content_status", "deployment_status") if k in menu), None))
+    status = conditions.get("functional_status")
+    if isinstance(status, dict) and status.get("property") in STATUS_COLUMNS:
+        key = STATUS_COLUMNS[status["property"]]
+        menu.setdefault(key, key.replace("_", " ").title())
+        want.append(key)
+    if conditions.get("element_status"):
+        want.append("status")
     if conditions.get("order_property_name"):
         want.append(_snake(str(conditions["order_property_name"])))
     order = str(conditions.get("output_sort_order") or "")
@@ -294,27 +464,76 @@ def condition_columns(type_name: str, columns: List[Dict[str, Any]], conditions:
     return out
 
 
-def ground_conditions(params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-    """The find parameters a question's condition may set, checked against what the finder accepts."""
-    out, notes = {}, []
-    for k, v in (params or {}).items():
+def ground_conditions(params: Dict[str, Any], type_name: Optional[str] = None
+                      ) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    """(conditions, notes, unmet): the conditions a question may set, checked for `type_name`.
+
+    A status word becomes `functional_status` on the type's own property (`ground_functional_status`);
+    what can't be applied is `unmet`, in words. Egeria's element status is only for an explicit "deleted",
+    and only when the finder takes it."""
+    out: Dict[str, Any] = {}
+    notes: List[str] = []
+    unmet: List[str] = []
+    params = dict(params or {})
+    words: List[Any] = []
+    for k in ("functional_status", LEGACY_STATUS_PARAM):
+        v = params.pop(k, None)
+        if isinstance(v, dict):
+            v = v.get("values")
+        words += [x for x in (v if isinstance(v, list) else [v]) if x not in (None, "")]
+    element = [x for x in words if _status_key(x) in ELEMENT_STATUS_WORDS]
+    words = [x for x in words if _status_key(x) not in ELEMENT_STATUS_WORDS]
+    if params.get("element_status") not in (None, "", []):
+        e = params.pop("element_status")
+        element += e if isinstance(e, list) else [e]
+    params.pop("element_status", None)
+    for k, v in params.items():
         if k not in CONDITION_PARAMS or v in (None, "", []):
             if k not in CONDITION_PARAMS:
                 notes.append(f"'{k}' isn't a condition the finder takes")
             continue
-        if k == "limit_result_by_status":
-            vals = [str(x).upper() for x in (v if isinstance(v, list) else [v])]
-            good = [x for x in vals if x in STATUSES]
-            if good:
-                out[k] = good
-            if len(good) != len(vals):
-                notes.append(f"status {', '.join(sorted(set(vals) - set(good)))} isn't an Egeria status")
-        elif k == "output_sort_order":
+        if k == "output_sort_order":
             if str(v).upper() in SORT_ORDERS:
                 out[k] = str(v).upper()
         else:
             out[k] = str(v)
-    return out, notes
+    if words:
+        status, missed = ground_functional_status(type_name, words)
+        unmet += missed
+        if status:
+            out["functional_status"] = status
+            if takes_one_value(type_name, status["property"]) and out.get("search_string", "*").strip() not in ("", "*"):
+                unmet.append(f"the name filter '{out.pop('search_string')}' can't be combined with a "
+                             f"{status['property']} filter (one property-value search)")
+    if element:
+        want = ELEMENT_STATUS_WORDS["INCLUDE_DELETED" if any(_status_key(x) == "INCLUDE_DELETED" for x in element)
+                                    else "DELETED"]
+        function = find_action(type_name, out)["function"] if type_name else None
+        if function and finder_takes(function, "limit_results_by_status"):
+            out["element_status"] = want
+        else:
+            unmet.append("deleted elements: this report's finder can't list them")
+    return out, notes, unmet
+
+
+def finder_takes(function: str, param: str) -> bool:
+    """`function` ("Class.method") names `param` in its signature. False when it can't be resolved."""
+    import importlib
+    import inspect
+    cls, _, method = (function or "").partition(".")
+    try:
+        from pyegeria.view.format_set_executor import _CLIENT_CLASS_MAP
+        path = _CLIENT_CLASS_MAP.get(cls)
+        if path:
+            mod, attr = path.rsplit(".", 1)
+            klass = getattr(importlib.import_module(mod), attr)
+        else:   # resolved as the executor does: the first EgeriaTech sub-client that has the method
+            from pyegeria.egeria_tech_client import EgeriaTech
+            klass = next(c for c in EgeriaTech("v", "https://localhost", "u")._subclient_map.values()
+                         if c.__name__ == cls)
+        return param in inspect.signature(getattr(klass, method)).parameters
+    except Exception:  # noqa: BLE001 -- unresolvable means "not known to take it"
+        return False
 
 
 # ── Build, validate, serialize, read back ────────────────────────────────────
@@ -328,16 +547,21 @@ def build_format_set(spec: Dict[str, Any]):
     """A FormatSet from an elicitor draft: grounded type, its registered find method, grounded columns."""
     from pyegeria.view._output_format_models import ActionParameter, Column, Format, FormatSet
     target = spec.get("target_type")
-    action = find_action(target)
+    conditions = spec.get("conditions") or {}
+    action = find_action(target, conditions)
     params = dict(action["spec_params"])
-    params.update(spec.get("conditions") or {})
+    for k, v in conditions.items():
+        if k == "functional_status":
+            continue   # in the action: its finder and filter parameter
+        params[LEGACY_STATUS_PARAM if k == "element_status" else k] = v
     cols = [Column(name=c["name"], key=c["key"]) for c in spec.get("columns") or []]
     return FormatSet(
         target_type=target,
         heading=(spec.get("answers") or {}).get("Heading") or label_for(spec),
         description=(spec.get("answers") or {}).get("Description") or "",
         formats=[Format(types=["ALL"], attributes=cols)],
-        action=ActionParameter(function=action["function"], required_params=["search_string"],
+        action=ActionParameter(function=action["function"],
+                               required_params=action.get("required_params") or ["search_string"],
                                optional_params=action.get("optional_params") or list(RUN_PARAMS),
                                spec_params=params),
     )
