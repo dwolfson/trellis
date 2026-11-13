@@ -102,10 +102,10 @@
   "why": "LIVE: rows (12 rows with values); spec 2: same spec as offline: Risk (scoped), name + description"
  },
  "C03": {
-  "score": "2",
+  "score": "1",
   "spec_score": "2",
   "outcome": "rows",
-  "why": "LIVE: rows (12 rows with values); spec 2: same spec as offline: Risk, sorted by importance + importance"
+  "why": "LIVE: rows (12 rows with values; importance is a string, so PROPERTY_DESCENDING sorts it alphabetically: Medium-High first, all four Critical risks last (Architect's blind re-score, 274ab8d1; confirmed from the rows)); spec 2: same spec as offline: Risk, sorted by importance + importance"
  },
  "C04": {
   "score": "0",

@@ -72,6 +72,13 @@ CONDITION_COLUMN_BLANK = {
     ("baseline", "", "B03"): "priorityLevel blank in every sampled row: priority not shown",
 }
 
+# Rows with values that still answer wrongly, read from the rows themselves (score, reason).
+ROWS_WRONG = {
+    ("rebased_fixes", "", "C03"): ("1", "importance is a string, so PROPERTY_DESCENDING sorts it alphabetically: "
+                                        "Medium-High first, all four Critical risks last (Architect's blind "
+                                        "re-score, 274ab8d1; confirmed from the rows)"),
+}
+
 
 def _response(r):
     t = r.get("transcript") or []
@@ -130,7 +137,11 @@ def rescore(mode, tag):
         kind, detail = outcome(r)
         if (mode, tag, q) in CONDITION_COLUMN_BLANK:
             kind, detail = "blank", CONDITION_COLUMN_BLANK[(mode, tag, q)]
-        if kind in ("rows", "no_run"):
+        if (mode, tag, q) in ROWS_WRONG:
+            score, reason = ROWS_WRONG[(mode, tag, q)]
+            score = min(score, spec)
+            detail = f"{detail}; {reason}"
+        elif kind in ("rows", "no_run"):
             score = spec
         else:
             score = "0" if spec != "C" else "C"
