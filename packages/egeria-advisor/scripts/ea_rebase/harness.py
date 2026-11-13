@@ -54,13 +54,32 @@ def _isolate_storage(base: Path) -> None:
     lc.get_metrics_collector = lambda: None
 
 
+QUICKSTART_DOC = PKG.parent.parent / "docs" / "deploying-trellis-with-quickstart.md"
+
+
+def _quickstart_password() -> Optional[str]:
+    """The QuickStart demo users' shared password, from the documented persona source (§1.3 "All identities
+    are the QuickStart's demo users, defined in `…` (password `…`)"). Never printed or logged."""
+    import re
+    try:
+        text = QUICKSTART_DOC.read_text()
+    except OSError:
+        return None
+    section = text.split("### 1.3 Identities", 1)
+    if len(section) != 2:
+        return None
+    m = re.search(r"demo users,\s+defined in\s+`[^`]+`\s+\(password\s+`([^`]+)`\)", section[1][:600])
+    return m.group(1) if m else None
+
+
 def _signin(user: str) -> Any:
     """An EgeriaTech client signed in as `user` (bearer token). Reads, nothing else."""
     from pyegeria import EgeriaTech
     from advisor.mcp_config import get_pyegeria_platform_config
-    pwd = os.environ.get("EA_HARNESS_EGERIA_PASSWORD")
+    pwd = os.environ.get("EA_HARNESS_EGERIA_PASSWORD") or _quickstart_password()
     if not pwd:
-        raise SystemExit("Live mode needs EA_HARNESS_EGERIA_PASSWORD (the persona's password); not set.")
+        raise SystemExit("No password: EA_HARNESS_EGERIA_PASSWORD is not set and the QuickStart persona source "
+                         f"({QUICKSTART_DOC.name} §1.3) did not resolve. Not guessing; stopping.")
     cfg = get_pyegeria_platform_config()
     if not (cfg["view_server"] and cfg["platform_url"]):
         raise SystemExit("No Egeria platform configured (EGERIA_VIEW_SERVER_URL / EGERIA_VIEW_SERVER).")
