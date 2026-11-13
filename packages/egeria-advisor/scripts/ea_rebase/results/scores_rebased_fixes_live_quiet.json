@@ -6,10 +6,10 @@
   "why": "LIVE: rows (25 rows with values); spec 1: live spec differs from offline: Asset names + description: lineage not shown"
  },
  "B02": {
-  "score": "2",
-  "spec_score": "2",
+  "score": "1",
+  "spec_score": "1",
   "outcome": "rows",
-  "why": "LIVE: rows (25 rows with values); spec 2: same spec as offline: Project, ACTIVE filter + status"
+  "why": "LIVE: rows (25 rows with values); spec 1: same spec as offline: Project, ACTIVE filter + status | REVISED 2 -> 1 (Architect, quiet read-back 31e359c5): limit_result_by_status filters ElementStatus, which on laz is only ACTIVE/DELETED, so it is a no-op; 'currently active' is Project.projectStatus (the quiet run listed every project)"
  },
  "B03": {
   "score": "1",
@@ -126,10 +126,10 @@
   "why": "LIVE: rows (25 rows with values); spec 1: live spec differs from offline: DigitalProduct names, 'no product manager' not applied"
  },
  "C07": {
-  "score": "1",
-  "spec_score": "1",
+  "score": "0",
+  "spec_score": "0",
   "outcome": "rows",
-  "why": "LIVE: rows (25 rows with values); spec 1: live spec differs from offline: DigitalSubscription names: subscriptions, not the subscription types offered"
+  "why": "LIVE: rows (25 rows with values); spec 0: live spec differs from offline: DigitalSubscription names: subscriptions, not the subscription types offered (Architect: 0)"
  },
  "C08": {
   "score": "2",
@@ -147,7 +147,7 @@
   "score": "0",
   "spec_score": "1",
   "outcome": "blank",
-  "why": "LIVE: blank (update_time blank in every sampled row: the dates aren't shown (possibly never-updated elements, which have no updateTime; not checked)); spec 1: live spec differs from offline: Asset oldest-updated first + update time; the 180-day bound not applied"
+  "why": "LIVE: blank (update_time blank in every sampled row: pyegeria's _extract_referenceable_properties (the generic finder's extractor) never sets update_time, though it sets create_time); spec 1: live spec differs from offline: Asset oldest-updated first + update time; the 180-day bound not applied"
  },
  "A01": {
   "score": "C",

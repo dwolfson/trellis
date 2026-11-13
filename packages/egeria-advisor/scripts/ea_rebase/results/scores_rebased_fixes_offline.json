@@ -4,8 +4,8 @@
   "why": "PROVISIONAL, offline, spec-only (no rows seen): Asset, name only: lineage not shown"
  },
  "B02": {
-  "score": "2",
-  "why": "PROVISIONAL, offline, spec-only (no rows seen): Project, ACTIVE filter + status"
+  "score": "1",
+  "why": "PROVISIONAL, offline, spec-only (no rows seen): Project, ACTIVE filter + status | REVISED 2 -> 1 (Architect, quiet read-back 31e359c5): limit_result_by_status filters ElementStatus, which on laz is only ACTIVE/DELETED, so it is a no-op; 'currently active' is Project.projectStatus (the quiet run listed every project)"
  },
  "B03": {
   "score": "1",

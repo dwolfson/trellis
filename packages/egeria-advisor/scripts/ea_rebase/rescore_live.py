@@ -75,7 +75,7 @@ SPEC_JUDGED[("rebased_fixes", "_quiet")] = {
     "B15": ("1", "GovernancePolicy, APPROVED + ACTIVE: a content status, so the condition isn't expressed"),
     "C01": ("1", "Campaign-classified projects searched 'ninety day plan': not Jules Keeper's items"),
     "C06": ("1", "DigitalProduct names, 'no product manager' not applied"),
-    "C07": ("1", "DigitalSubscription names: subscriptions, not the subscription types offered"),
+    "C07": ("0", "DigitalSubscription names: subscriptions, not the subscription types offered (Architect: 0)"),
     "C09": ("1", "Asset names + description, 'no owner' not applied"),
     "C10": ("1", "Asset oldest-updated first + update time; the 180-day bound not applied"),
 }
@@ -84,8 +84,9 @@ SPEC_JUDGED[("rebased_fixes", "_holdout_quiet")] = {}
 # A column the question is about came back blank in every sampled row, though other columns had values.
 CONDITION_COLUMN_BLANK = {
     ("baseline", "", "B03"): "priorityLevel blank in every sampled row: priority not shown",
-    ("rebased_fixes", "_quiet", "C10"): "update_time blank in every sampled row: the dates aren't shown "
-                                        "(possibly never-updated elements, which have no updateTime; not checked)",
+    ("rebased_fixes", "_quiet", "C10"): "update_time blank in every sampled row: pyegeria's "
+                                        "_extract_referenceable_properties (the generic finder's extractor) "
+                                        "never sets update_time, though it sets create_time",
 }
 
 # Rows with values that still answer wrongly, read from the rows themselves (score, reason).
