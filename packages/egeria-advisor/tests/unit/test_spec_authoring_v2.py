@@ -87,9 +87,10 @@ def test_find_method_comes_from_the_types_registered_spec_not_the_llm():
 
 def test_a_type_with_no_find_spec_uses_the_generic_finder_scoped_by_type():
     a = v2.find_action("Asset")
-    assert a == {"function": v2.GENERIC_FIND,
-                 "spec_params": {"metadata_element_type": "Asset", "property_names": ["displayName", "qualifiedName"]},
-                 "from": "generic finder"}
+    assert a["function"] == v2.GENERIC_FIND and a["from"] == "generic finder"
+    assert a["spec_params"] == {"metadata_element_type": "Asset", "graph_query_depth": 0,
+                                "property_names": ["displayName", "qualifiedName"]}
+    assert {"page_size", "start_from"} <= set(a["optional_params"])
 
 
 def test_ground_columns_keeps_attributes_maps_camel_case_and_drops_the_rest():
@@ -521,3 +522,19 @@ def test_the_old_generic_finder_returned_raw_elements_and_blank_cells(egeria_off
     monkeypatch.setattr(v2, "GENERIC_FIND_PARAMS", {})
     out = v2.answer(_asset_spec(), _Client())
     assert out["result"]["rows"] == [{"display_name": None, "guid": None}]
+
+
+def test_a_run_asks_for_only_the_rows_it_shows(egeria_offline):
+    # Architect read-back 2c6e4667: preview's page_size was dropped as "not a parameter of this report",
+    # so the finder fetched its default 100 (generic Asset ~21 s live)
+    v2.answer(_asset_spec(), _Client(), max_rows=7)
+    bodies = [json.loads(b) if isinstance(b, str) else b for _, _, b in egeria_offline]
+    assert [b.get("pageSize") for b in bodies] == [7]
+    assert bodies[0].get("graphQueryDepth") == 0
+
+
+def test_registered_specs_keep_their_optional_params_and_gain_paging():
+    fs = v2.build_format_set({"title": "risks", "target_type": "Risk",
+                              "columns": [{"name": "Name", "key": "display_name"}]})
+    assert {"page_size", "start_from"} <= set(fs.action.optional_params)
+    assert not set(v2.CONDITION_PARAMS) & set(fs.action.optional_params)

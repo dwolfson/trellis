@@ -32,7 +32,13 @@ FLAG = "EA_SPEC_AUTHORING_V2"
 #: cell of the table empty, `guid` included (pyegeria `core/element_shape.py` describes the two shapes).
 #: `'*'` with a `metadata_element_type` lists every element of that type.
 GENERIC_FIND = "ClassificationExplorer.find_elements_by_property_value"
-GENERIC_FIND_PARAMS = {"property_names": ["displayName", "qualifiedName"]}
+#: Depth 0: V2's columns are the type's own attributes (exact keys, no relationship paths), so the finder
+#: needn't walk relationships (Architect read-back 2c6e4667: generic Asset ~21 s, a 30 s timeout under load).
+GENERIC_FIND_PARAMS = {"property_names": ["displayName", "qualifiedName"], "graph_query_depth": 0}
+
+#: Run parameters every V2 spec declares, so the executor passes them on instead of dropping them as "not
+#: parameters of this report" (it did: preview's page_size was ignored and the finder used its default 100).
+RUN_PARAMS = ("page_size", "start_from")
 
 #: The search a run uses when the question sets none. A finder that takes no default (the generic one
 #: takes `property_value`, which the executor fills from `search_string`) fails without it (H08, live).
@@ -191,9 +197,24 @@ def find_action(type_name: str) -> Dict[str, Any]:
         label, fs = base
         params = {k: v for k, v in (fs.action.spec_params or {}).items() if not k.startswith("_")
                   and k != "output_format"}
-        return {"function": fs.action.function, "spec_params": params, "from": label}
+        return {"function": fs.action.function, "spec_params": params, "from": label,
+                "optional_params": _with_run_params(fs.action.optional_params)}
     return {"function": GENERIC_FIND, "spec_params": {"metadata_element_type": type_name, **GENERIC_FIND_PARAMS},
-            "from": "generic finder"}
+            "from": "generic finder", "optional_params": _with_run_params(_generic_optional_params())}
+
+
+def _with_run_params(names) -> List[str]:
+    out = [n for n in (names or []) if n not in CONDITION_PARAMS]
+    return out + [n for n in RUN_PARAMS if n not in out]
+
+
+def _generic_optional_params() -> List[str]:
+    """The optional parameters of pyegeria's own Element-DrE-Basic spec, which uses GENERIC_FIND."""
+    from pyegeria.view.base_report_formats import get_report_registry
+    fs = get_report_registry().get("Element-DrE-Basic")
+    if fs is not None and fs.action and fs.action.function == GENERIC_FIND:
+        return list(fs.action.optional_params or [])
+    return []
 
 
 def attribute_menu(type_name: str) -> List[Tuple[str, str]]:
@@ -317,6 +338,7 @@ def build_format_set(spec: Dict[str, Any]):
         description=(spec.get("answers") or {}).get("Description") or "",
         formats=[Format(types=["ALL"], attributes=cols)],
         action=ActionParameter(function=action["function"], required_params=["search_string"],
+                               optional_params=action.get("optional_params") or list(RUN_PARAMS),
                                spec_params=params),
     )
 
