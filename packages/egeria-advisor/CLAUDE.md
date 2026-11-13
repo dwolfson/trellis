@@ -235,7 +235,7 @@ dependency deleted Jul 2026).
 
 | Agent | File | Handles |
 |---|---|---|
-| `DrEgeriaActionAgent` | `dr_egeria_agent.py` | `command` queries — composes and executes Dr.Egeria pyegeria commands in-process via the `md_processing.v2` dispatcher (no MCP — see rule 24) |
+| `DrEgeriaActionAgent` | `dr_egeria_agent.py` | `command` queries — composes a Dr.Egeria script and runs it in-process via the `md_processing.v2` dispatcher (no MCP — see rule 24). **A chat message never writes** (confirm gate, 2026-11-13): `handle()` runs `validate` only, shows the script and the result, and registers a one-shot pending action; only `confirm(pending_id, digest)` processes it — same sign-in, within `CONFIRM_TTL_S`, with the SHA-256 of the script that was shown. `rag_system`'s `dr_egeria_confirm` context task routes a message that is *only* "yes"/"no" to `confirm`/`cancel` |
 | `DrEgeriaTemplateAgent` | `dre_template_agent.py` | `command` + template/sample/example keyword — returns pre-generated Dr.Egeria markdown templates from the filesystem |
 | `ExamplesAgent` | `examples_agent.py` | `code_search` / `example` — generates runnable pyegeria code examples *or* structured API-reference listings (method-discovery mode) |
 | `DocAgent` | `doc_agent.py` | `explanation` / `best_practice` / `comparison` / `debugging` / `general` — conceptual answers from indexed docs |

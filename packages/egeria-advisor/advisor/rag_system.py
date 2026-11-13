@@ -67,6 +67,13 @@ def _serialise_result(result: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+
+#: A message that is ONLY a confirmation / cancellation of a shown Dr.Egeria script.
+_DR_EGERIA_CONFIRM_YES = re.compile(
+    r"^(yes|y|confirm(ed)?|process( it)?|run it|do it|go ahead|proceed)( please)?[\s.!]*$")
+_DR_EGERIA_CONFIRM_NO = re.compile(r"^(no|n|cancel|stop|never ?mind|don'?t)\b")
+
+
 class RAGSystem:
     """Complete RAG system for code advisory."""
 
@@ -633,6 +640,27 @@ class RAGSystem:
                     except Exception as exc:
                         logger.error("GovernancePlanAgent.execute failed (ctx): {}", str(exc), exc_info=True)
             return _gpa.continue_draft(_ctx_draft_id, user_query, egeria_credentials=egeria_credentials)
+
+        elif _ctx_task == "dr_egeria_confirm":
+            # The chat-action confirm gate: a shown Dr.Egeria script is processed only on an explicit
+            # confirmation, against the digest of the script that was shown (DrEgeriaActionAgent.confirm).
+            # Stricter than act_confirm's "yes anywhere" because this path writes: the WHOLE message must
+            # be a confirmation. Anything else is a new request (the pending script is left to expire).
+            from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
+            _pid = (context or {}).get("pending_id", "")
+            _dig = (context or {}).get("digest", "")
+            _q = user_query.strip().lower()
+            if _DR_EGERIA_CONFIRM_YES.match(_q):
+                if not egeria_authenticated:
+                    return _egeria_required_response(user_query)
+                result = get_dr_egeria_agent().confirm(_pid, _dig, egeria_credentials=egeria_credentials)
+                result.update({"query": user_query, "routing_agent": "dr_egeria_agent",
+                               "session_id": session_id, "user_id": user_id})
+                return result
+            if _DR_EGERIA_CONFIRM_NO.match(_q):
+                result = get_dr_egeria_agent().cancel(_pid)
+                result.update({"query": user_query, "session_id": session_id, "user_id": user_id})
+                return result
 
         elif _ctx_task == "act_confirm":
             if not egeria_authenticated:

@@ -12,8 +12,13 @@ All public methods are synchronous to match the RAGSystem dispatch pattern.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import secrets
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
@@ -548,6 +553,92 @@ def compose_command(template: Dict[str, Any], params: Dict[str, Any]) -> str:
 # Main agent class
 # ---------------------------------------------------------------------------
 
+# ── The chat-action confirm gate (design note rev 4 §1e item 1, 2026-11-12) ──────────────────────
+#
+# A chat message never writes. handle() composes the Dr.Egeria script from the request, runs it with
+# the "validate" directive only, shows the script and the validate result, and registers a PENDING
+# action: the exact script, its SHA-256 digest, and who asked (their credential identity). The only
+# way that script is processed is confirm(pending_id, digest): the same sign-in, within the TTL, with
+# the digest of the script that was shown. A changed script is refused in words; a second confirm of
+# the same pending action answers with the first result and writes nothing again.
+
+#: How long a shown script can be confirmed (seconds).
+CONFIRM_TTL_S = 15 * 60
+
+CONFIRM_UNKNOWN = ("That Dr.Egeria script has expired or is unknown, so nothing was processed. "
+                   "Ask again to compose and validate it afresh.")
+CONFIRM_OTHER_SIGN_IN = ("That Dr.Egeria script was shown to another sign-in, so nothing was processed. "
+                         "Ask again to compose and validate it as you.")
+CONFIRM_CHANGED = ("The Dr.Egeria script you confirmed is not the one that was shown (its digest differs), "
+                   "so nothing was processed. Ask again to see the current script before confirming.")
+
+
+def script_digest(markdown: str) -> str:
+    """The SHA-256 of the exact script shown to the user, as confirmed."""
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
+def _caller_identity(conn: Dict[str, str]) -> str:
+    """Who a pending action belongs to: a hash of the credential PRESENTED, plus the Egeria it runs on
+    (the dashboards' credential_identity rule: never a bare user_id)."""
+    secret = conn.get("token") or conn.get("user_pass") or ""
+    raw = f"{conn.get('auth')}|{conn.get('user_id')}|{secret}|{conn.get('url')}|{conn.get('server_name')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class PendingAction:
+    pending_id: str
+    identity: str
+    command_name: str
+    markdown: str
+    digest: str
+    created: float = field(default_factory=time.monotonic)
+    result: Optional[Dict[str, Any]] = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_pending: Dict[str, PendingAction] = {}
+_pending_lock = threading.Lock()
+
+
+def _register_pending(identity: str, command_name: str, markdown: str) -> PendingAction:
+    pa = PendingAction(secrets.token_urlsafe(16), identity, command_name, markdown, script_digest(markdown))
+    with _pending_lock:
+        now = time.monotonic()
+        for k in [k for k, p in _pending.items() if now - p.created > CONFIRM_TTL_S]:
+            _pending.pop(k, None)
+        _pending[pa.pending_id] = pa
+    return pa
+
+
+def _reset_pending_for_tests() -> None:
+    with _pending_lock:
+        _pending.clear()
+
+
+def _envelope_summary(env: Dict[str, Any], directive: str) -> str:
+    """The validate (or process) result in words: counts, then every error said."""
+    total = env.get("commands_total", 0)
+    ok = env.get("commands_succeeded", 0)
+    bad = env.get("commands_failed", 0)
+    verb = "checked" if directive == "validate" else "processed"
+    lines = [f"**{directive.capitalize()}:** {total} command(s) {verb}: {ok} succeeded, {bad} failed."]
+    for e in list(env.get("validation_errors") or []) + list(env.get("execution_errors") or []):
+        if isinstance(e, dict):
+            lines.append(f"- {e.get('command') or 'command'}: {e.get('message') or e.get('error') or e}")
+        else:
+            lines.append(f"- {e}")
+    if total == 0 and not env.get("success"):
+        lines.append(f"- {env.get('output') or 'Dr.Egeria returned no result.'}")
+    return "\n".join(lines)
+
+
+def _validated_cleanly(env: Dict[str, Any]) -> bool:
+    return bool(env.get("success")) and not env.get("commands_failed") and not env.get("validation_errors") \
+        and not env.get("execution_errors") and bool(env.get("commands_total"))
+
+
 class DrEgeriaActionAgent:
     """
     Agent for handling Dr. Egeria write/action requests.
@@ -790,16 +881,20 @@ JSON:"""
     def handle(
         self,
         query: str,
-        directive: str = "process",
+        directive: str = "validate",
         dry_run: bool = False,
         egeria_credentials: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
-        Full action pipeline: find template → extract params → compose → execute.
+        Chat action pipeline: find template → extract params → compose → VALIDATE → show.
+
+        A chat message never writes. The composed script is run with "validate" (or "display") only,
+        shown with that result, and registered as a pending action; confirm() with the shown script's
+        digest is the only way it is processed (the confirm gate, above).
 
         Args:
             query: User's natural language action request
-            directive: "display" | "validate" | "process"
+            directive: "validate" (default) | "display". "process" is refused: use confirm().
             dry_run: Return composed markdown without executing
             egeria_credentials: the signed-in caller's {user_id, password, token};
                 without them (and outside dry_run) the run is refused with
@@ -808,6 +903,10 @@ JSON:"""
         Returns:
             Response dict compatible with RAGSystem result format.
         """
+        if directive not in ("validate", "display"):
+            raise ValueError("DrEgeriaActionAgent.handle() never processes: a chat action is validated and "
+                             "shown, and processed only by confirm(pending_id, digest).")
+
         # Step 1: Find template
         template = self.find_template(query)
         if template is None:
@@ -847,38 +946,14 @@ JSON:"""
 
         # Step 4: Compose markdown
         markdown = compose_command(template, params)
-
-        # Step 5: Execute (or dry run)
-        try:
-            output = self.execute(markdown, directive=directive, dry_run=dry_run,
-                                   egeria_credentials=egeria_credentials)
-        except Exception as e:
-            logger.error(f"DrEgeria execute failed: {e}")
-            output = f"Execution failed: {e}"
-
-        response_text = output
-        auth_required = False
-        if not dry_run:
-            try:
-                env = json.loads(output)
-                if isinstance(env, dict) and env.get("auth_required"):
-                    auth_required = True
-                    response_text = (SIGN_IN_AGAIN if env.get("auth_reason") == "token_refused"
-                                     else SIGN_IN_TO_RUN)
-            except (TypeError, ValueError):
-                pass
-        if dry_run:
-            response_text = f"**Composed Dr. Egeria command** (not executed):\n\n```markdown\n{markdown}\n```"
-
-        return {
+        base = {
             "query": query,
-            "response": response_text,
             "query_type": "command",
             "command_name": command_name,
             "params_extracted": params,
             "markdown": markdown,
             "dry_run": dry_run,
-            "auth_required": auth_required,
+            "auth_required": False,
             "sources": [f"Dr.Egeria template: {command_name}"],
             "num_sources": 1,
             "retrieval_time": 0.0,
@@ -886,6 +961,95 @@ JSON:"""
             "avg_relevance_score": 0.0,
             "context_length": len(markdown),
         }
+        if dry_run:
+            return {**base, "response": f"**Composed Dr. Egeria command** (not executed):\n\n```markdown\n{markdown}\n```"}
+
+        # Step 5: validate (never process), as the caller
+        try:
+            conn = self._get_egeria_conn(egeria_credentials)
+        except DrEgeriaAuthError as err:
+            return {**base, "response": err.message, "auth_required": True}
+        try:
+            env = json.loads(self.execute(markdown, directive=directive, egeria_credentials=egeria_credentials))
+        except Exception as e:  # noqa: BLE001 -- said, and nothing is offered for confirm
+            logger.error(f"DrEgeria {directive} failed: {e}")
+            env = {"success": False, "output": f"{directive.capitalize()} failed: {e}", "commands_total": 0}
+        if env.get("auth_required"):
+            return {**base, "response": SIGN_IN_AGAIN if env.get("auth_reason") == "token_refused" else SIGN_IN_TO_RUN,
+                    "auth_required": True}
+
+        shown = (f"**{command_name}**, composed from your request. **Nothing has been written.**\n\n"
+                 f"```markdown\n{markdown}\n```\n\n{_envelope_summary(env, directive)}")
+        if directive != "validate" or not _validated_cleanly(env):
+            return {**base, "response": shown + "\n\nNot offered to run: fix the request and ask again.",
+                    "validation": env, "confirm_required": False, "next_context": None}
+        pa = _register_pending(_caller_identity(conn), command_name, markdown)
+        return {
+            **base,
+            "response": (shown + f"\n\nReply **yes** to process this script in Egeria as **{conn['user_id']}**, "
+                         f"or **no** to cancel. (Script digest `{pa.digest[:12]}`; good for "
+                         f"{CONFIRM_TTL_S // 60} minutes.)"),
+            "validation": env,
+            "confirm_required": True,
+            "pending_id": pa.pending_id,
+            "script_digest": pa.digest,
+            "next_context": {"task": "dr_egeria_confirm", "pending_id": pa.pending_id, "digest": pa.digest},
+        }
+
+    def confirm(
+        self,
+        pending_id: str,
+        digest: str,
+        egeria_credentials: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """Process a shown script, once: the same sign-in, within CONFIRM_TTL_S, with the shown script's digest.
+
+        {"state": "processed" | "already_processed" | "refused" | "failed", "response": words, ...}"""
+        out: Dict[str, Any] = {"query_type": "command", "next_context": None, "sources": [], "num_sources": 0,
+                               "retrieval_time": 0.0, "generation_time": 0.0, "avg_relevance_score": 0.0,
+                               "context_length": 0, "auth_required": False}
+        try:
+            conn = self._get_egeria_conn(egeria_credentials)
+        except DrEgeriaAuthError as err:
+            # not consumed: signing in again and confirming still works within the TTL
+            return {**out, "state": "refused", "response": err.message, "auth_required": True,
+                    "next_context": {"task": "dr_egeria_confirm", "pending_id": pending_id, "digest": digest}}
+        with _pending_lock:
+            pa = _pending.get(pending_id or "")
+        if pa is None or time.monotonic() - pa.created > CONFIRM_TTL_S:
+            return {**out, "state": "refused", "response": CONFIRM_UNKNOWN}
+        if pa.identity != _caller_identity(conn):
+            return {**out, "state": "refused", "response": CONFIRM_OTHER_SIGN_IN}
+        if not isinstance(digest, str) or not secrets.compare_digest(digest, pa.digest):
+            return {**out, "state": "refused", "response": CONFIRM_CHANGED}
+        out.update(command_name=pa.command_name, markdown=pa.markdown, script_digest=pa.digest)
+        with pa.lock:   # one process per pending action; a retry gets the first answer
+            if pa.result is not None:
+                return {**pa.result, "state": "already_processed",
+                        "response": "This script was already processed; nothing was written again.\n\n"
+                                    + pa.result["response"]}
+            try:
+                env = json.loads(self.execute(pa.markdown, directive="process", egeria_credentials=egeria_credentials))
+            except Exception as e:  # noqa: BLE001 -- it may have written part of the script: still one-shot
+                logger.error(f"DrEgeria process failed after confirm: {e}")
+                env = {"success": False, "output": f"Processing failed: {e}", "commands_total": 0}
+            if env.get("auth_required") and not env.get("commands_total"):
+                # refused before anything ran: not consumed
+                return {**out, "state": "refused", "auth_required": True,
+                        "response": SIGN_IN_AGAIN if env.get("auth_reason") == "token_refused" else SIGN_IN_TO_RUN,
+                        "next_context": {"task": "dr_egeria_confirm", "pending_id": pending_id, "digest": digest}}
+            pa.result = {**out, "state": "processed" if env.get("success") else "failed", "envelope": env,
+                         "response": f"**{pa.command_name}** processed as **{conn['user_id']}**.\n\n"
+                                     + _envelope_summary(env, "process")}
+            return pa.result
+
+    def cancel(self, pending_id: str) -> Dict[str, Any]:
+        """Drop a shown script; nothing is processed."""
+        with _pending_lock:
+            _pending.pop(pending_id or "", None)
+        return {"query_type": "general", "response": "Cancelled: nothing was written.", "next_context": None,
+                "sources": [], "num_sources": 0, "retrieval_time": 0.0, "generation_time": 0.0,
+                "avg_relevance_score": 0.0, "context_length": 0}
 
 
 def _no_template_found(query: str) -> Dict[str, Any]:
