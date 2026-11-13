@@ -33,6 +33,7 @@ import os
 os.environ.setdefault("PREFECT_SERVER_EPHEMERAL_ENABLED", "false")
 
 import asyncio
+import re
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -276,6 +277,73 @@ def _is_online(worker: Any) -> bool:
     return str(getattr(status, "value", status) or "").upper() == "ONLINE"
 
 
+# ── version parity (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §1.6) ─────────────────────────────
+#: The deployment every worker without a commit of its own serves (the host worker on laz).
+DEFAULT_DEPLOYMENT = "RE Survey Flow/re-survey-step-deployment"
+_WORKER_SHA = re.compile(r"^re-worker-([0-9a-f]{12})(?:-|$)")
+
+
+def sha_deployment(sha12: str) -> str:
+    """The deployment a container worker on commit `sha12` creates for itself at start (entrypoint role
+    `prefect-worker`): its flows load from the image's own source and land on its own work queue."""
+    return f"re-survey-step-{sha12}"
+
+
+def sha_work_queue(sha12: str) -> str:
+    return f"re-{sha12}"
+
+
+def worker_sha(worker: Any) -> str:
+    """The commit a worker advertises in its name (`re-worker-<sha12>-<host>`), or "" for one that
+    advertises none (a host worker, which runs the checkout's own code)."""
+    name = getattr(worker, "name", "")
+    m = _WORKER_SHA.match(name) if isinstance(name, str) else None
+    return m.group(1) if m else ""
+
+
+async def _choose_deployment(client: Any, pool_default: str) -> Any:
+    """The deployment a step's flow run goes to, or RuntimeError with the reason (run_prefect_step then
+    runs the step locally and records why). Read only: nothing is created here.
+
+      - a worker that advertises THIS RE's commit is ONLINE: its own deployment (its own queue, so only
+        a worker on the same code picks the run up);
+      - else a worker that advertises no commit is ONLINE: the default deployment, as before;
+      - else ONLINE workers exist but all run other code: refused, naming both commits. Running a step
+        on different code would be silent drift (§1.6);
+      - else: no ONLINE worker at all (PREFECT-POLL-TIMEOUT: a run would sit Scheduled forever).
+    """
+    from resource_explorer.build_info import re_sha_short
+
+    try:
+        deployment = await client.read_deployment_by_name(DEFAULT_DEPLOYMENT)
+    except Exception as e:
+        raise RuntimeError(
+            f"Prefect deployment '{DEFAULT_DEPLOYMENT}' not found. "
+            f"Did you run 'resource-explorer prefect deploy'? Error: {e}"
+        )
+    pool = getattr(deployment, "work_pool_name", None) or pool_default
+    online = [w for w in await client.read_workers_for_work_pool(pool) if _is_online(w)]
+    own = re_sha_short()
+    advertised = sorted({worker_sha(w) for w in online} - {""})
+    if own and own in advertised:
+        name = f"RE Survey Flow/{sha_deployment(own)}"
+        try:
+            return await client.read_deployment_by_name(name)
+        except Exception as e:
+            raise RuntimeError(
+                f"a Prefect worker on this Resource Explorer's code ({own}) is online but its deployment "
+                f"'{name}' is missing: {e}"
+            )
+    if any(not worker_sha(w) for w in online):
+        return deployment
+    if advertised:
+        raise RuntimeError(
+            f"no online Prefect worker runs this Resource Explorer's code ({own or 'commit unknown'}); "
+            f"online workers on pool {pool} run {', '.join(advertised)}"
+        )
+    raise RuntimeError(f"no online Prefect worker for pool {pool}; run `make prefect-up`")
+
+
 async def _cancel_flow_run_best_effort(client: Any, flow_run_id: Any) -> str:
     """Try to cancel `flow_run_id`; return "" on success or a short failure
     description. Never raises."""
@@ -318,26 +386,10 @@ async def _run_prefect_step_api(
     config = get_config()
     if timeout_seconds is None:
         timeout_seconds = _step_timeout_seconds()
-    deployment_name = "RE Survey Flow/re-survey-step-deployment"
-
     async with re_prefect_client() as client:
-        # 1. Fetch the deployment ID
-        try:
-            deployment = await client.read_deployment_by_name(deployment_name)
-        except Exception as e:
-            raise RuntimeError(
-                f"Prefect deployment '{deployment_name}' not found. "
-                "Did you run 'resource-explorer prefect deploy'? Error: {e}"
-            )
-
-        # 1b. Fail fast: a pool with no ONLINE worker would leave the run
-        # Scheduled forever. Read-only; nothing is created yet.
-        pool = getattr(deployment, "work_pool_name", None) or config.prefect.work_pool
-        workers = await client.read_workers_for_work_pool(pool)
-        if not any(_is_online(w) for w in workers):
-            raise RuntimeError(
-                f"no online Prefect worker for pool {pool}; run `make prefect-up`"
-            )
+        # 1. Which deployment, and fail fast: a pool with no ONLINE worker (or none on this RE's code)
+        # would leave the run Scheduled forever, or run it on other code. Read-only; nothing is created yet.
+        deployment = await _choose_deployment(client, config.prefect.work_pool)
 
         # 2. Trigger the flow run — tagged so the admin "⚡ Prefect" panel can
         # group/filter flow-runs by the resource they belong to. Not the RE

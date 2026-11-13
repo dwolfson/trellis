@@ -2925,8 +2925,21 @@ app.add_typer(prefect_app)
 
 
 @prefect_app.command(name="deploy")
-def prefect_deploy():
-    """Deploy Resource Explorer flows to the Prefect server."""
+def prefect_deploy(
+    name: str = typer.Option(
+        "re-survey-step-deployment", "--name",
+        help="Deployment name. The container worker deploys its own, re-survey-step-<sha12>."),
+    work_queue: Optional[str] = typer.Option(
+        None, "--work-queue",
+        help="Work queue for this deployment's runs (the container worker's own, re-<sha12>), so only a "
+             "worker on the same code picks them up. Default: the pool's default queue."),
+):
+    """Deploy Resource Explorer flows to the Prefect server.
+
+    The deployment's flows load from THIS checkout or image (`from_source` below): a worker can only run
+    them where that path exists. The host worker serves the default deployment; each container worker
+    deploys its own, named for its commit (docker/entrypoint-resource-explorer.sh, role prefect-worker).
+    """
     from pathlib import Path
 
     from resource_explorer.prefect.flows import re_survey_flow
@@ -2948,8 +2961,9 @@ def prefect_deploy():
             source=str(source_root),
             entrypoint="resource_explorer/prefect/flows.py:re_survey_flow",
         ).deploy(
-            name="re-survey-step-deployment",
+            name=name,
             work_pool_name=config.prefect.work_pool,
+            work_queue_name=work_queue,
         )
         console.print(f"[green]✓ Flows successfully deployed to work pool '[bold]{config.prefect.work_pool}[/bold]'![/green]")
     except Exception as e:
