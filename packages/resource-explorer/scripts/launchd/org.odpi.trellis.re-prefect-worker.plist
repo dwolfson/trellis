@@ -10,27 +10,32 @@
   target for container deployments (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §5/§6).
 
   NOT installed by anything in this repo: installing a login agent is a standing host change and
-  needs the owner's word. The paths below are laz's; replace them for another Mac. Install:
+  needs the owner's word. The paths below are laz's; replace them for another Mac. Install (or
+  re-install), from a checkout holding this directory:
 
+    cp packages/resource-explorer/scripts/launchd/re-prefect-worker.sh ~/.re-gate/re-prefect-worker.sh
+    cp packages/resource-explorer/scripts/launchd/re-runtime-env.sh ~/.re-gate/re-runtime-env.sh   # once; the web app's launcher sources it too
     cp packages/resource-explorer/scripts/launchd/org.odpi.trellis.re-prefect-worker.plist ~/Library/LaunchAgents/
+    launchctl bootout gui/$(id -u)/org.odpi.trellis.re-prefect-worker 2>/dev/null || true
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.odpi.trellis.re-prefect-worker.plist
 
-  Check:  launchctl print gui/$(id -u)/org.odpi.trellis.re-prefect-worker | grep -E 'state|pid'
-          and the pool: worker `re-host-worker-laz` ONLINE on resource-explorer-pool.
+  Check:  the first lines of the log name the commit, the tree and the settings (by name), then the
+          library steps ("none missing"); the pool shows the worker ONLINE; and
+          re-config-parity.sh <web-app pid> <worker pid> says "parity: OK".
+  Restart with every web-app deploy (it re-reads the commit and the settings):
+          launchctl kickstart -k gui/$(id -u)/org.odpi.trellis.re-prefect-worker
   Stop:   launchctl bootout gui/$(id -u)/org.odpi.trellis.re-prefect-worker
 
-  Why it is shaped this way:
-  - The venv's own `prefect` binary, never `uv run --package` (which re-resolves the venv down to one
-    package and has dropped RE's survey steps). Whichever venv it names must say "none missing" for
-    both hosts:  <venv>/bin/python -c "from resource_explorer.engine_host import library_steps_line;
-    print(library_steps_line())"  (run from WorkingDirectory below).
-  - `prefect worker start` directly, not `resource-explorer prefect worker` (which shells out to
-    `prefect`): launchd then supervises the worker process itself.
-  - WorkingDirectory is the checkout 8813 runs from. RE's config reads `.env` from the working
-    directory, and the deployment sets each flow run's working directory to that same path, so flow
-    runs see the same settings and code as 8813. No secret is in this file.
+  Why it is shaped this way (read-back of 8f5af544, 2026-11-13):
+  - Same code: RE_TREE is the checkout the web app runs from (laz: wt-relgraph, also its working
+    directory), and the worker uses that tree's venv binaries, never `uv run --package` (which
+    re-resolves the venv down to one package and has dropped RE's survey steps).
+  - Same settings: the wrapper sources RE_RUNTIME_ENV, the one env file the web app's launcher sources
+    too, then runs under `dotenv -f RE_DOTENV run`, as the web app does. Flow runs inherit the worker's
+    environment, so a step sees what the web app sees. No secret is in this file or the wrapper.
+  - Same commit: the wrapper exports TRELLIS_RE_SHA from RE_TREE at start, and advertises it once the
+    tree's `prefect deploy` takes --work-queue (re-prefect-worker.sh says what that changes).
   - ThrottleInterval stops a tight respawn loop while the Prefect server is down.
-  - It serves the pool and nothing else: it creates no pool and no deployment.
   - The log is not rotated by launchd; the worker writes little (a line per poll error or flow run).
 -->
 <plist version="1.0">
@@ -39,22 +44,21 @@
   <string>org.odpi.trellis.re-prefect-worker</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph/.venv/bin/prefect</string>
-    <string>worker</string>
-    <string>start</string>
-    <string>--pool</string>
-    <string>resource-explorer-pool</string>
-    <string>--type</string>
-    <string>process</string>
-    <string>--name</string>
-    <string>re-host-worker-laz</string>
+    <string>/bin/bash</string>
+    <string>/Users/dwolfson/.re-gate/re-prefect-worker.sh</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dwolfson/localGit/egeria-v6/trellis/packages/resource-explorer</string>
+  <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>RE_TREE</key>
+    <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph</string>
+    <key>RE_DOTENV</key>
+    <string>/Users/dwolfson/localGit/egeria-v6/trellis/packages/resource-explorer/.env</string>
+    <key>RE_RUNTIME_ENV</key>
+    <string>/Users/dwolfson/.re-gate/re-runtime-env.sh</string>
     <key>PATH</key>
-    <string>/Users/dwolfson/localGit/egeria-v6/trellis/.claude/worktrees/wt-relgraph/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>PREFECT_API_URL</key>
     <string>http://localhost:4200/api</string>
     <!-- Never let Prefect's client start an ephemeral in-process server (the 2026-09-04 leak). -->
