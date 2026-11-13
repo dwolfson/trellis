@@ -388,9 +388,13 @@ Do not output any introductory or summary text. Just the markdown document:
         """Save draft and exit flow."""
         spec = get_report_draft_manager().load(draft_id)
         title = spec.get("title", draft_id) if spec else draft_id
+        response = f"Session saved. You can resume building **{title}** from the drafts list."
+        if spec and spec.get("v2") and spec.get("unmet"):
+            from advisor.agents.report_spec_elicitor_v2 import narrower_line
+            response += "\n\n" + narrower_line(spec)
         return {
             "query": draft_id,
-            "response": f"Session saved. You can resume building **{title}** from the drafts list.",
+            "response": response,
             "query_type": "report_spec_clarification",
             "routing_agent": "report_spec_agent",
             "draft_id": None,

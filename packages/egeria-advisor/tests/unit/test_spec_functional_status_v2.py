@@ -38,6 +38,13 @@ def stores(tmp_path, monkeypatch):
 def fixes_on(monkeypatch):
     monkeypatch.setenv(v2.FLAG, "1")
     monkeypatch.setenv(v2.FIXES_FLAG, "1")
+    monkeypatch.delenv(v2.STATUS_MERGE_FLAG, raising=False)
+
+
+@pytest.fixture
+def merge_on(fixes_on, monkeypatch):
+    """The per-value merge: off by default until a spec can run it (Architect's ruling 2026-11-14)."""
+    monkeypatch.setenv(v2.STATUS_MERGE_FLAG, "1")
 
 
 class FakeLLM:
@@ -125,8 +132,18 @@ def test_draft_projects_is_projects_content_status(fixes_on, stores, monkeypatch
     assert spec["action_function"] == "ClassificationExplorer.find_elements_by_property_value"
 
 
-def test_content_status_keeps_every_value_and_says_how_it_runs(fixes_on, stores, monkeypatch):
-    # B15 "active and approved": one exact property-value search per value, merged by answer()
+def test_content_status_filters_the_first_value_asked_and_says_what_was_left_out(fixes_on, stores, monkeypatch):
+    # B15 "approved and active": the saved spec runs one search, so chat previews just that (§5b-1)
+    _, spec = _elicit(monkeypatch, "Which governance policies are approved and active?", "GovernancePolicy",
+                      ["APPROVED", "ACTIVE"])
+    status = spec["conditions"]["functional_status"]
+    assert (status["property"], status["values"]) == ("contentStatus", ["APPROVED"])   # question order
+    assert "so ACTIVE isn't applied (filtered on APPROVED, the first value asked)" in spec["unmet"]
+    assert "merges" not in status["note"]
+
+
+def test_content_status_keeps_every_value_with_the_merge_on(merge_on, stores, monkeypatch):
+    # flag on: one exact property-value search per value, merged by answer()
     _, spec = _elicit(monkeypatch, "Which governance policies are active and approved?", "GovernancePolicy",
                       ["ACTIVE", "APPROVED"])
     status = spec["conditions"]["functional_status"]
@@ -205,7 +222,14 @@ def test_each_property_has_a_server_side_finder_that_takes_it(type_name, prop, f
     assert action["spec_params"]["metadata_element_type"] == type_name
 
 
-def test_a_one_value_finder_keeps_every_value_for_a_per_value_run():
+def test_a_one_value_finder_keeps_the_first_value_by_default(fixes_on):
+    status, unmet = v2.ground_functional_status("Project", ["planned", "Active"])
+    assert status["values"] == ["Planned"] and "Active isn't applied" in unmet[0]
+    spec = {"title": "t", "target_type": "Project", "conditions": {"functional_status": status}}
+    assert v2.per_value_specs(spec) == [spec]
+
+
+def test_a_one_value_finder_keeps_every_value_for_a_per_value_run(merge_on):
     status, unmet = v2.ground_functional_status("Project", ["Active", "planned"])
     assert status["values"] == ["Active", "Planned"] and not unmet
     spec = {"title": "t", "target_type": "Project", "conditions": {"functional_status": status},
@@ -322,7 +346,7 @@ def test_the_request_filters_on_the_server_and_the_column_shows_it(egeria_offlin
     assert out["result"]["rows"][0][cell[0]] == cell[1]
 
 
-def test_several_values_run_one_search_each_merged_by_guid_and_capped(egeria_offline, monkeypatch):
+def test_several_values_run_one_search_each_merged_by_guid_and_capped(merge_on, egeria_offline, monkeypatch):
     """Architect read-back 18add498: B15's first value (APPROVED) has no rows on laz; keeping only the first
     value answered with 0 rows although ACTIVE policies exist."""
     from pyegeria.core._server_client import ServerClient
@@ -358,6 +382,38 @@ def test_several_values_run_one_search_each_merged_by_guid_and_capped(egeria_off
     capped = v2.answer(spec, _Client(), max_rows=2)
     assert [r["guid"] for r in capped["result"]["rows"]] == ["g-1", "g-2"] and capped["capped"]
     assert "there may be more" in capped["markdown"]
+
+
+def test_by_default_a_run_is_the_saved_specs_one_search(fixes_on, egeria_offline):
+    calls, beans = egeria_offline
+    beans.append(_bean(contentStatus="APPROVED"))
+    cond, _, unmet = v2.ground_conditions({"functional_status": ["APPROVED", "ACTIVE"]}, "GovernancePolicy")
+    spec = {"title": "t", "target_type": "GovernancePolicy", "answers": {"Heading": "H"}, "conditions": cond,
+            "columns": [{"name": "Name", "key": "display_name"}]}
+    out = v2.answer(spec, _Client())
+    assert out["ok"] and [b["propertyValue"] for _, _, b in calls] == ["APPROVED"]
+    assert v2.build_format_set(spec).action.spec_params["property_value"] == "APPROVED"   # what is saved
+    assert not any("merged" in n for n in out.get("notes") or [])
+
+
+def test_saving_repeats_what_the_spec_leaves_out(fixes_on, stores, monkeypatch):
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor
+    r, spec = _elicit(monkeypatch, "Which governance policies are approved and active?", "GovernancePolicy",
+                      ["APPROVED", "ACTIVE"])
+    el = ReportSpecElicitor()
+    r = el.process(r["draft_id"], "generate now")
+    line = "⚠️ **Saved spec is narrower than your question. Not applied:** one contentStatus search"
+    assert r["phase"] == "refine" and line in r["response"] and "ACTIVE isn't applied" in r["response"]
+    saved = el.save_and_exit(r["draft_id"])
+    assert line in saved["response"]
+
+
+def test_saving_a_spec_that_applies_everything_says_nothing_extra(fixes_on, stores, monkeypatch):
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor
+    r, _ = _elicit(monkeypatch, "Which glossary terms are draft?", "GlossaryTerm", ["draft"])
+    el = ReportSpecElicitor()
+    r = el.process(r["draft_id"], "generate now")
+    assert "narrower" not in r["response"] and "narrower" not in el.save_and_exit(r["draft_id"])["response"]
 
 
 def test_no_value_with_rows_says_so():

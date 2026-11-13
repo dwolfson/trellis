@@ -108,6 +108,18 @@ def fixes_enabled() -> bool:
     return enabled() and _on(FIXES_FLAG)
 
 
+#: Several status values through a one-value finder: one search per value, merged in `answer`. OFF, and
+#: to stay off until a spec can run the same merge itself (the Architect's ruling 2026-11-14, ops §5b-1:
+#: what chat shows must be what the saved spec runs; pyegeria's microflow runs one find stage, so a
+#: multi-value find is a phase-2 requirement). Off, the first value the question gives is filtered and the
+#: rest are `unmet`, in words.
+STATUS_MERGE_FLAG = "EA_SPEC_STATUS_MERGE"
+
+
+def status_merge_enabled() -> bool:
+    return fixes_enabled() and _on(STATUS_MERGE_FLAG)
+
+
 # ── Grounding ────────────────────────────────────────────────────────────────
 
 def _norm(name: Optional[str]) -> str:
@@ -359,6 +371,11 @@ def ground_functional_status(type_name: Optional[str], values: Any
         return None, [f"{_plural(type_name)} have no {asked} status; their statuses are {theirs}"]
     chosen = [_canonical(best, k) for k in takes[best]]
     unmet: List[str] = []
+    if takes_one_value(type_name, best) and len(chosen) > 1 and not status_merge_enabled():
+        # the question's first value, never "the one with rows"; the rest are said, not dropped
+        unmet.append(f"one {best} search matches one value, so {', '.join(chosen[1:])} isn't applied "
+                     f"(filtered on {chosen[0]}, the first value asked)")
+        chosen = chosen[:1]
     for k in keys:
         if k in takes[best]:
             continue
@@ -378,7 +395,8 @@ def ground_functional_status(type_name: Optional[str], values: Any
         note += (f": {', '.join(both)} is also a {' and '.join(others)} value, and {best} is {type_name}'s "
                  f"most specific status")
     if takes_one_value(type_name, best) and len(chosen) > 1:
-        # one exact search per value, merged by `answer`; a saved spec is one finder call, so it holds one
+        # only with STATUS_MERGE_FLAG on: one exact search per value, merged by `answer`; a saved spec is
+        # one finder call, so it holds one
         note += (f"; the answer here merges one {best} search per value, the saved spec searches "
                  f"{chosen[0]} only")
     return {"property": best, "values": chosen, "note": note}, unmet
@@ -619,9 +637,9 @@ def search_of(spec: Dict[str, Any]) -> str:
 
 def per_value_specs(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
     """`spec` once per status value when its finder matches one value (the property-value finder), else
-    `[spec]`. Each copy filters on one value; `answer` merges their rows."""
+    `[spec]`. Each copy filters on one value; `answer` merges their rows. Only with STATUS_MERGE_FLAG on."""
     status = (spec.get("conditions") or {}).get("functional_status")
-    if not isinstance(status, dict) or len(status.get("values") or []) < 2 \
+    if not status_merge_enabled() or not isinstance(status, dict) or len(status.get("values") or []) < 2 \
             or not takes_one_value(spec.get("target_type"), status.get("property")):
         return [spec]
     return [{**spec, "conditions": {**spec["conditions"], "functional_status": {**status, "values": [v]}}}

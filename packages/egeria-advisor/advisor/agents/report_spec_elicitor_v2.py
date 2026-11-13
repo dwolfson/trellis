@@ -69,6 +69,11 @@ def _condition_help(type_name: Optional[str] = None) -> str:
 _CONDITION_HELP = _condition_help()
 
 
+def narrower_line(spec: Dict[str, Any]) -> str:
+    """The save-time line for a spec narrower than its question, so saving never narrows it silently."""
+    return f"⚠️ **Saved spec is narrower than your question. Not applied:** {spec['unmet']}"
+
+
 def _add_unmet(spec: Dict[str, Any], unmet: List[str]) -> None:
     """Add words for conditions not applied to the draft's `unmet`, keeping the LLM's own."""
     have = [spec["unmet"]] if spec.get("unmet") else []
@@ -323,7 +328,7 @@ def generate(elicitor, spec: Dict[str, Any]) -> Dict[str, Any]:
     }
     head = f"**{spec['answers'].get('Heading')}** (draft spec **{doc_id}**, validated with pyegeria)"
     if spec.get("unmet"):
-        head += f"\n\n*Not applied:* {spec['unmet']}"
+        head += "\n\n" + narrower_line(spec)
     if client is None:
         out["response"] = head + "\n\nSign in to see the answer here; you can run it with **Execute Spec**."
         return out
