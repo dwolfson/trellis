@@ -84,3 +84,13 @@ test('server text reaches the page as text, never markup', async () => {
   assert.equal(bar.querySelector('img'), null);
   assert.equal(bar.querySelector('b'), null);
 });
+
+test('a pool the server says does not exist is its own warning, not "server not reachable"', async () => {
+  const { document, mod } = await loadShell();
+  mod.renderBootstrapBanner(document, STATUS(POOL({ reachable: true, pool_exists: false, live_count: 0, registered_count: 0,
+    summary: "pool resource-explorer-pool doesn't exist" })));
+  const line = document.querySelector('[data-prefect-pool-line]');
+  assert.equal(line.dataset.prefectPoolLine, 'pool_missing');
+  assert.equal(text(document.querySelector('[data-prefect-pool-word]')), "Prefect: pool resource-explorer-pool doesn't exist");
+  assert.doesNotMatch(text(line), /not reachable/);
+});

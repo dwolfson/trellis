@@ -261,3 +261,50 @@ class TestServerUnreachable:
         assert bs.get_status()["prefect_pool"]["enabled"] is get_config().prefect.enabled
         monkeypatch.setattr(get_config().prefect, "enabled", False)
         assert bs.get_status()["prefect_pool"]["enabled"] is False
+
+
+class TestPoolMissing:
+    """Read-back of 377c3353: a pool the server says does not exist (404) is its own state, not "server not
+    reachable"; the fix is to create the pool, not to start the server."""
+
+    @staticmethod
+    def _missing():
+        import httpx
+
+        request = httpx.Request("POST", "http://prefect/api/work_pools/resource-explorer-pool/workers/filter")
+        response = httpx.Response(404, request=request)
+        err = httpx.HTTPStatusError("Client error '404 Not Found'", request=request, response=response)
+        client = MagicMock()
+        client.read_workers_for_work_pool = AsyncMock(side_effect=err)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("resource_explorer.surveyors.prefect_adapter.re_prefect_client", return_value=client):
+            return bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=NOW)
+
+    def test_a_missing_pool_says_so_and_is_not_unreachable(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        status = self._missing()
+        assert status.reachable is True and status.pool_exists is False
+        assert status.summary == "pool resource-explorer-pool doesn't exist"
+        assert status.runs_locally_instead
+        self._missing()
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warns) == 1 and "doesn't exist" in warns[0].getMessage()
+        assert "not reachable" not in warns[0].getMessage()
+        payload = bs.get_status()["prefect_pool"]
+        assert payload["pool_exists"] is False and payload["reachable"] is True
+        assert payload["runs_locally_words"].startswith("Prefect-dispatched steps (")
+
+    def test_pool_exists_is_true_once_read_and_unknown_when_unreachable(self):
+        _check([_fake_worker("w", FRESH)], NOW)
+        assert bs.get_status()["prefect_pool"]["pool_exists"] is True
+        with patch("resource_explorer.surveyors.prefect_adapter.re_prefect_client",
+                   side_effect=ConnectionError("refused")):
+            bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=NOW)
+        assert bs.get_status()["prefect_pool"]["pool_exists"] is None
+
+    def test_prefects_own_not_found_counts_too(self):
+        class ObjectNotFound(Exception):
+            pass
+        assert bs._is_not_found(ObjectNotFound("x"))
+        assert not bs._is_not_found(ConnectionError("refused"))
