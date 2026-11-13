@@ -67,6 +67,16 @@ def _serialise_result(result: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+
+#: A message that is ONLY a confirmation / cancellation of a shown Dr.Egeria script.
+_DR_EGERIA_CONFIRM_YES = re.compile(
+    r"^(yes|y|confirm(ed)?|process( it)?|run it|do it|go ahead|proceed)( please)?[\s.!]*$")
+_DR_EGERIA_CONFIRM_NO = re.compile(r"^(no|n|cancel|stop|never ?mind|don'?t)\b")
+#: A message that is ONLY "yes, re-run": confirms a shown plan AND acknowledges that a re-run repeats its
+#: non-idempotent commands (GovernancePlanAgent.non_idempotent_commands).
+_PLAN_RERUN_ACK = re.compile(r"^(yes|y|confirm(ed)?)[,;:\s]+re-?run( it| anyway| all of it)?( please)?[\s.!]*$")
+
+
 class RAGSystem:
     """Complete RAG system for code advisory."""
 
@@ -623,16 +633,62 @@ class RAGSystem:
                     _spec_d = get_draft_manager().load(_ctx_draft_id)
                 if _spec_d and _spec_d.get("doc_id"):
                     try:
-                        result = get_governance_plan_agent().execute(
-                            _spec_d["doc_id"], perspective=perspective, draft_id=_ctx_draft_id,
-                            egeria_credentials=egeria_credentials,
+                        # the plan confirm gate: show the plan; "yes" with its digest runs it
+                        result = get_governance_plan_agent().prepare_execute(
+                            _spec_d["doc_id"], draft_id=_ctx_draft_id, egeria_credentials=egeria_credentials,
                         )
                         result.setdefault("routing_agent", "governance_plan_agent")
-                        result["next_context"] = None
+                        result.setdefault("next_context", None)
                         return result
                     except Exception as exc:
                         logger.error("GovernancePlanAgent.execute failed (ctx): {}", str(exc), exc_info=True)
             return _gpa.continue_draft(_ctx_draft_id, user_query, egeria_credentials=egeria_credentials)
+
+        elif _ctx_task == "plan_execute_confirm":
+            # The plan confirm gate: a shown plan runs only on a message that is wholly a confirmation,
+            # against the digest of the plan that was shown (GovernancePlanAgent.confirm).
+            from advisor.agents.governance_plan_agent import get_governance_plan_agent
+            _pid = (context or {}).get("pending_id", "")
+            _dig = (context or {}).get("digest", "")
+            _q = user_query.strip().lower()
+            _ack = bool(_PLAN_RERUN_ACK.match(_q))
+            if _ack or _DR_EGERIA_CONFIRM_YES.match(_q):
+                if not egeria_authenticated:
+                    return _egeria_required_response(user_query)
+                # a plain "yes" to a re-run that repeats non-idempotent commands is refused by the agent,
+                # which keeps this context so "yes, re-run" can follow
+                result = get_governance_plan_agent().confirm(_pid, _dig, perspective=perspective,
+                                                             egeria_credentials=egeria_credentials,
+                                                             ack_non_idempotent=_ack)
+                result.setdefault("next_context", None)
+                result.update({"query": user_query, "routing_agent": "governance_plan_agent",
+                               "session_id": session_id, "user_id": user_id})
+                return result
+            if _DR_EGERIA_CONFIRM_NO.match(_q):
+                result = get_governance_plan_agent().cancel_execute(_pid, draft_id=(context or {}).get("draft_id"))
+                result.update({"query": user_query, "session_id": session_id, "user_id": user_id})
+                return result
+
+        elif _ctx_task == "dr_egeria_confirm":
+            # The chat-action confirm gate: a shown Dr.Egeria script is processed only on an explicit
+            # confirmation, against the digest of the script that was shown (DrEgeriaActionAgent.confirm).
+            # Stricter than act_confirm's "yes anywhere" because this path writes: the WHOLE message must
+            # be a confirmation. Anything else is a new request (the pending script is left to expire).
+            from advisor.agents.dr_egeria_agent import get_dr_egeria_agent
+            _pid = (context or {}).get("pending_id", "")
+            _dig = (context or {}).get("digest", "")
+            _q = user_query.strip().lower()
+            if _DR_EGERIA_CONFIRM_YES.match(_q):
+                if not egeria_authenticated:
+                    return _egeria_required_response(user_query)
+                result = get_dr_egeria_agent().confirm(_pid, _dig, egeria_credentials=egeria_credentials)
+                result.update({"query": user_query, "routing_agent": "dr_egeria_agent",
+                               "session_id": session_id, "user_id": user_id})
+                return result
+            if _DR_EGERIA_CONFIRM_NO.match(_q):
+                result = get_dr_egeria_agent().cancel(_pid)
+                result.update({"query": user_query, "session_id": session_id, "user_id": user_id})
+                return result
 
         elif _ctx_task == "act_confirm":
             if not egeria_authenticated:
@@ -824,7 +880,8 @@ class RAGSystem:
                     # otherwise the draft is left pointing at a doc_id that gets
                     # renamed out from under it (inbox -> outbox always appends a
                     # fresh "_executed_<ts>" suffix), and reopening it later 404s.
-                    return agent.execute(doc_id, draft_id=draft_id, egeria_credentials=egeria_credentials)
+                    # the plan confirm gate: show the plan; "yes" with its digest runs it
+                    return agent.prepare_execute(doc_id, draft_id=draft_id, egeria_credentials=egeria_credentials)
                 else:
                     return {
                         "query": user_query,
@@ -1135,8 +1192,11 @@ class RAGSystem:
             _dry_run = "dry" in user_query.lower()
             try:
                 from advisor.agents.governance_plan_agent import get_governance_plan_agent
-                result = get_governance_plan_agent().execute(_doc_id, perspective=perspective, dry_run=_dry_run,
-                                                               egeria_credentials=egeria_credentials)
+                _gpa_x = get_governance_plan_agent()
+                # a dry run writes nothing; a real run is shown first and runs only on "yes" + digest
+                result = (_gpa_x.execute(_doc_id, perspective=perspective, dry_run=True,
+                                         egeria_credentials=egeria_credentials) if _dry_run
+                          else _gpa_x.prepare_execute(_doc_id, egeria_credentials=egeria_credentials))
                 result.setdefault("routing_agent", "governance_plan_agent")
                 result.update({
                     "active_perspective": active_perspective,

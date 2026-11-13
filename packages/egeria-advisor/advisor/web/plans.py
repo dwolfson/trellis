@@ -11,7 +11,7 @@ Endpoints:
   GET    /api/plans/{doc_id}/export                       → download plan markdown
   GET    /api/plans/{doc_id}/report-export                → download extracted report content
   PUT    /api/plans/{doc_id}                              → save updated plan content
-  POST   /api/plans/{doc_id}/execute                       → execute an inbox plan
+  POST   /api/plans/{doc_id}/execute                       → show an inbox plan; with {pending_id, digest}, run it
   POST   /api/plans/{doc_id}/validate                      → run Dr.Egeria validate
   POST   /api/plans/{doc_id}/retry                         → move failed outbox plan to inbox + re-execute
   POST   /api/plans/{doc_id}/rerun                         → re-execute an outbox plan in place
@@ -215,18 +215,14 @@ async def execute_plan(request: Request, doc_id: str, body: Optional[Dict[str, A
 
     Requires login — this performs live writes against Egeria and must be
     attributable to the signed-in user, not a shared service account.
+
+    The plan confirm gate: without body.pending_id this runs NOTHING and returns the plan as it would
+    run (query_type "plan_confirm", with pending_id and plan_digest). Post again with
+    {pending_id, digest} to run it, once, as the same sign-in; a changed plan is refused. A re-run (rerun,
+    retry) that repeats non-idempotent commands (`ack_required` true, listed in `non_idempotent`) also needs
+    "ack_non_idempotent": true.
     """
-    _require_visible_plan(request, doc_id)
-    from advisor.auth import require_egeria_user, get_egeria_credentials
-    require_egeria_user(request)
-    egeria_credentials = get_egeria_credentials(request)
-    from advisor.agents.governance_plan_agent import get_governance_plan_agent
-    agent = get_governance_plan_agent()
-    draft_id = (body or {}).get("draft_id") or None
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, partial(agent.execute, doc_id, draft_id=draft_id, egeria_credentials=egeria_credentials)
-    )
-    return result
+    return await _gated_run(request, doc_id, body, action="execute", source_folder="inbox")
 
 
 @router.post("/api/plans/{doc_id}/validate")
@@ -248,41 +244,49 @@ async def validate_plan(request: Request, doc_id: str) -> Dict[str, Any]:
 
 
 @router.post("/api/plans/{doc_id}/retry")
-async def retry_plan(request: Request, doc_id: str) -> Dict[str, Any]:
-    """Move a failed outbox plan back to inbox and re-execute it immediately.
+async def retry_plan(request: Request, doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Move a failed outbox plan back to inbox and re-execute it, once confirmed.
 
-    Requires login — see execute_plan.
+    Requires login, and the confirm gate: see execute_plan.
     """
-    _require_visible_plan(request, doc_id)
-    from advisor.auth import require_egeria_user, get_egeria_credentials
-    require_egeria_user(request)
-    egeria_credentials = get_egeria_credentials(request)
-    from advisor.agents.governance_plan_agent import get_governance_plan_agent
-    agent = get_governance_plan_agent()
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, partial(agent.retry, doc_id, egeria_credentials=egeria_credentials)
-    )
-    return result
+    return await _gated_run(request, doc_id, body, action="retry", source_folder="outbox")
 
 
 @router.post("/api/plans/{doc_id}/rerun")
-async def rerun_plan(request: Request, doc_id: str) -> Dict[str, Any]:
+async def rerun_plan(request: Request, doc_id: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Re-execute an outbox plan directly, in place — no inbox detour.
     Appends a new "## Outcome (Run N)" section to the same outbox document.
 
-    Requires login — see execute_plan.
+    Requires login, and the confirm gate: see execute_plan.
     """
+    return await _gated_run(request, doc_id, body, action="execute", source_folder="outbox")
+
+
+async def _gated_run(request: Request, doc_id: str, body: Optional[Dict[str, Any]], *,
+                     action: str, source_folder: str) -> Dict[str, Any]:
+    """Show the plan (no pending_id), or run it once with {pending_id, digest} (the plan confirm gate)."""
     _require_visible_plan(request, doc_id)
     from advisor.auth import require_egeria_user, get_egeria_credentials
     require_egeria_user(request)
     egeria_credentials = get_egeria_credentials(request)
     from advisor.agents.governance_plan_agent import get_governance_plan_agent
     agent = get_governance_plan_agent()
-    result = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: agent.execute(doc_id, source_folder="outbox", egeria_credentials=egeria_credentials)
-    )
-    return result
+    body = body or {}
+    draft_id = body.get("draft_id") or None
+    pending_id, digest = body.get("pending_id"), body.get("digest")
+    ack = body.get("ack_non_idempotent") is True   # a re-run's acknowledgement: exactly true, nothing truthy
+    if not pending_id:
+        run = partial(agent.prepare_execute, doc_id, source_folder=source_folder, draft_id=draft_id,
+                      egeria_credentials=egeria_credentials, action=action)
+    elif action == "retry":
+        run = partial(agent.retry, doc_id, egeria_credentials=egeria_credentials,
+                      pending_id=pending_id, digest=digest, ack_non_idempotent=ack)
+    else:
+        run = partial(agent.execute, doc_id, source_folder=source_folder, draft_id=draft_id,
+                      egeria_credentials=egeria_credentials, pending_id=pending_id, digest=digest,
+                      ack_non_idempotent=ack)
+    return await asyncio.get_event_loop().run_in_executor(None, run)
 
 
 @router.post("/api/plans/{doc_id}/recover")
