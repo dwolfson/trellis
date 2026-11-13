@@ -31,8 +31,10 @@ REPO = Path(__file__).resolve().parents[3]
 def _own_sha(monkeypatch):
     monkeypatch.setenv("TRELLIS_RE_SHA", OWN + "cdef0123456789abcdef01234567")
     build_info.re_sha.cache_clear()
+    adapter._PARITY_UNCHECKED_WARNED.clear()
     yield
     build_info.re_sha.cache_clear()
+    adapter._PARITY_UNCHECKED_WARNED.clear()
 
 
 def _worker(name, status="ONLINE"):
@@ -71,6 +73,16 @@ class TestChooseDeployment:
         assert _choose(c).name == "RE Survey Flow/re-survey-step-deployment"
         c = _client([_worker("re-host-worker-laz"), _worker(f"re-worker-{OTHER}-pop-os")])
         assert _choose(c).name == "RE Survey Flow/re-survey-step-deployment", "the other-code worker is not used"
+
+    def test_a_worker_with_no_commit_is_warned_about_once_per_worker(self, caplog):
+        import logging
+        caplog.set_level(logging.WARNING)
+        for _ in range(3):
+            _choose(_client([_worker("re-host-worker-laz"), _worker("re-host-worker-b")]))
+        warns = [r.getMessage() for r in caplog.records if "commit parity not checked" in r.getMessage()]
+        assert len(warns) == 2, warns
+        assert warns[0].startswith("commit parity not checked: worker re-host-worker-b advertises none")
+        assert f"this Resource Explorer runs {OWN}" in warns[0]
 
     def test_only_workers_on_other_code_is_refused_naming_both_commits(self):
         c = _client([_worker(f"re-worker-{OTHER}-pop-os")])

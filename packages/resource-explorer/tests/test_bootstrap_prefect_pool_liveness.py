@@ -59,6 +59,8 @@ def _check(workers, now):
 NOW = datetime(2026, 11, 13, 12, 17, tzinfo=timezone.utc)
 STALE = (NOW - timedelta(days=32)).strftime("%Y-%m-%dT%H:%M:%SZ")
 FRESH = (NOW - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+#: A worker that advertises its commit (the container worker's, and the host worker's once it does).
+ON_SHA = "re-worker-0123456789ab-pop-os"
 
 
 class TestPoolWorkerLiveness:
@@ -159,9 +161,10 @@ class TestLiveNotRegistered:
 
     def test_one_of_three_in_the_window_is_live(self, caplog):
         caplog.set_level(logging.INFO, logger=bs.log.name)
-        status = _check([_fake_worker("a", STALE), _fake_worker("b", FRESH), _fake_worker("c", STALE)], NOW)
+        status = _check([_fake_worker("a", STALE), _fake_worker(ON_SHA, FRESH), _fake_worker("c", STALE)], NOW)
         assert (status.live_count, status.registered_count) == (1, 3)
         assert status.summary == "1 live worker(s) of 3 registered; last heartbeat 20 seconds ago"
+        assert status.parity_unchecked == []
         assert status.runs_locally_instead == []
         assert [r.levelno for r in caplog.records if r.levelno >= logging.INFO] == [logging.INFO]
 
@@ -193,8 +196,8 @@ class TestLiveNotRegistered:
         _check(stale, NOW + timedelta(minutes=10))
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
         caplog.clear()
-        _check([_fake_worker("w0", FRESH)], NOW)
-        _check([_fake_worker("w0", FRESH)], NOW)
+        _check([_fake_worker(ON_SHA, FRESH)], NOW)
+        _check([_fake_worker(ON_SHA, FRESH)], NOW)
         said = [r for r in caplog.records if r.levelno >= logging.INFO]
         assert [r.levelno for r in said] == [logging.INFO] and "1 live worker(s)" in said[0].getMessage()
         caplog.clear()
@@ -251,7 +254,7 @@ class TestServerUnreachable:
         assert len(warns) == 1 and "server not reachable" in warns[0].getMessage()
         assert "connection refused" in warns[0].getMessage(), "the cause is in the one warning"
         caplog.clear()
-        _check([_fake_worker("w0", FRESH)], NOW)
+        _check([_fake_worker(ON_SHA, FRESH)], NOW)
         said = [r for r in caplog.records if r.levelno >= logging.INFO]
         assert [r.levelno for r in said] == [logging.INFO], "back: said once, at INFO"
 
@@ -261,3 +264,33 @@ class TestServerUnreachable:
         assert bs.get_status()["prefect_pool"]["enabled"] is get_config().prefect.enabled
         monkeypatch.setattr(get_config().prefect, "enabled", False)
         assert bs.get_status()["prefect_pool"]["enabled"] is False
+
+
+class TestCommitParityUnchecked:
+    """Architect ruling 2026-11-13: a live worker that advertises no commit can still be dispatched to, but it
+    is a WARNING (once per change) and a banner line, never a silent all-clear."""
+
+    def test_a_live_worker_with_no_commit_is_a_warning_said_once(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        status = _check([_fake_worker("re-host-worker-laz", FRESH)], NOW)
+        assert status.live_count == 1 and status.parity_unchecked == ["re-host-worker-laz"]
+        assert status.summary == ("1 live worker(s) of 1 registered; last heartbeat 20 seconds ago; commit parity "
+                                  "not checked: worker re-host-worker-laz advertises no commit, so a step "
+                                  "dispatched to it may run on other code than this Resource Explorer's")
+        _check([_fake_worker("re-host-worker-laz", FRESH)], NOW)
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warns) == 1 and "commit parity not checked" in warns[0].getMessage()
+        assert bs.get_status()["prefect_pool"]["parity_unchecked"] == ["re-host-worker-laz"]
+        assert status.runs_locally_instead == [], "a live worker: nothing runs locally instead"
+
+    def test_advertising_a_commit_clears_it_once_at_info(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        _check([_fake_worker("re-host-worker-laz", FRESH)], NOW)
+        caplog.clear()
+        status = _check([_fake_worker(ON_SHA, FRESH)], NOW)
+        assert status.parity_unchecked == []
+        assert [r.levelno for r in caplog.records if r.levelno >= logging.INFO] == [logging.INFO]
+
+    def test_a_stale_worker_with_no_commit_is_not_counted(self):
+        status = _check([_fake_worker("re-host-worker-laz", STALE), _fake_worker(ON_SHA, FRESH)], NOW)
+        assert status.parity_unchecked == []

@@ -280,6 +280,8 @@ def _is_online(worker: Any) -> bool:
 # ── version parity (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §1.6) ─────────────────────────────
 #: The deployment every worker without a commit of its own serves (the host worker on laz).
 DEFAULT_DEPLOYMENT = "RE Survey Flow/re-survey-step-deployment"
+#: Workers already warned about (no advertised commit): once per worker per process.
+_PARITY_UNCHECKED_WARNED: set[str] = set()
 _WORKER_SHA = re.compile(r"^re-worker-([0-9a-f]{12})(?:-|$)")
 
 
@@ -334,7 +336,15 @@ async def _choose_deployment(client: Any, pool_default: str) -> Any:
                 f"a Prefect worker on this Resource Explorer's code ({own}) is online but its deployment "
                 f"'{name}' is missing: {e}"
             )
-    if any(not worker_sha(w) for w in online):
+    unchecked = sorted(str(getattr(w, "name", "") or "?") for w in online if not worker_sha(w))
+    if unchecked:
+        # Allowed, never silent (Architect ruling 2026-11-13): said once per worker, and the pool banner line
+        # names it for as long as it lasts (bootstrap.PrefectPoolStatus.parity_unchecked).
+        for name in unchecked:
+            if name not in _PARITY_UNCHECKED_WARNED:
+                _PARITY_UNCHECKED_WARNED.add(name)
+                logging.warning("commit parity not checked: worker %s advertises none; dispatching to the "
+                                "default deployment (this Resource Explorer runs %s)", name, own or "commit unknown")
         return deployment
     if advertised:
         raise RuntimeError(

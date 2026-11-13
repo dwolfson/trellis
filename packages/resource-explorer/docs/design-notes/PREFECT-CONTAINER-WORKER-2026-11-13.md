@@ -35,7 +35,7 @@ the A/B proof below comes first, on the demo machine.
 | Online workers | Deployment used |
 |---|---|
 | one advertises RE's own commit | `re-survey-step-<sha12>` (that worker's queue) |
-| else one advertises no commit (the host worker) | the default deployment, as before |
+| else one advertises no commit (the host worker, until its wrapper advertises one) | the default deployment, as before, but never silently: a WARNING once per worker ("commit parity not checked: worker <name> advertises none") and a pool banner line while it lasts (Architect ruling, 2026-11-13) |
 | only workers on other commits | refused: "no online Prefect worker runs this Resource Explorer's code (<own>); online workers on pool … run <theirs>" |
 | none | refused: "no online Prefect worker for pool …" (unchanged) |
 

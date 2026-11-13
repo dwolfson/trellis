@@ -84,3 +84,18 @@ test('server text reaches the page as text, never markup', async () => {
   assert.equal(bar.querySelector('img'), null);
   assert.equal(bar.querySelector('b'), null);
 });
+
+test('a live worker that advertises no commit is a warning line in the server words', async () => {
+  const { document, mod } = await loadShell();
+  const summary = '1 live worker(s) of 1 registered; last heartbeat 20 seconds ago; commit parity not checked: '
+    + 'worker re-host-worker-laz advertises no commit, so a step dispatched to it may run on other code than this '
+    + "Resource Explorer's";
+  mod.renderBootstrapBanner(document, STATUS(POOL({ live_count: 1, summary, parity_unchecked: ['re-host-worker-laz'],
+    runs_locally_instead: [], runs_locally_words: '' })));
+  const line = document.querySelector('[data-prefect-pool-line]');
+  assert.equal(line.dataset.prefectPoolLine, 'parity_unchecked');
+  assert.equal(text(document.querySelector('[data-prefect-pool-word]')), `Prefect: ${summary}`);
+  assert.equal(document.querySelector('[data-prefect-pool-runs-locally]'), null);
+  mod.renderBootstrapBanner(document, STATUS(POOL({ live_count: 1, parity_unchecked: [] })));
+  assert.equal(document.getElementById('bootstrap-banner'), null, 'a worker on a known commit: no line');
+});

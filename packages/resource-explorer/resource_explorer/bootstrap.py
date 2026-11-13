@@ -282,6 +282,9 @@ class PrefectPoolStatus:
     #: When live_count == 0: what runs in Resource Explorer's own process instead of on a
     #: Prefect worker (prefect_pool_runs_locally_instead). Empty while a worker is live.
     runs_locally_instead: list[str] = field(default_factory=list)
+    #: Live workers that advertise no commit (`re-worker-<sha12>-<host>` is the form that does): RE can still
+    #: dispatch to them, but cannot check they run its own code (Architect ruling, 2026-11-13). Never silent.
+    parity_unchecked: list[str] = field(default_factory=list)
     last_checked_at: str = ""
     last_check_error: str = ""
 
@@ -373,6 +376,15 @@ def unreachable_words(steps: list[str]) -> str:
     listed = f" ({', '.join(steps)})" if steps else ""
     return (f"Runs are not recorded in Prefect; dispatched steps{listed} run in Resource Explorer's "
             "process instead.")
+
+
+def parity_unchecked_words(names: list[str]) -> str:
+    """The words for live workers that advertise no commit (empty list: "")."""
+    if not names:
+        return ""
+    verb = "advertises" if len(names) == 1 else "advertise"
+    return (f"commit parity not checked: worker {', '.join(names)} {verb} no commit, so a step dispatched to it "
+            "may run on other code than this Resource Explorer's")
 
 
 def runs_locally_words(steps: list[str]) -> str:
@@ -500,6 +512,12 @@ def check_prefect_pool_workers(pool: str | None = None, *, now: datetime | None 
         status.reachable = True
         status.registered_count = len(workers)
         status.live_count = sum(1 for w in workers if _worker_is_live(w, now, factor))
+        from resource_explorer.surveyors.prefect_adapter import worker_sha
+
+        status.parity_unchecked = sorted(
+            str(getattr(w, "name", "") or "?") for w in workers
+            if _worker_is_live(w, now, factor) and not worker_sha(w)
+        )
         beats = [b for b in (_parse_time(getattr(w, "last_heartbeat_time", None)) for w in workers) if b]
         status.never_heard_from = status.registered_count - len(beats)
         newest = max(beats) if beats else None
@@ -524,10 +542,16 @@ def check_prefect_pool_workers(pool: str | None = None, *, now: datetime | None 
             status.summary += f"; {status.never_heard_from} never heard from"
         if state != "live":
             status.runs_locally_instead = prefect_pool_runs_locally_instead()
+        elif status.parity_unchecked:
+            # Its own state, so it is said once when it starts and once when it ends, at WARNING while it lasts.
+            state = "live_parity_unchecked:" + ",".join(status.parity_unchecked)
+            status.summary += "; " + parity_unchecked_words(status.parity_unchecked)
 
         if state != _prefect_pool_logged_state:
             if state == "live":
                 log.info("bootstrap: Prefect work pool %r: %s", pool, status.summary)
+            elif state.startswith("live_parity_unchecked:"):
+                log.warning("bootstrap: Prefect work pool %r: %s", pool, status.summary)
             else:
                 log.warning(
                     "bootstrap: Prefect work pool %r: %s. Nothing waits: %s", pool, status.summary,
@@ -1817,6 +1841,7 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
             "worker_count": pool_st.worker_count if pool_st.reachable else None,
             "summary": pool_st.summary,
             "runs_locally_instead": list(pool_st.runs_locally_instead),
+            "parity_unchecked": list(pool_st.parity_unchecked),
             "runs_locally_words": (unreachable_words(pool_st.runs_locally_instead)
                                    if pool_st.reachable is False
                                    else runs_locally_words(pool_st.runs_locally_instead)),
