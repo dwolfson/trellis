@@ -487,7 +487,7 @@ LIBRARY_HOSTS = (("Egeria host", "database"), ("Files host", "filesystem"))
 def library_steps_line() -> str:
     """The one start-up line: every installed library step, named, per host, with the catalogued steps whose package
     is missing there. Example: `library steps · Egeria host: change_rates, hub_tables (none missing) · Files host:
-    fs_activity (1 missing: fs_duplicates) · set steps: schema_comparison (not catalogued: a missing set step is not
+    fs_activity (1 missing: fs_duplicates) · set steps: schema_comparison (not in the catalog: a missing set step is not
     detected)`. A host with no step says so rather than leaving a gap.
 
     Set steps (a work list's members, `subject="set"`) run under neither host, so they get their own part
@@ -511,7 +511,7 @@ def library_steps_line() -> str:
 
 #: What the set-steps part says instead of "none missing": nothing declares which set steps should be installed.
 #: Deliberately without "missing:" (the image's prefect-worker role refuses to start on " missing:").
-SET_STEPS_NOT_CHECKED = "not catalogued: a missing set step is not detected"
+SET_STEPS_NOT_CHECKED = "not in the catalog: a missing set step is not detected"
 
 
 def installed_set_steps() -> list[str]:

@@ -16,7 +16,7 @@ ALL = "change_rates, database_staleness, hub_tables, statistics_freshness"
 FS_ALL = "fs_activity, fs_change_rates, fs_duplicates, fs_layout_signals, fs_permissions"
 FILES_NONE = f"Files host: none installed (5 missing: {FS_ALL})"
 FILES_ALL = f"Files host: {FS_ALL} (none missing)"
-SET_NOTE = "not catalogued: a missing set step is not detected"
+SET_NOTE = "not in the catalog: a missing set step is not detected"
 
 
 @pytest.fixture(autouse=True)
