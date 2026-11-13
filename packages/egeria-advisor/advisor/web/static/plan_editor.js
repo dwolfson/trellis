@@ -944,30 +944,52 @@ async function _validatePlanDoc() {
 
 // ── Execute ───────────────────────────────────────────────────────────────────
 
+/** The plan confirm gate (server: GovernancePlanAgent.prepare_execute). The first POST runs nothing and
+ *  returns the plan as it would run; the user confirms that command sequence; the second POST carries
+ *  {pending_id, digest} and runs it once. A plan edited in between is refused by the server, in words.
+ *  Returns the server's result, or {cancelled: true}. Throws on an HTTP error (with the server's detail).
+ *  Shared by every Execute / Re-run button (index.html and this file). */
+async function runPlanConfirmed(url, body) {
+  const post = async (b) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
+      body: JSON.stringify(b),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || `Server error ${r.status}`);
+    return data;
+  };
+  const shown = await post(body || {});
+  if (!shown || !shown.confirm_required) return shown;       // not found, refused, sign in: the server says
+  const cmds = String(shown.command_section || '').trim();
+  const preview = cmds.length > 1500 ? cmds.slice(0, 1500) + '\n…' : cmds;
+  const ok = confirm(`Run plan ${shown.doc_id}?\n${shown.command_count} command(s) will be processed in Egeria as you:\n\n${preview}`);
+  if (!ok) return { cancelled: true, response: 'Cancelled: the plan was not run, and nothing was written.' };
+  return post({ ...(body || {}), pending_id: shown.pending_id, digest: shown.plan_digest });
+}
+
 async function _executePlanDoc() {
-  if (!confirm(`Execute plan ${_ped.doc_id}?\nThis will submit all commands to Dr.Egeria.`)) return;
-  if (_ped.dirty) await _savePlanEdits();
+  if (_ped.dirty) await _savePlanEdits();     // saved first, so what is confirmed is what is stored
   const docId = _ped.doc_id;
   const draftId = _ped.draft_id;
-  closePlanEditor();
   // Direct REST call (not a faked chat message) — "execute the plan X" sent
   // as chat text can be intercepted by context-based routing (e.g. an open
   // Plan Canvas session for the same plan) and mistaken for a plan-
   // modification instruction instead of an execute command. See BACKLOG.md.
-  if (typeof appendMessage === 'function') appendMessage('you', `Execute plan ${docId}`);
+  let result;
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(docId)}/execute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...Auth.getHeaders() },
-      body: JSON.stringify({ draft_id: draftId || null }),
-    });
-    const result = await r.json();
-    if (typeof appendMessage === 'function') {
-      const wrap = appendMessage('assistant', result.response || '', {});
-      if (typeof _applyQueryResult === 'function') _applyQueryResult(`execute the plan ${docId}`, result, wrap);
-    }
+    result = await runPlanConfirmed(`/api/plans/${encodeURIComponent(docId)}/execute`, { draft_id: draftId || null });
   } catch (e) {
     if (typeof appendMessage === 'function') appendMessage('assistant', `**Error:** ${e.message}`);
+    return;
+  }
+  if (result.cancelled) return;
+  closePlanEditor();
+  if (typeof appendMessage === 'function') {
+    appendMessage('you', `Execute plan ${docId}`);
+    const wrap = appendMessage('assistant', result.response || '', {});
+    if (typeof _applyQueryResult === 'function') _applyQueryResult(`execute the plan ${docId}`, result, wrap);
   }
 }
 
@@ -1001,12 +1023,12 @@ async function pedRecoverForEditing() {
 // ── Re-run Now (outbox → outbox, no inbox detour) ─────────────────────────────
 
 async function pedRerunNow() {
-  if (!confirm(`Re-run "${_ped.doc_id}" now?\nThis submits its commands to Egeria again, as-is, and appends a new outcome.`)) return;
   const bar = document.getElementById('ped-recovery-bar');
   if (bar) bar.innerHTML = '<span class="text-emerald-300">Re-running…</span>';
   try {
-    const r = await fetch(`/api/plans/${encodeURIComponent(_ped.doc_id)}/rerun`, { method: 'POST', headers: Auth.getHeaders() });
-    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.statusText); }
+    const res = await runPlanConfirmed(`/api/plans/${encodeURIComponent(_ped.doc_id)}/rerun`, {});
+    if (res.cancelled) { if (bar) bar.innerHTML = ''; return; }
+    if (res.state === 'refused') throw new Error(res.response);
     await openPlanEditor(_ped.doc_id, null);
     if (typeof loadPlans === 'function') loadPlans();
     _showToast('Plan re-executed — outcome updated.');

@@ -238,14 +238,32 @@ def execute_plan(ctx: click.Context, doc_id: str, dry_run: bool, perspective: st
     else:
         egeria_credentials = cli_session.require_egeria_credentials(console)
 
+    agent = get_governance_plan_agent()
+    if not dry_run:
+        # The plan confirm gate: show exactly what would run, ask, then run it with the shown digest.
+        shown = agent.prepare_execute(doc_id, egeria_credentials=egeria_credentials)
+        if not shown.get("confirm_required"):
+            console.print(Panel(Markdown(shown.get("response", "")), title=f"[bold]{doc_id}[/bold]",
+                                border_style="red"))
+            sys.exit(1)
+        console.print(Panel(Markdown(f"```markdown\n{shown['command_section'].strip()}\n```"),
+                            title=f"[bold]{doc_id}[/bold]: {shown['command_count']} command(s)",
+                            border_style="cyan"))
+        if not click.confirm(f"Process these {shown['command_count']} command(s) in Egeria as you?", default=False):
+            agent.cancel_execute(shown["pending_id"])
+            console.print("[yellow]Cancelled: nothing was written.[/yellow]")
+            return
+
     label = f"[dry run] {doc_id}" if dry_run else doc_id
     console.print(f"[cyan]Executing plan:[/cyan] {label}")
 
     try:
-        result = get_governance_plan_agent().execute(
-            doc_id, perspective=perspective, dry_run=dry_run,
-            egeria_credentials=egeria_credentials,
-        )
+        if dry_run:
+            result = agent.execute(doc_id, perspective=perspective, dry_run=True,
+                                   egeria_credentials=egeria_credentials)
+        else:
+            result = agent.execute(doc_id, perspective=perspective, egeria_credentials=egeria_credentials,
+                                   pending_id=shown["pending_id"], digest=shown["plan_digest"])
     except Exception as exc:
         console.print(f"[red]✗ Execution failed:[/red] {exc}")
         sys.exit(1)
