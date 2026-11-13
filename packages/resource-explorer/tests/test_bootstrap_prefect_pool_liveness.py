@@ -16,6 +16,8 @@ pool.
 """
 from __future__ import annotations
 
+import logging
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,17 +30,39 @@ from resource_explorer import bootstrap as bs
 def _clear_pool_status():
     with bs._prefect_pool_status_lock:
         bs._prefect_pool_status = bs.PrefectPoolStatus()
+    bs._prefect_pool_logged_state = None
     yield
     with bs._prefect_pool_status_lock:
         bs._prefect_pool_status = bs.PrefectPoolStatus()
+    bs._prefect_pool_logged_state = None
 
 
-def _fake_worker(name="worker-1", last_heartbeat="2026-09-28T00:00:00Z"):
-    return SimpleNamespace(name=name, last_heartbeat_time=last_heartbeat)
+def _fake_worker(name="worker-1", last_heartbeat="2026-09-28T00:00:00Z", **extra):
+    return SimpleNamespace(name=name, last_heartbeat_time=last_heartbeat, **extra)
+
+
+def _client(workers):
+    fake_client = MagicMock()
+    fake_client.read_workers_for_work_pool = AsyncMock(return_value=workers)
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    return fake_client
+
+
+def _check(workers, now):
+    with patch("resource_explorer.surveyors.prefect_adapter.re_prefect_client",
+               return_value=_client(workers)):
+        return bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=now)
+
+
+#: The laz state found 2026-11-13: three registrations, the newest heartbeat a month old.
+NOW = datetime(2026, 11, 13, 12, 17, tzinfo=timezone.utc)
+STALE = (NOW - timedelta(days=32)).strftime("%Y-%m-%dT%H:%M:%SZ")
+FRESH = (NOW - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class TestPoolWorkerLiveness:
-    def test_reachable_pool_with_workers_reports_count_and_heartbeat(self):
+    def test_reachable_pool_with_workers_reports_live_registered_and_heartbeat(self):
         fake_client = MagicMock()
         fake_client.read_workers_for_work_pool = AsyncMock(
             return_value=[_fake_worker("w1", "2026-09-28T00:00:00Z"),
@@ -51,17 +75,23 @@ class TestPoolWorkerLiveness:
             "resource_explorer.surveyors.prefect_adapter.re_prefect_client",
             return_value=fake_client,
         ):
-            status = bs.check_prefect_pool_workers(pool="resource-explorer-pool")
+            status = bs.check_prefect_pool_workers(
+                pool="resource-explorer-pool",
+                now=datetime(2026, 9, 28, 0, 5, 30, tzinfo=timezone.utc))
 
         assert status.reachable is True
-        assert status.worker_count == 2
+        # w1 has been silent 5.5 minutes (> 3 x 30 s): registered, not live.
+        assert status.live_count == 1 and status.registered_count == 2
+        assert status.worker_count == 1, "the deprecated alias is the live count"
         assert status.last_heartbeat == "2026-09-28T00:05:00Z"
         assert status.last_check_error == ""
 
         # And it lands in the same status surface the admin banner reads
         # alongside the Dr.Egeria batch status.
         st = bs.get_status()
-        assert st["prefect_pool"]["worker_count"] == 2
+        assert st["prefect_pool"]["worker_count"] == 1
+        assert st["prefect_pool"]["live_count"] == 1
+        assert st["prefect_pool"]["registered_count"] == 2
         assert st["prefect_pool"]["reachable"] is True
 
     def test_reachable_pool_with_zero_workers_is_reported_not_hidden(self):
@@ -77,7 +107,9 @@ class TestPoolWorkerLiveness:
             status = bs.check_prefect_pool_workers(pool="resource-explorer-pool")
 
         assert status.reachable is True
-        assert status.worker_count == 0
+        assert status.worker_count == 0 and status.registered_count == 0
+        assert status.summary == "no registered worker"
+        assert status.runs_locally_instead, "an empty pool is no live worker too"
         # Reachable-but-empty must not be conflated with unreachable — the
         # tri-state distinction the batch canary checks in this module make.
         assert status.last_check_error == ""
@@ -93,3 +125,106 @@ class TestPoolWorkerLiveness:
         assert status.last_check_error
         st = bs.get_status()
         assert st["prefect_pool"]["reachable"] is False
+        for key in ("live_count", "registered_count", "worker_count", "never_heard_from"):
+            assert st["prefect_pool"][key] is None, f"{key}: an unreachable pool is not an empty one"
+        assert st["prefect_pool"]["runs_locally_instead"] == []
+
+
+class TestLiveNotRegistered:
+    """2026-11-13: laz's pool listed 3 workers whose last heartbeat was a month old, and the
+    check reported "has 3 worker(s)". Live is what it counts now."""
+
+    def test_three_registered_a_month_silent_is_no_live_worker(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        status = _check([_fake_worker(f"w{i}", STALE) for i in range(3)], NOW)
+        assert (status.live_count, status.registered_count, status.worker_count) == (0, 3, 0)
+        assert status.summary == f"no live worker: 3 registered, last heartbeat 32 days ago ({STALE})"
+        assert status.runs_locally_instead
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warns) == 1 and "no live worker" in warns[0].getMessage()
+        assert "run in Resource Explorer's process instead" in warns[0].getMessage()
+        payload = bs.get_status()["prefect_pool"]
+        assert payload["live_count"] == 0 and payload["registered_count"] == 3
+        assert payload["summary"] == status.summary
+        assert payload["runs_locally_words"].startswith("Prefect-dispatched steps (Soda data-quality, ")
+        assert payload["runs_locally_words"].endswith(
+            "run in Resource Explorer's process instead: no Prefect run history, retries or cancel.")
+
+    def test_one_of_three_in_the_window_is_live(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        status = _check([_fake_worker("a", STALE), _fake_worker("b", FRESH), _fake_worker("c", STALE)], NOW)
+        assert (status.live_count, status.registered_count) == (1, 3)
+        assert status.summary == "1 live worker(s) of 3 registered; last heartbeat 20 seconds ago"
+        assert status.runs_locally_instead == []
+        assert [r.levelno for r in caplog.records if r.levelno >= logging.INFO] == [logging.INFO]
+
+    def test_prefects_own_status_wins_over_the_heartbeat(self):
+        assert _check([_fake_worker("a", STALE, status="ONLINE")], NOW).live_count == 1
+        assert _check([_fake_worker("a", FRESH, status=SimpleNamespace(value="OFFLINE"))], NOW).live_count == 0
+
+    def test_the_window_is_factor_times_the_workers_own_interval(self, monkeypatch):
+        beat = (NOW - timedelta(seconds=250)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert _check([_fake_worker("a", beat)], NOW).live_count == 0, "3 x 30 s"
+        assert _check([_fake_worker("a", beat, heartbeat_interval_seconds=100)], NOW).live_count == 1
+        from resource_explorer.config import PrefectConfig, get_config
+        monkeypatch.setenv("PREFECT_WORKER_LIVE_FACTOR", "10")
+        assert PrefectConfig().worker_live_factor == 10, "PREFECT_WORKER_LIVE_FACTOR sets it"
+        monkeypatch.setattr(get_config().prefect, "worker_live_factor", 10.0)
+        assert _check([_fake_worker("a", beat)], NOW).live_count == 1
+
+    def test_no_heartbeat_at_all_is_not_live_and_is_counted(self):
+        status = _check([_fake_worker("a", None), _fake_worker("b", STALE)], NOW)
+        assert (status.live_count, status.registered_count, status.never_heard_from) == (0, 2, 1)
+        assert status.summary.endswith("; 1 never heard from")
+        only = _check([_fake_worker("a", None)], NOW)
+        assert only.summary == "no live worker: 1 registered, last heartbeat never; 1 never heard from"
+
+    def test_a_state_is_logged_once_and_recovery_once(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        stale = [_fake_worker(f"w{i}", STALE) for i in range(3)]
+        _check(stale, NOW)
+        _check(stale, NOW + timedelta(minutes=10))
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+        caplog.clear()
+        _check([_fake_worker("w0", FRESH)], NOW)
+        _check([_fake_worker("w0", FRESH)], NOW)
+        said = [r for r in caplog.records if r.levelno >= logging.INFO]
+        assert [r.levelno for r in said] == [logging.INFO] and "1 live worker(s)" in said[0].getMessage()
+        caplog.clear()
+        _check(stale, NOW)
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1, "lost again: said again"
+
+    def test_ages_use_one_wording(self):
+        assert bs._age_words(45) == "45 seconds"
+        assert bs._age_words(90 * 60) == "90 minutes"
+        assert bs._age_words(47 * 3600) == "47 hours"
+        assert bs._age_words(2 * 86400) == "2 days"
+        assert bs._age_words(86400 + 1) == "24 hours"
+
+
+class TestRunsLocallyInstead:
+    """With no live worker nothing waits: per-step dispatch finds no ONLINE worker and runs the step
+    locally (test_prefect_poll_timeout::test_no_worker_falls_back_locally_under_the_existing_policy);
+    whole-definition runs are sequenced in-process and never use the pool."""
+
+    def test_built_from_prefect_only_steps(self, monkeypatch):
+        from resource_explorer.surveyors import survey_definition_executor as sde
+        monkeypatch.setattr(sde, "PREFECT_ONLY_STEPS", sde.PREFECT_ONLY_STEPS + ("a_new_prefect_step",))
+        steps = bs.prefect_pool_runs_locally_instead()
+        assert steps[:2] == ["Soda data-quality", "Great Expectations validation"]
+        assert "a_new_prefect_step" in steps, "a step added to PREFECT_ONLY_STEPS must be reported"
+        assert "any step marked executes_at=prefect" in steps
+
+    def test_res_own_steps_only_when_route_local_steps_is_on(self, monkeypatch):
+        from resource_explorer.config import get_config
+        assert not any("own steps" in s for s in bs.prefect_pool_runs_locally_instead())
+        monkeypatch.setattr(get_config().prefect, "route_local_steps", True)
+        assert "Resource Explorer's own steps (PREFECT_ROUTE_LOCAL_STEPS is on)" in \
+            bs.prefect_pool_runs_locally_instead()
+
+    def test_the_check_is_read_only(self):
+        client = _client([_fake_worker("w0", STALE)])
+        with patch("resource_explorer.surveyors.prefect_adapter.re_prefect_client", return_value=client):
+            bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=NOW)
+        called = {c[0] for c in client.method_calls} - {"__aenter__", "__aexit__"}
+        assert called == {"read_workers_for_work_pool"}

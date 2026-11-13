@@ -136,6 +136,24 @@ export function engineLine(status) {
   return null;
 }
 
+/** The Prefect pool's own line (2026-11-13): null, or {kind: 'no_live', word, runsLocally}. Drawn only when Prefect
+ *  was reached and no worker is live: an unread or unreachable pool claims nothing here (reachable null/false), and
+ *  a live pool needs no one's eye. The words are the server's (`summary`, `runs_locally_words`), so the banner and
+ *  the log say the same thing. Nothing waits with no live worker: those steps run in RE's process instead. */
+export function prefectPoolLine(status) {
+  const p = status?.prefect_pool;
+  if (!p || p.reachable !== true || !(p.live_count === 0)) return null;
+  return { kind: 'no_live', word: `Prefect: ${p.summary || 'no live worker'}`, runsLocally: p.runs_locally_words || '' };
+}
+
+function poolLineHtml(pool) {
+  if (!pool) return '';
+  return `<span data-prefect-pool-line="${esc(pool.kind)}" class="basis-full text-state-warn">`
+    + `<span aria-hidden="true">⚠</span> <span data-prefect-pool-word>${esc(pool.word)}</span>`
+    + (pool.runsLocally ? ` · <span data-prefect-pool-runs-locally>${esc(pool.runsLocally)}</span>` : '')
+    + '</span>';
+}
+
 function engineLineHtml(eng) {
   if (!eng) return '';
   return `<span data-engine-line="${esc(eng.kind)}" class="basis-full ${eng.kind === 'declaring' ? 'text-accent-ink' : 'text-state-warn'}">`
@@ -156,8 +174,9 @@ let runInFlight = false;
 export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOnly, onDone, locked = false } = {}) {
   const need = bootstrapAttention(status);
   const eng = engineLine(status);
+  const pool = prefectPoolLine(status);
   if (runInFlight && doc.getElementById(BOOTSTRAP_BANNER_ID)) return need;
-  if (!need && !eng) { removeEl(doc, BOOTSTRAP_BANNER_ID); return null; }
+  if (!need && !eng && !pool) { removeEl(doc, BOOTSTRAP_BANNER_ID); return null; }
   let bar = doc.getElementById(BOOTSTRAP_BANNER_ID);
   if (!bar) {
     bar = doc.createElement('div');
@@ -167,14 +186,14 @@ export function renderBootstrapBanner(doc, status, { run = runBootstrapMissingOn
     doc.body.insertBefore(bar, doc.body.firstChild);
   }
   if (!need) {
-    // Only the engine line: no batch word, no run button (the press is Admin › Repair's).
-    bar.dataset.bootstrapKind = 'engine';
-    bar.innerHTML = engineLineHtml(eng);
-    return { kind: 'engine', word: eng.word, missing: 0 };
+    // Only the engine and/or pool lines: no batch word, no run button (neither is healed by a bootstrap run).
+    bar.dataset.bootstrapKind = eng ? 'engine' : 'prefect-pool';
+    bar.innerHTML = engineLineHtml(eng) + poolLineHtml(pool);
+    return eng ? { kind: 'engine', word: eng.word, missing: 0 } : { kind: 'prefect-pool', word: pool.word, missing: 0 };
   }
   const canRun = need.kind === 'missing';
   bar.dataset.bootstrapKind = need.kind;
-  bar.innerHTML = `${engineLineHtml(eng)}<span class="${need.kind === 'restoring' ? 'text-accent-ink' : 'text-state-warn'}" aria-hidden="true">${need.kind === 'restoring' ? '◔' : '⚠'}</span>
+  bar.innerHTML = `${engineLineHtml(eng)}${poolLineHtml(pool)}<span class="${need.kind === 'restoring' ? 'text-accent-ink' : 'text-state-warn'}" aria-hidden="true">${need.kind === 'restoring' ? '◔' : '⚠'}</span>
     <span data-bootstrap-word>${esc(need.word)}</span>
     ${canRun ? `<button type="button" data-bootstrap-run ${locked ? 'disabled data-admin-only' : ''}
       title="${locked ? 'Admin only: needs the admin credential (Admin → Feedback)' : 'Heal only what is missing. Nothing already present is re-run.'}"

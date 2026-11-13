@@ -513,6 +513,10 @@ class PrefectConfig(BaseSettings):
     # Wanting RE's own steps run through Prefect for retries and telemetry is a
     # legitimate deployment choice; it just has to be asked for.
     route_local_steps: bool = Field(default=False, alias="PREFECT_ROUTE_LOCAL_STEPS")
+    # A pool worker with no Prefect `status` of its own counts as live when its last heartbeat is within
+    # this many heartbeat intervals (the worker's own `heartbeat_interval_seconds`, else 30 s). Read by
+    # bootstrap.check_prefect_pool_workers, which counts live workers rather than registrations.
+    worker_live_factor: float = Field(default=3.0, gt=0, alias="PREFECT_WORKER_LIVE_FACTOR")
 
     model_config = _ENV_FILE_CONFIG
 
