@@ -432,6 +432,9 @@ class GovernancePlanAgent:
         if refused:
             return refused
         names = plan_command_names(command_section)
+        refused = refused_plan_steps(names)
+        if refused:
+            return _refused(doc_id, _steps_refused_words(refused))
         n = len(names)
         rerun = action == "retry" or folder == "outbox"
         unsafe = non_idempotent_commands(names) if rerun else []
@@ -552,9 +555,14 @@ class GovernancePlanAgent:
         with pending.lock:   # one run per pending action; a retry gets the first answer
             if pending.result is not None:
                 return _already(pending.result)
-            if confirm_gate.text_digest(_load_plan(doc_id, source_folder) or "") != pending.digest:
+            content = _load_plan(doc_id, source_folder) or ""
+            if confirm_gate.text_digest(content) != pending.digest:
                 _PLAN_GATE.discard(pending.pending_id)
                 return _refused(doc_id, PLAN_DOCUMENT_CHANGED)
+            refused = refused_plan_steps(plan_command_names(self._extract_command_section(content)))
+            if refused:   # the real guard: a plan never dispatches a step chat may not propose
+                _PLAN_GATE.discard(pending.pending_id)
+                return _refused(doc_id, _steps_refused_words(refused))
             pending.result = self._run_plan(
                 doc_id, perspective=perspective, source_folder=source_folder,
                 draft_id=draft_id or pending.payload.get("draft_id"), egeria_credentials=egeria_credentials)
@@ -866,9 +874,14 @@ class GovernancePlanAgent:
         with pending.lock:
             if pending.result is not None:
                 return _already(pending.result)
-            if confirm_gate.text_digest(_load_plan(doc_id, "outbox") or "") != pending.digest:
+            content = _load_plan(doc_id, "outbox") or ""
+            if confirm_gate.text_digest(content) != pending.digest:
                 _PLAN_GATE.discard(pending.pending_id)
                 return _refused(doc_id, PLAN_DOCUMENT_CHANGED)
+            refused = refused_plan_steps(plan_command_names(self._extract_command_section(content)))
+            if refused:
+                _PLAN_GATE.discard(pending.pending_id)
+                return _refused(doc_id, _steps_refused_words(refused))
             inbox_doc_id = get_doc_manager().move_to_inbox(doc_id)
             if not inbox_doc_id:
                 return _error_result(
@@ -2288,6 +2301,23 @@ def non_idempotent_commands(names: List[str]) -> List[Dict[str, Any]]:
             continue
         found.setdefault(name, {"command": name, "count": 0, "why": why})["count"] += 1
     return list(found.values())
+
+
+def refused_plan_steps(names: List[str]) -> List[str]:
+    """The refusal sentence for each distinct step chat may never propose (advisor.chat_command_policy)."""
+    from advisor.chat_command_policy import plan_step_refusal
+    out: List[str] = []
+    for name in dict.fromkeys(names):
+        words = plan_step_refusal(name)
+        if words:
+            out.append(words)
+    return out
+
+
+def _steps_refused_words(refused: List[str]) -> str:
+    return ("This plan can't run, and nothing was run: it contains commands an Advisor plan never runs.\n\n"
+            + "\n".join(f"- {w}" for w in refused)
+            + "\n\nRemove them from the plan, or run them from a reviewed Dr.Egeria document instead.")
 
 
 def _unsafe_words(unsafe: List[Dict[str, Any]]) -> str:
