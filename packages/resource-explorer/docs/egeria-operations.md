@@ -134,6 +134,10 @@ step 4.
        treated as gone"). The kept rows, and what each GUID answered, are in the plan and its hash, so an answer
        that changes before the apply refuses the apply. A resource with a kept asset or report pointer gets no
        `egeria_reset` marker. If Egeria cannot be reached at all, the run refuses.
+     - "Gone" means **not found for RE's service account**, not "absent from Egeria". Since e9fd817f4c a zone
+       without a control is private, so an element in a zone that account cannot see answers not found too,
+       and its pointer is cleared. Before the apply, check that any element you expect to survive is visible
+       to RE's service account.
      - It warns about a publish made after the reset that left no proof row: a scheduled survey publishes
        through the survey-run publisher, which records `project_egeria_surveys` but writes no proof row, so the
        proofs-only warning missed docling's 2026-11-12 publish.
@@ -410,7 +414,8 @@ equivalent: it re-derives current state, and loses the history that
 
 - **Do not run the clear script after the re-attach.** Since 2026-11-13 it keeps a pointer that resolves, so a
   re-attached one should survive, but that is a safety net, not the procedure: the order is the clear script,
-  then the re-attach (§2.0). `scripts/sweep_stale_egeria_guids.py
+  then the re-attach (§2.0). And it keeps only what RE's service account can SEE: an element in a zone that
+  account cannot read answers not found and is cleared (§2.0 step 3). `scripts/sweep_stale_egeria_guids.py
   --apply` and the Alignment steps `clear_stale_investigations` / `clear_stale_contexts` also clear project
   and collection pointers, so none of them goes between the clear script and the re-attach either.
 - **On main today, `clear_stale_contexts` also blanks the stored name, and it is ticked by default.** So

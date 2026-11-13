@@ -41,7 +41,9 @@ What it does (all its writes are in RE's registry; no DDL; no proof row is ever 
         live pointers it would have blanked). Before planning to clear or remove a row, the script reads each of its
         Egeria GUIDs BY GUID, as RE's service account (the daemon identity the re-attach tool uses). Its only
         Egeria calls are those reads; it never writes to Egeria. Per row:
-          - every GUID is GONE (Egeria says not found)  -> the row is cleared or removed as below;
+          - every GUID is GONE (Egeria says not found FOR RE'S SERVICE ACCOUNT) -> cleared or removed as below.
+            "Gone" is what that account can see: since e9fd817f4c a zone without a control is private, so an
+            element in a zone RE's account cannot see answers not found too and its pointer is cleared;
           - any GUID RESOLVES                           -> the row is KEPT: "keep: live, created <time>";
           - any GUID cannot be READ (refused, unreachable, an unexpected answer) -> the row is KEPT: "keep:
             unreadable (<why>): not treated as gone". An unread pointer is never taken for a dead one.
@@ -517,7 +519,8 @@ def render(plan: dict, title: str) -> str:
     live = plan.get("liveness", {})
     out.append(f"pointers checked in Egeria by GUID, as {live.get('read_as', 'RE')}: {len(kept)} rows KEPT "
                f"({live.get('guids_live', 0)} GUIDs live, {live.get('guids_unreadable', 0)} unreadable); "
-               "every other GUID listed above answered not found")
+               "every other GUID listed above answered not found for RE's service account "
+               "(an element in a zone it cannot see reads the same way)")
     for table, k in kept[:60]:
         ident = ", ".join(f"{key}={k['row'][key]}" for key in sorted(k["row"]) if "guid" not in key and key != "value"
                           and key in ("slug", "id", "key", "entity_slug", "entity_type", "user_id", "technology_type"))
