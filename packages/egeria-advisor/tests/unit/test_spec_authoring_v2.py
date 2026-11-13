@@ -42,7 +42,16 @@ class FakeLLM:
 
 @pytest.fixture
 def flag_on(monkeypatch):
+    """The re-base alone."""
     monkeypatch.setenv(v2.FLAG, "1")
+    monkeypatch.delenv(v2.FIXES_FLAG, raising=False)
+
+
+@pytest.fixture
+def fixes_on(monkeypatch):
+    """The re-base plus the elicitor fixes."""
+    monkeypatch.setenv(v2.FLAG, "1")
+    monkeypatch.setenv(v2.FIXES_FLAG, "1")
 
 
 def _llm(monkeypatch, *replies):
@@ -143,21 +152,21 @@ def test_render_says_capped_and_empty():
 
 # ── the elicitor, flag on ─────────────────────────────────────────────────────
 
-def test_ambiguous_request_gets_a_question_not_a_guess(flag_on, stores, monkeypatch):
+def test_ambiguous_request_gets_a_question_not_a_guess(fixes_on, stores, monkeypatch):
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     _llm(monkeypatch, {"clarify": "Important by criticality, usage or governance classification?"})
     r = ReportSpecElicitor().start("show me the important stuff")
     assert r["phase"] == "clarify" and "criticality" in r["response"] and r["draft_id"] is None
 
 
-def test_unknown_type_is_a_question(flag_on, stores, monkeypatch):
+def test_unknown_type_is_a_question(fixes_on, stores, monkeypatch):
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     _llm(monkeypatch, {"title": "t", "heading": "h", "target_type": "Widget", "columns": []})
     r = ReportSpecElicitor().start("list the widgets")
     assert r["phase"] == "clarify" and "Widget" in r["response"]
 
 
-def test_full_flow_grounds_generates_with_pyegeria_and_never_uses_ea_markdown(flag_on, stores, monkeypatch):
+def test_full_flow_grounds_generates_with_pyegeria_and_never_uses_ea_markdown(fixes_on, stores, monkeypatch):
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     from advisor.report_draft import get_report_draft_manager
     from advisor.report_spec_docs import get_report_spec_doc_manager
@@ -181,7 +190,7 @@ def test_full_flow_grounds_generates_with_pyegeria_and_never_uses_ea_markdown(fl
     assert draft["v2"] and draft["format_set"]["target_type"] == "Risk"
 
 
-def test_generate_answers_in_the_reply_when_signed_in(flag_on, stores, monkeypatch):
+def test_generate_answers_in_the_reply_when_signed_in(fixes_on, stores, monkeypatch):
     from advisor.agents import report_spec_elicitor_v2 as v2e
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     _llm(monkeypatch, {"title": "projects", "heading": "Active Projects", "target_type": "Project",
@@ -210,7 +219,7 @@ def test_generate_answers_in_the_reply_when_signed_in(flag_on, stores, monkeypat
     v2e._CLIENTS.clear()
 
 
-def test_refine_edits_the_draft_and_regenerates(flag_on, stores, monkeypatch):
+def test_refine_edits_the_draft_and_regenerates(fixes_on, stores, monkeypatch):
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     from advisor.report_spec_docs import get_report_spec_doc_manager
     _llm(monkeypatch,
@@ -316,22 +325,22 @@ def test_refusals_stay_eas_type_with_the_flag_on(monkeypatch, call, words):
     ("give me a report on everything", []),        # "report" says what to build, not what it's about
     ("build me a dashboard for the board", []),
 ])
-def test_types_named_in(text, want):
+def test_types_named_in(fixes_on, text, want):
     assert v2.types_named_in(text)[:1] == want
 
 
-def test_asset_is_offered_and_found_generically():
+def test_asset_is_offered_and_found_generically(fixes_on):
     assert "Asset" in v2.known_types()
     assert v2.find_action("Asset")["function"] == v2.GENERIC_FIND
 
 
-def test_a_near_miss_key_is_read_as_the_nearest_attribute_and_said():
+def test_a_near_miss_key_is_read_as_the_nearest_attribute_and_said(fixes_on):
     cols, notes = v2.ground_columns("GovernanceMetric", [{"name": "Measurements", "key": "measurements"}])
     assert [c["key"] for c in cols] == ["measurement"]
     assert any("read as measurement" in n for n in notes)
 
 
-def test_a_question_that_names_its_type_is_built_not_asked(flag_on, stores, monkeypatch):
+def test_a_question_that_names_its_type_is_built_not_asked(fixes_on, stores, monkeypatch):
     from advisor.agents.report_spec_elicitor import ReportSpecElicitor
     fake = _llm(monkeypatch, {"clarify": "Teams, or something else?"},
                 {"title": "teams", "heading": "Teams", "target_type": "Team",
@@ -341,9 +350,54 @@ def test_a_question_that_names_its_type_is_built_not_asked(flag_on, stores, monk
     assert "names Team elements" in fake.prompts[1]
 
 
-def test_eas_parser_reads_a_v2_document_for_every_other_caller():
+def test_eas_parser_reads_a_v2_document_for_every_other_caller(flag_on):
     """web/reports.py and report_spec_docs.py still call parse_report_spec_markdown on inbox documents."""
     from advisor.report_spec_parser import parse_report_spec_markdown
     fs = parse_report_spec_markdown(v2.serialize(_spec()))
     assert fs.target_type == "Project" and fs.action.function == "ProjectManager.find_projects"
     assert [c.key for f in fs.formats for c in f.attributes] == ["display_name", "status"]
+
+
+# ── the split: re-base alone vs re-base + elicitor fixes ─────────────────────
+
+def test_rebase_only_keeps_eas_own_prompt_and_grounds_what_it_returns(flag_on, stores, monkeypatch):
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor, decompose_prompt
+    fake = _llm(monkeypatch, {"title": "p", "heading": "P", "target_type": "Digital Product",
+                              "action_function": "ProjectManager.find_projects",
+                              "columns": [{"name": "Name", "key": "displayName"},
+                                          {"name": "Svc", "key": "service_lifes"}]})
+    r = ReportSpecElicitor().start("which products are in draft?")
+    assert fake.prompts[0] == decompose_prompt("which products are in draft?", None)
+    assert r["phase"] == "confirm_action"
+    assert "CollectionManager.find_collections" in r["response"]   # not the LLM's find_projects
+    assert "service_lifes" in r["response"]                          # dropped: no near-miss without fixes
+
+
+def test_rebase_only_never_asks(flag_on, stores, monkeypatch):
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor
+    _llm(monkeypatch, {"title": "x", "heading": "X", "target_type": "MetadataOverview", "columns": []})
+    r = ReportSpecElicitor().start("show me the important stuff")
+    assert r["phase"] == "error" and "MetadataOverview" in r["response"]
+
+
+def test_rebase_only_offers_no_conditions_and_no_near_miss(flag_on):
+    assert not v2.fixes_enabled()
+    cols, notes = v2.ground_columns("GovernanceMetric", [{"name": "M", "key": "measurements"}])
+    assert all(c["key"] != "measurement" for c in cols)
+
+
+def test_fixes_need_the_rebase(monkeypatch):
+    monkeypatch.delenv(v2.FLAG, raising=False)
+    monkeypatch.setenv(v2.FIXES_FLAG, "1")
+    assert not v2.fixes_enabled()
+
+
+def test_parser_dispatch_is_off_without_the_flag(monkeypatch):
+    from advisor.report_spec_parser import parse_report_spec_markdown
+    monkeypatch.setenv(v2.FLAG, "1")
+    md = v2.serialize(_spec())
+    monkeypatch.delenv(v2.FLAG, raising=False)
+    monkeypatch.setattr(v2, "format_set_from_document",
+                        lambda *a, **k: pytest.fail("V2 reader used with the flag off"))
+    fs = parse_report_spec_markdown(md)   # EA's own parser, as before the prototype
+    assert not [c for f in fs.formats or [] for c in f.attributes or []]

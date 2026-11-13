@@ -42,8 +42,24 @@ SORT_ORDERS = ("ANY", "CREATION_DATE_RECENT", "CREATION_DATE_OLDEST", "LAST_UPDA
                "LAST_UPDATE_OLDEST", "PROPERTY_ASCENDING", "PROPERTY_DESCENDING")
 
 
+#: The elicitor fixes (prototype-only, separate from the re-base so their effect is measured apart):
+#: one clarifying question for a request that names no kind of element; a condition (status, sort) checked
+#: and shown as a column; a question that names its type is built, not asked; every type a registered spec
+#: targets is offered (Asset included); a near-miss column key is read as the nearest attribute.
+FIXES_FLAG = "EA_SPEC_ELICITOR_FIXES"
+
+
+def _on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def enabled() -> bool:
-    return os.environ.get(FLAG, "").strip().lower() in ("1", "true", "yes", "on")
+    return _on(FLAG)
+
+
+def fixes_enabled() -> bool:
+    """The elicitor fixes, only with the re-base on."""
+    return enabled() and _on(FIXES_FLAG)
 
 
 # ── Grounding ────────────────────────────────────────────────────────────────
@@ -108,7 +124,7 @@ def resolve_type(name: Optional[str]) -> Optional[str]:
 def known_types() -> List[str]:
     """Types the elicitor may target: those with a registered find spec, Egeria's spelling."""
     out = []
-    for t in _all_registry_types():
+    for t in (_all_registry_types() if fixes_enabled() else sorted(_registry_by_type())):
         r = resolve_type(t)
         if r and r not in out:
             out.append(r)
@@ -191,10 +207,12 @@ def attribute_menu(type_name: str) -> List[Tuple[str, str]]:
     return list(out.items())
 
 
-def ground_columns(type_name: str, columns: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+def ground_columns(type_name: str, columns: List[Dict[str, Any]], *, near: Optional[bool] = None
+                   ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Columns kept for `type_name`, and words for each one dropped. A camelCase key becomes snake_case
     when that is the attribute; an unknown key is dropped, never sent to a run."""
     import difflib
+    near = fixes_enabled() if near is None else near
     menu = dict(attribute_menu(type_name))
     kept, dropped, seen = [], [], set()
     for col in columns or []:
@@ -205,12 +223,13 @@ def ground_columns(type_name: str, columns: List[Dict[str, Any]]) -> Tuple[List[
                 key = cand
                 break
         else:
-            near = difflib.get_close_matches(_snake(key.split(".")[-1]) if key else "", list(menu), n=1, cutoff=0.85)
-            if not near:
+            close = (difflib.get_close_matches(_snake(key.split(".")[-1]) if key else "", list(menu), n=1,
+                                               cutoff=0.85) if near else [])
+            if not close:
                 dropped.append(f"'{name}' ({key or 'no key'}) isn't an attribute of {type_name}")
                 continue
-            dropped.append(f"'{name}' ({key}) read as {near[0]}, the nearest attribute of {type_name}")
-            key = near[0]
+            dropped.append(f"'{name}' ({key}) read as {close[0]}, the nearest attribute of {type_name}")
+            key = close[0]
         if key in seen:
             continue
         seen.add(key)

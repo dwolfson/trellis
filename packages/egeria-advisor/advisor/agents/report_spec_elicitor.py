@@ -18,28 +18,9 @@ from advisor.llm_client import get_planning_llm
 from advisor import spec_authoring_v2 as _v2
 
 
-_NAV_FIRST   = ["save_exit", "cancel"]
-_NAV_MIDDLE  = ["generate_now", "back", "cancel"]
-_NAV_FINAL   = ["run_spec", "back", "cancel"]
-_NAV_CONFIRM = ["continue_columns", "try_again", "cancel"]
-
-
-class ReportSpecElicitor:
-    """Conversational elicitor for report specs."""
-
-    def start(
-        self,
-        query: str,
-        perspective: Optional[str] = None,
-        egeria_client: Any = None,
-    ) -> Dict[str, Any]:
-        """Decompose intent, propose basic structure, save draft, and return response."""
-        if _v2.enabled():
-            from advisor.agents import report_spec_elicitor_v2 as v2e
-            return v2e.start(self, query, perspective, egeria_client)
-        llm = get_planning_llm()
-
-        prompt = f"""
+def decompose_prompt(query: str, perspective: Optional[str] = None) -> str:
+    """The elicitor's decomposition prompt (shared with the re-base-only V2 path, unchanged)."""
+    return f"""
 You are an expert Egeria metadata analyst. A user wants to build a report specification.
 User request: "{query}"
 Perspective: {perspective or "None"}
@@ -73,6 +54,29 @@ Respond ONLY with a JSON object containing the proposed spec:
 
 JSON object:
 """
+
+
+_NAV_FIRST   = ["save_exit", "cancel"]
+_NAV_MIDDLE  = ["generate_now", "back", "cancel"]
+_NAV_FINAL   = ["run_spec", "back", "cancel"]
+_NAV_CONFIRM = ["continue_columns", "try_again", "cancel"]
+
+
+class ReportSpecElicitor:
+    """Conversational elicitor for report specs."""
+
+    def start(
+        self,
+        query: str,
+        perspective: Optional[str] = None,
+        egeria_client: Any = None,
+    ) -> Dict[str, Any]:
+        """Decompose intent, propose basic structure, save draft, and return response."""
+        if _v2.enabled():
+            from advisor.agents import report_spec_elicitor_v2 as v2e
+            return v2e.start(self, query, perspective, egeria_client)
+        llm = get_planning_llm()
+        prompt = decompose_prompt(query, perspective)
         try:
             raw = llm.generate(prompt, temperature=0.1, max_tokens=1000)
             # Extract JSON from Markdown block if present

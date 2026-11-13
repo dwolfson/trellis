@@ -50,7 +50,28 @@ _CONDITION_HELP = f"""Conditions you may set (leave out what the question doesn'
   "order_property_name": the attribute to sort by"""
 
 
+def _start_rebase_only(query: str, perspective: Optional[str]) -> Dict[str, Any]:
+    """The re-base alone: EA's own decomposition prompt and conversation, unchanged. Grounding then takes
+    over the type (Egeria's), the find method (the type's registered spec) and the columns (exact keys)."""
+    from advisor.agents.report_spec_elicitor import decompose_prompt
+    try:
+        data = _json(get_planning_llm().generate(decompose_prompt(query, perspective), temperature=0.1,
+                                                 max_tokens=1000))
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"v2 decompose failed: {exc}")
+        data = {}
+    return {k: data.get(k) for k in ("title", "heading", "description", "target_type", "columns")}
+
+
 def start(elicitor, query: str, perspective: Optional[str] = None, egeria_client: Any = None) -> Dict[str, Any]:
+    if not v2.fixes_enabled():
+        data = _start_rebase_only(query, perspective)
+        target = v2.resolve_type(data.get("target_type"))
+        if not target:
+            # Grounding refuses a type Egeria hasn't got; asking is an elicitor fix, so this is an error.
+            from advisor.agents.report_spec_elicitor import _error_result
+            return _error_result(query, f"'{data.get('target_type')}' isn't an Egeria type I can report on.")
+        return _create(elicitor, query, data, target, {}, egeria_client, [])
     llm = get_planning_llm()
     prompt = f"""You help a user build an Egeria report that answers their question.
 User request: "{query}"
@@ -101,8 +122,13 @@ or
     if not target:
         return _clarify(query, f"I don't know an Egeria type called '{data.get('target_type')}'. Which kind of "
                                f"element do you mean? For example: {', '.join(v2.known_types()[:12])}.")
-    cols, dropped = v2.ground_columns(target, data.get("columns") or [])
     conditions, cnotes = v2.ground_conditions(data.get("conditions") or {})
+    return _create(elicitor, query, data, target, conditions, egeria_client, cnotes)
+
+
+def _create(elicitor, query: str, data: Dict[str, Any], target: str, conditions: Dict[str, Any],
+            egeria_client: Any, notes: List[str]) -> Dict[str, Any]:
+    cols, dropped = v2.ground_columns(target, data.get("columns") or [])
     cols = v2.condition_columns(target, cols, conditions)
     action = v2.find_action(target)
     dm = get_report_draft_manager()
@@ -117,7 +143,7 @@ or
     dm.save(spec)
     if egeria_client is not None:
         _CLIENTS[spec["draft_id"]] = egeria_client
-    return confirm_response(elicitor, spec, notes=dropped + cnotes)
+    return confirm_response(elicitor, spec, notes=dropped + notes)
 
 
 def _clarify(query: str, question: str) -> Dict[str, Any]:
@@ -172,9 +198,9 @@ User request: "{user_response}"
 Columns can only use these attributes of {spec['target_type']} (key: label):
 {_menu_text(spec['target_type'])}
 
-{_CONDITION_HELP}
+{_CONDITION_HELP if v2.fixes_enabled() else ""}
 
-Return ONLY JSON: {{"columns": [{{"name": "...", "key": "..."}}], "conditions": {{}}}}
+Return ONLY JSON: {{"columns": [{{"name": "...", "key": "..."}}]{', "conditions": {}' if v2.fixes_enabled() else ''}}}
 """
     try:
         data = _json(llm.generate(prompt, temperature=0.1, max_tokens=700))
@@ -187,7 +213,7 @@ Return ONLY JSON: {{"columns": [{{"name": "...", "key": "..."}}], "conditions": 
     if data.get("columns"):
         spec["columns"], dropped = v2.ground_columns(spec["target_type"], data["columns"])
         notes += dropped
-    if "conditions" in data:
+    if "conditions" in data and v2.fixes_enabled():
         spec["conditions"], cnotes = v2.ground_conditions(data.get("conditions") or {})
         notes += cnotes
     spec["columns"] = v2.condition_columns(spec["target_type"], spec["columns"], spec.get("conditions") or {})
