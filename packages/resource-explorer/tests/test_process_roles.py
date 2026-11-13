@@ -212,6 +212,15 @@ class TestRunWorker:
         ])
         monkeypatch.setattr(worker, "_reconcile_orphaned_runs", lambda: None)
         monkeypatch.setattr(worker, "_warm_survey_definition_cache", lambda: None)
+        # Everything run_worker does before it starts the loops, stubbed, so this measures starting and stopping
+        # and not a live service's latency. Gate b402 (2026-11-13) failed here under load: run_worker's real
+        # Prefect healthcheck and registry calls ran before the loops and used up the 5 s window.
+        import resource_explorer.run_queue as run_queue
+        import resource_explorer.surveyors.prefect_adapter as prefect_adapter
+        monkeypatch.setattr(prefect_adapter, "log_prefect_reachability_at_startup", lambda: None)
+        monkeypatch.setattr(worker, "_reconcile_stale_queue_runs", lambda **_kw: None)
+        monkeypatch.setattr(run_queue, "start_queue_runner", lambda *a, **kw: None)
+        monkeypatch.setattr(run_queue, "stop_queue_runner", lambda *a, **kw: None)
         monkeypatch.setattr(
             worker, "LeaderLock",
             lambda name: type("L", (), {"key": 1, "acquire": lambda s: True,
