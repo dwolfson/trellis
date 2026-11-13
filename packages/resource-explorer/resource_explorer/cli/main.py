@@ -2978,8 +2978,9 @@ def prefect_prune_deployments(
     """Delete Resource Explorer's per-commit deployments (re-survey-step-<sha12>) beyond the newest KEEP.
 
     Workers run this right after deploying their own commit's deployment, so a deployment per 8813 deploy
-    does not pile up. Never touches the default deployment, another flow's or pool's, or one with a scheduled,
-    pending, running, paused or cancelling flow run. Prints every name it deletes. A Prefect write.
+    does not pile up. Never touches the default deployment, another flow's or pool's, one with a scheduled,
+    pending, running, paused or cancelling flow run, or one whose commit has an ONLINE worker. Prints every name
+    it deletes. A Prefect write.
     """
     import asyncio
 
@@ -2996,6 +2997,8 @@ def prefect_prune_deployments(
         console.print(f"deleted deployment {name}")
     for name in out["skipped_active"]:
         console.print(f"kept {name}: it has an active flow run")
+    for name in out.get("skipped_online_worker", []):
+        console.print(f"kept {name}: a worker on its commit is online")
     console.print(f"prune-deployments on {pool}: kept {len(out['kept'])} newest, deleted {len(out['deleted'])}, "
                   f"in use {len(out['skipped_active'])}")
 

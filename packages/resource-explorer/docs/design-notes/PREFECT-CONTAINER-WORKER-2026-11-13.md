@@ -26,7 +26,8 @@ the A/B proof below comes first, on the demo machine.
      source, and its runs land on queue `re-<sha12>`;
   4. prunes per-commit deployments beyond the newest 3, with `resource-explorer prefect prune-deployments --keep 3`.
      It never deletes the default deployment, another flow's or pool's, or one with a scheduled, pending,
-     running, paused or cancelling run, and it prints each name it deletes (Architect ruling, 2026-11-13, §D).
+     running, paused or cancelling run, or one whose commit has an ONLINE worker (an idle older-commit worker keeps
+     its deployment; read-back of 6888a58c). It prints each name it deletes (Architect ruling, 2026-11-13, §D).
      A failed prune is reported and doesn't stop the worker. Steps 3 and 4 are Prefect writes, run at every
      start; the host worker under launchd does the same once its tree has this branch;
   5. runs `prefect worker start --pool <PREFECT_WORK_POOL> --work-queue re-<sha12>` as

@@ -305,9 +305,11 @@ async def prune_commit_deployments(keep: int, pool: str) -> dict[str, list[str]]
     """Delete RE's per-commit deployments (`re-survey-step-<sha12>`, RE's flow, on `pool`) beyond the newest
     `keep` by creation time (Architect ruling 2026-11-13, READBACK-re-launchd-worker-8f5af544 §D).
 
-    Never deleted: the default deployment, any other flow's or pool's, the newest `keep`, and any with a flow run
-    that is scheduled, pending, running, paused or cancelling. Returns {"kept", "deleted", "skipped_active"}, by
-    name; the caller logs each deleted name. A standing Prefect write: workers run it after their own deploy."""
+    Never deleted: the default deployment, any other flow's or pool's, the newest `keep`, any with a flow run
+    that is scheduled, pending, running, paused or cancelling, and any whose commit has an ONLINE worker
+    (`re-worker-<sha12>-*`): an idle worker on an older commit keeps the deployment it serves (read-back of
+    6888a58c). Returns {"kept", "deleted", "skipped_active", "skipped_online_worker"}, by name; the caller logs
+    each deleted name. A standing Prefect write: workers run it after their own deploy."""
     from prefect.client.schemas.filters import (
         DeploymentFilter, DeploymentFilterId, FlowFilter, FlowFilterName, FlowRunFilter, FlowRunFilterState,
         FlowRunFilterStateType,
@@ -317,8 +319,9 @@ async def prune_commit_deployments(keep: int, pool: str) -> dict[str, list[str]]
     if keep < 1:
         raise ValueError("keep must be at least 1: a worker's own deployment is never pruned")
     flow_name = DEFAULT_DEPLOYMENT.split("/", 1)[0]
-    out: dict[str, list[str]] = {"kept": [], "deleted": [], "skipped_active": []}
+    out: dict[str, list[str]] = {"kept": [], "deleted": [], "skipped_active": [], "skipped_online_worker": []}
     async with re_prefect_client() as client:
+        served = {worker_sha(w) for w in await client.read_workers_for_work_pool(pool) if _is_online(w)} - {""}
         deployments = await client.read_deployments(flow_filter=FlowFilter(name=FlowFilterName(any_=[flow_name])))
         ours = [d for d in deployments
                 if _COMMIT_DEPLOYMENT.match(str(getattr(d, "name", ""))) and getattr(d, "work_pool_name", None) == pool]
@@ -327,6 +330,9 @@ async def prune_commit_deployments(keep: int, pool: str) -> dict[str, list[str]]
         active = FlowRunFilter(state=FlowRunFilterState(type=FlowRunFilterStateType(
             any_=[StateType[s] for s in _ACTIVE_RUN_STATES])))
         for d in ours[keep:]:
+            if d.name.rsplit("-", 1)[-1] in served:
+                out["skipped_online_worker"].append(d.name)
+                continue
             runs = await client.read_flow_runs(
                 deployment_filter=DeploymentFilter(id=DeploymentFilterId(any_=[d.id])),
                 flow_run_filter=active, limit=1)

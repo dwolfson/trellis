@@ -249,8 +249,9 @@ def _dep(name, created, pool="resource-explorer-pool"):
     return types.SimpleNamespace(id=_id(name), name=name, created=created, work_pool_name=pool)
 
 
-def _prune(deployments, active=(), keep=3):
+def _prune(deployments, active=(), keep=3, workers=()):
     client = MagicMock()
+    client.read_workers_for_work_pool = AsyncMock(return_value=list(workers))
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     client.read_deployments = AsyncMock(return_value=deployments)
@@ -300,3 +301,15 @@ def test_the_prune_command_prints_every_name_it_deletes():
     assert prune.call_args.args[0] == 3
     assert "deleted deployment re-survey-step-000000000001" in out.output
     assert "kept re-survey-step-000000000002: it has an active flow run" in out.output
+
+
+def test_prune_keeps_the_deployment_of_an_online_worker_on_an_older_commit():
+    """Read-back of 6888a58c: an idle worker on an older commit, outside the newest three, keeps the
+    deployment it serves; an OFFLINE one does not."""
+    deps = [_dep(f"re-survey-step-{i:012x}", f"2026-11-{10 + i:02d}T00:00:00Z") for i in range(6)]
+    online_old = f"re-survey-step-{1:012x}"
+    out, deleted = _prune(deps, workers=[_worker(f"re-worker-{1:012x}-pop-os"),
+                                         _worker(f"re-worker-{0:012x}-pop-os", "OFFLINE")])
+    assert out["skipped_online_worker"] == [online_old]
+    assert out["deleted"] == [f"re-survey-step-{i:012x}" for i in (2, 0)]
+    assert _id(online_old) not in deleted
