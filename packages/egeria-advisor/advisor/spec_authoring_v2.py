@@ -25,8 +25,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 FLAG = "EA_SPEC_AUTHORING_V2"
 
-#: The generic finder for a type with no registered find spec (pyegeria's own "Dashboards" spec uses it).
-GENERIC_FIND = "MetadataExpert.find_metadata_elements_with_string"
+#: The generic finder for a type with no registered find spec: pyegeria's own `Element-DrE-Basic` finder.
+#: It is a view service, so its elements come back as view beans (`elementHeader` + `properties`), which the
+#: column keys read. `MetadataExpert.find_metadata_elements_with_string`, used before (live 2026-11-13), is a
+#: raw metadata-expert endpoint: its OpenMetadataElements (`elementGUID`, `elementProperties`) left every
+#: cell of the table empty, `guid` included (pyegeria `core/element_shape.py` describes the two shapes).
+#: `'*'` with a `metadata_element_type` lists every element of that type.
+GENERIC_FIND = "ClassificationExplorer.find_elements_by_property_value"
+GENERIC_FIND_PARAMS = {"property_names": ["displayName", "qualifiedName"]}
+
+#: The search a run uses when the question sets none. A finder that takes no default (the generic one
+#: takes `property_value`, which the executor fills from `search_string`) fails without it (H08, live).
+DEFAULT_SEARCH = "*"
 
 #: Common names the LLM uses that aren't Egeria's.
 _ALIASES = {"Term": "GlossaryTerm", "DataProduct": "DigitalProduct", "Product": "DigitalProduct",
@@ -182,7 +192,7 @@ def find_action(type_name: str) -> Dict[str, Any]:
         params = {k: v for k, v in (fs.action.spec_params or {}).items() if not k.startswith("_")
                   and k != "output_format"}
         return {"function": fs.action.function, "spec_params": params, "from": label}
-    return {"function": GENERIC_FIND, "spec_params": {"metadata_element_type": type_name},
+    return {"function": GENERIC_FIND, "spec_params": {"metadata_element_type": type_name, **GENERIC_FIND_PARAMS},
             "from": "generic finder"}
 
 
@@ -349,13 +359,24 @@ def format_set_from_document(markdown: str, label: str):
 ANSWER_ROWS = 25
 
 
+def search_of(spec: Dict[str, Any]) -> str:
+    """The search string a run passes: the question's own (a condition, else the draft's content filter),
+    else DEFAULT_SEARCH. A condition set as a spec parameter still wins inside the executor."""
+    for src in (spec.get("conditions") or {}, spec.get("content_filters") or {}):
+        v = src.get("search_string")
+        if isinstance(v, str) and v.strip():
+            return v
+    return DEFAULT_SEARCH
+
+
 def answer(spec: Dict[str, Any], client: Any, *, max_rows: int = ANSWER_ROWS) -> Dict[str, Any]:
     """Run the spec as `client`'s user (structured TABLE, capped) and render it for the reply."""
     import time
     from pyegeria.authoring import preview
     t = time.time()
     try:
-        prev = preview(spec_draft(spec), client=client, max_rows=max_rows, params={"start_from": 0})
+        prev = preview(spec_draft(spec), client=client, max_rows=max_rows,
+                       params={"start_from": 0, "search_string": search_of(spec)})
     except Exception as exc:  # noqa: BLE001 -- the words go to the user
         return {"ok": False, "error": " ".join(str(exc).split())[:400], "s": round(time.time() - t, 2),
                 "markdown": f"I couldn't run it: {' '.join(str(exc).split())[:300]}"}

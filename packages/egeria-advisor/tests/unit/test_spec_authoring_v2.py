@@ -87,7 +87,8 @@ def test_find_method_comes_from_the_types_registered_spec_not_the_llm():
 
 def test_a_type_with_no_find_spec_uses_the_generic_finder_scoped_by_type():
     a = v2.find_action("Asset")
-    assert a == {"function": v2.GENERIC_FIND, "spec_params": {"metadata_element_type": "Asset"},
+    assert a == {"function": v2.GENERIC_FIND,
+                 "spec_params": {"metadata_element_type": "Asset", "property_names": ["displayName", "qualifiedName"]},
                  "from": "generic finder"}
 
 
@@ -429,3 +430,94 @@ def test_same_question_same_llm_reply_takes_a_different_path_with_and_without_th
         assert len(fake.prompts) == 2 and "names Team elements" in fake.prompts[1]  # build-when-named retry
         assert "limit_result_by_status" in prompts
         assert r["phase"] == "confirm_action" and "ACTIVE" in r["response"]
+
+
+# ── Live finding 2026-11-13: generic-find tables were blank; H08 lacked property_value ──────────────
+
+_VIEW_BEAN = {
+    "elementHeader": {"guid": "g-asset-1", "type": {"typeName": "CSVFile"},
+                      "origin": {"homeMetadataCollectionId": "mc1", "homeMetadataCollectionName": "mc"},
+                      "versions": {"createdBy": "u", "createTime": "2026-11-07T00:00:00Z", "version": 1},
+                      "status": "ACTIVE", "class": "ElementHeader"},
+    "properties": {"qualifiedName": "Asset::weekly-sales.csv", "displayName": "Weekly sales"},
+}
+
+
+@pytest.fixture
+def egeria_offline(monkeypatch):
+    """The real pyegeria client classes, executor and preview, with only the HTTP transport faked."""
+    from pyegeria.core._server_client import ServerClient
+    calls = []
+
+    class _Resp:
+        def json(self):
+            return {"elements": [_VIEW_BEAN]}
+
+    async def fake_make_request(self, request_type, endpoint, payload=None, *args, **kwargs):
+        calls.append((request_type, endpoint, payload))
+        return _Resp()
+    monkeypatch.setattr(ServerClient, "_async_make_request", fake_make_request)
+    monkeypatch.setattr(ServerClient, "create_egeria_bearer_token", lambda self, *a, **k: "token")
+    monkeypatch.setattr(ServerClient, "set_bearer_token", lambda self, token: None)
+    monkeypatch.setattr(ServerClient, "check_connection", lambda self: "ok", raising=False)
+    return calls
+
+
+class _Client:
+    server_name, platform_url, user_id, user_pwd, token = "v", "https://x", "erin", None, "t"
+
+
+def _asset_spec(**extra):
+    return {"title": "assets", "target_type": "Asset", "answers": {"Heading": "Assets"},
+            "columns": [{"name": "Name", "key": "display_name"}, {"name": "GUID", "key": "guid"}], **extra}
+
+
+def test_the_generic_finder_is_a_view_service_so_its_cells_carry_values(egeria_offline):
+    out = v2.answer(_asset_spec(), _Client())
+    assert out["ok"], out
+    rows = out["result"]["rows"]
+    assert rows == [{"display_name": "Weekly sales", "guid": "g-asset-1"}]
+    assert "| Weekly sales | g-asset-1 |" in out["markdown"]
+    assert not any(e.endswith("/metadata-elements/by-search-string") for _, e, _ in egeria_offline)
+
+
+def test_a_run_always_passes_a_search_so_a_finder_without_a_default_runs(egeria_offline):
+    # H08 (live): a property-value finder with no search failed "missing ... 'property_value'"
+    out = v2.answer(_asset_spec(), _Client())
+    assert out["ok"] and "property_value" not in (out.get("error") or "")
+
+
+@pytest.mark.parametrize("spec, want", [
+    ({}, "*"),
+    ({"content_filters": {"search_string": "*"}}, "*"),
+    ({"content_filters": {"search_string": "sales"}}, "sales"),
+    ({"conditions": {"search_string": "Ninety"}, "content_filters": {"search_string": "*"}}, "Ninety"),
+    ({"conditions": {"search_string": "  "}}, "*"),
+])
+def test_search_of(spec, want):
+    assert v2.search_of(spec) == want
+
+
+def test_the_old_generic_finder_returned_raw_elements_and_blank_cells(egeria_offline, monkeypatch):
+    """Why the switch: MetadataExpert's search answers with OpenMetadataElements (elementGUID,
+    elementProperties), and pyegeria's column mapping reads view beans, so every cell came back None,
+    guid included: the live symptom on Asset, Process and Location (2026-11-13)."""
+    from pyegeria.core._server_client import ServerClient
+    raw = {"class": "OpenMetadataElement", "elementGUID": "g-raw-1", "type": {"typeName": "CSVFile"},
+           "status": "ACTIVE", "versions": {"createdBy": "u", "version": 1},
+           "origin": {"homeMetadataCollectionId": "m"},
+           "elementProperties": {"class": "ElementProperties", "propertyValueMap": {"displayName": {
+               "class": "PrimitiveTypePropertyValue", "primitiveTypeCategory": "OM_PRIMITIVE_TYPE_STRING",
+               "primitiveValue": "Weekly sales"}}}}
+
+    class _Raw:
+        def json(self):
+            return {"elements": [raw]}
+
+    async def raw_request(self, *a, **k):
+        return _Raw()
+    monkeypatch.setattr(ServerClient, "_async_make_request", raw_request)
+    monkeypatch.setattr(v2, "GENERIC_FIND", "MetadataExpert.find_metadata_elements_with_string")
+    monkeypatch.setattr(v2, "GENERIC_FIND_PARAMS", {})
+    out = v2.answer(_asset_spec(), _Client())
+    assert out["result"]["rows"] == [{"display_name": None, "guid": None}]
