@@ -108,7 +108,7 @@ def test_a_wrong_digest_is_refused_and_nothing_is_processed(fakes, composed):  #
 def test_a_stale_confirm_is_refused(fakes, composed, monkeypatch):  # noqa: F811
     shown = composed.handle("create a glossary", egeria_credentials=USER)
     later = time.monotonic() + mod.CONFIRM_TTL_S + 1
-    monkeypatch.setattr(mod.time, "monotonic", lambda: later)
+    monkeypatch.setattr(time, "monotonic", lambda: later)
     out = composed.confirm(shown["pending_id"], shown["script_digest"], egeria_credentials=USER)
     assert out["state"] == "refused" and out["response"] == CONFIRM_UNKNOWN
     assert directives(fakes) == ["validate"]

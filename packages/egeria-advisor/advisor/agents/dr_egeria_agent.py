@@ -12,16 +12,13 @@ All public methods are synchronous to match the RAGSystem dispatch pattern.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
-import secrets
-import threading
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
+
+from advisor import confirm_gate
 
 
 # ---------------------------------------------------------------------------
@@ -575,46 +572,16 @@ CONFIRM_CHANGED = ("The Dr.Egeria script you confirmed is not the one that was s
 
 def script_digest(markdown: str) -> str:
     """The SHA-256 of the exact script shown to the user, as confirmed."""
-    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    return confirm_gate.text_digest(markdown)
 
 
-def _caller_identity(conn: Dict[str, str]) -> str:
-    """Who a pending action belongs to: a hash of the credential PRESENTED, plus the Egeria it runs on
-    (the dashboards' credential_identity rule: never a bare user_id)."""
-    secret = conn.get("token") or conn.get("user_pass") or ""
-    raw = f"{conn.get('auth')}|{conn.get('user_id')}|{secret}|{conn.get('url')}|{conn.get('server_name')}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-@dataclass
-class PendingAction:
-    pending_id: str
-    identity: str
-    command_name: str
-    markdown: str
-    digest: str
-    created: float = field(default_factory=time.monotonic)
-    result: Optional[Dict[str, Any]] = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-
-_pending: Dict[str, PendingAction] = {}
-_pending_lock = threading.Lock()
-
-
-def _register_pending(identity: str, command_name: str, markdown: str) -> PendingAction:
-    pa = PendingAction(secrets.token_urlsafe(16), identity, command_name, markdown, script_digest(markdown))
-    with _pending_lock:
-        now = time.monotonic()
-        for k in [k for k, p in _pending.items() if now - p.created > CONFIRM_TTL_S]:
-            _pending.pop(k, None)
-        _pending[pa.pending_id] = pa
-    return pa
+#: The chat-action pending actions (advisor.confirm_gate: show, confirm + digest, once).
+_GATE = confirm_gate.ConfirmGate(CONFIRM_TTL_S)
+_pending = _GATE.pending      # the live dict, for tests
 
 
 def _reset_pending_for_tests() -> None:
-    with _pending_lock:
-        _pending.clear()
+    _GATE.clear()
 
 
 def _envelope_summary(env: Dict[str, Any], directive: str) -> str:
@@ -983,7 +950,8 @@ JSON:"""
         if directive != "validate" or not _validated_cleanly(env):
             return {**base, "response": shown + "\n\nNot offered to run: fix the request and ask again.",
                     "validation": env, "confirm_required": False, "next_context": None}
-        pa = _register_pending(_caller_identity(conn), command_name, markdown)
+        pa = _GATE.register(confirm_gate.caller_identity(conn), markdown,
+                            {"command_name": command_name, "markdown": markdown})
         return {
             **base,
             "response": (shown + f"\n\nReply **yes** to process this script in Egeria as **{conn['user_id']}**, "
@@ -1014,22 +982,20 @@ JSON:"""
             # not consumed: signing in again and confirming still works within the TTL
             return {**out, "state": "refused", "response": err.message, "auth_required": True,
                     "next_context": {"task": "dr_egeria_confirm", "pending_id": pending_id, "digest": digest}}
-        with _pending_lock:
-            pa = _pending.get(pending_id or "")
-        if pa is None or time.monotonic() - pa.created > CONFIRM_TTL_S:
-            return {**out, "state": "refused", "response": CONFIRM_UNKNOWN}
-        if pa.identity != _caller_identity(conn):
-            return {**out, "state": "refused", "response": CONFIRM_OTHER_SIGN_IN}
-        if not isinstance(digest, str) or not secrets.compare_digest(digest, pa.digest):
-            return {**out, "state": "refused", "response": CONFIRM_CHANGED}
-        out.update(command_name=pa.command_name, markdown=pa.markdown, script_digest=pa.digest)
+        pa, why = _GATE.check(pending_id, confirm_gate.caller_identity(conn), digest)
+        if pa is None:
+            return {**out, "state": "refused", "response": {confirm_gate.UNKNOWN: CONFIRM_UNKNOWN,
+                                                            confirm_gate.OTHER_SIGN_IN: CONFIRM_OTHER_SIGN_IN,
+                                                            confirm_gate.CHANGED: CONFIRM_CHANGED}[why]}
+        command_name, markdown = pa.payload["command_name"], pa.payload["markdown"]
+        out.update(command_name=command_name, markdown=markdown, script_digest=pa.digest)
         with pa.lock:   # one process per pending action; a retry gets the first answer
             if pa.result is not None:
                 return {**pa.result, "state": "already_processed",
                         "response": "This script was already processed; nothing was written again.\n\n"
                                     + pa.result["response"]}
             try:
-                env = json.loads(self.execute(pa.markdown, directive="process", egeria_credentials=egeria_credentials))
+                env = json.loads(self.execute(markdown, directive="process", egeria_credentials=egeria_credentials))
             except Exception as e:  # noqa: BLE001 -- it may have written part of the script: still one-shot
                 logger.error(f"DrEgeria process failed after confirm: {e}")
                 env = {"success": False, "output": f"Processing failed: {e}", "commands_total": 0}
@@ -1039,14 +1005,13 @@ JSON:"""
                         "response": SIGN_IN_AGAIN if env.get("auth_reason") == "token_refused" else SIGN_IN_TO_RUN,
                         "next_context": {"task": "dr_egeria_confirm", "pending_id": pending_id, "digest": digest}}
             pa.result = {**out, "state": "processed" if env.get("success") else "failed", "envelope": env,
-                         "response": f"**{pa.command_name}** processed as **{conn['user_id']}**.\n\n"
+                         "response": f"**{command_name}** processed as **{conn['user_id']}**.\n\n"
                                      + _envelope_summary(env, "process")}
             return pa.result
 
     def cancel(self, pending_id: str) -> Dict[str, Any]:
         """Drop a shown script; nothing is processed."""
-        with _pending_lock:
-            _pending.pop(pending_id or "", None)
+        _GATE.discard(pending_id)
         return {"query_type": "general", "response": "Cancelled: nothing was written.", "next_context": None,
                 "sources": [], "num_sources": 0, "retrieval_time": 0.0, "generation_time": 0.0,
                 "avg_relevance_score": 0.0, "context_length": 0}
