@@ -76,17 +76,15 @@ def _sent_params(spec):
 
 @pytest.mark.parametrize("question, target, words, prop, values, finder, column", [
     ("Which glossary terms are still in draft status?", "GlossaryTerm", ["draft"], "contentStatus", ["DRAFT"],
-     "ClassificationExplorer.find_authored_elements", "content_status"),
+     "ClassificationExplorer.find_elements_by_property_value", "content_status"),
     ("Which products are still in development?", "DigitalProduct", ["in development"], "deploymentStatus",
      ["UNDER_DEVELOPMENT"], "CollectionManager.find_digital_products", "deployment_status"),
     ("What projects are currently active?", "Project", ["active"], "projectStatus", ["Active"],
      "ClassificationExplorer.find_elements_by_property_value", "project_status"),
     ("Which processes failed?", "Process", ["FAILED"], "activityStatus", ["FAILED"],
      "AssetMaker.find_processes", "activity_status"),
-    ("Which governance policies are active and approved?", "GovernancePolicy", ["ACTIVE", "APPROVED"],
-     "contentStatus", ["ACTIVE", "APPROVED"], "ClassificationExplorer.find_authored_elements", "content_status"),
     ("Which governance rules are still in draft?", "GovernanceRule", ["draft"], "contentStatus", ["DRAFT"],
-     "ClassificationExplorer.find_authored_elements", "content_status"),
+     "ClassificationExplorer.find_elements_by_property_value", "content_status"),
 ])
 @pytest.mark.parametrize("legacy", [False, True])
 def test_status_words_become_the_types_own_status(fixes_on, stores, monkeypatch, question, target, words,
@@ -124,7 +122,16 @@ def test_draft_projects_is_projects_content_status(fixes_on, stores, monkeypatch
     _, spec = _elicit(monkeypatch, "Which projects are still drafts?", "Project", ["draft"])
     status = spec["conditions"]["functional_status"]
     assert (status["property"], status["values"]) == ("contentStatus", ["DRAFT"])
-    assert spec["action_function"] == "ClassificationExplorer.find_authored_elements"
+    assert spec["action_function"] == "ClassificationExplorer.find_elements_by_property_value"
+
+
+def test_content_status_takes_one_value_and_says_so(fixes_on, stores, monkeypatch):
+    # B15 "active and approved": contentStatus is one exact property-value search now (read-back c7488781)
+    _, spec = _elicit(monkeypatch, "Which governance policies are active and approved?", "GovernancePolicy",
+                      ["ACTIVE", "APPROVED"])
+    status = spec["conditions"]["functional_status"]
+    assert (status["property"], status["values"]) == ("contentStatus", ["ACTIVE"])
+    assert "APPROVED isn't applied" in spec["unmet"]
 
 
 def test_two_properties_one_report_the_rest_unmet(fixes_on, stores, monkeypatch):
@@ -179,8 +186,8 @@ def test_status_properties_most_specific_first(type_name, want):
 
 
 @pytest.mark.parametrize("type_name, prop, finder", [
-    ("GlossaryTerm", "contentStatus", "ClassificationExplorer.find_authored_elements"),
-    ("DataSet", "contentStatus", "AssetMaker.find_data_assets"),
+    ("GlossaryTerm", "contentStatus", "ClassificationExplorer.find_elements_by_property_value"),
+    ("DataSet", "contentStatus", "ClassificationExplorer.find_elements_by_property_value"),
     ("Host", "deploymentStatus", "AssetMaker.find_infrastructure"),
     ("DigitalProduct", "deploymentStatus", "CollectionManager.find_digital_products"),
     ("SolutionComponent", "deploymentStatus", "ClassificationExplorer.find_elements_by_property_value"),
@@ -205,8 +212,8 @@ def test_a_one_value_finder_takes_one_value_and_says_so():
 def test_a_name_filter_cannot_ride_with_a_property_value_status():
     cond, _, unmet = v2.ground_conditions({"functional_status": ["active"], "search_string": "Coco"}, "Project")
     assert "search_string" not in cond and any("'Coco'" in u for u in unmet)
-    cond, _, unmet = v2.ground_conditions({"functional_status": ["draft"], "search_string": "Coco"}, "GlossaryTerm")
-    assert cond["search_string"] == "Coco" and not unmet          # find_authored_elements takes both
+    cond, _, unmet = v2.ground_conditions({"functional_status": ["failed"], "search_string": "Coco"}, "Process")
+    assert cond["search_string"] == "Coco" and not unmet          # find_processes takes both
 
 
 # ── element status: only an explicit "deleted", only where the finder takes it ──────────────────────
@@ -280,7 +287,7 @@ class _Client:
 
 
 @pytest.mark.parametrize("target, words, endpoint, body_key, body_value, bean_prop, cell", [
-    ("GlossaryTerm", ["draft"], "/authored-elements/by-search-string", "contentStatusList", ["DRAFT"],
+    ("GlossaryTerm", ["draft"], "/by-property-value-search", "propertyValue", "DRAFT",
      {"contentStatus": "DRAFT"}, ("content_status", "DRAFT")),
     ("DigitalProduct", ["in development"], "/digital-products/by-search-string", "deploymentStatusList",
      ["UNDER_DEVELOPMENT"], {"deploymentStatus": "UNDER_DEVELOPMENT"}, ("deployment_status", "UNDER_DEVELOPMENT")),
@@ -303,6 +310,6 @@ def test_the_request_filters_on_the_server_and_the_column_shows_it(egeria_offlin
     assert body[body_key] == body_value
     assert "limitResultsByStatus" not in body
     assert body.get("metadataElementTypeName") == target
-    if target == "Project":
-        assert body["propertyNames"] == ["projectStatus"]
+    if body_key == "propertyValue":
+        assert body["propertyNames"] == [{"Project": "projectStatus", "GlossaryTerm": "contentStatus"}[target]]
     assert out["result"]["rows"][0][cell[0]] == cell[1]

@@ -265,6 +265,8 @@ def is_a(type_name: str, ancestor: str) -> bool:
     if type_name == ancestor:
         return True
     mine, theirs = _fields(type_name), _fields(ancestor)
+    # A heuristic: a subtype that adds no fields of its own has the same fields as its parent and fails the
+    # test. Then the type falls to the property-value finder: still correct, just less specific.
     return bool(theirs) and len(theirs) < len(mine) and mine[:len(theirs)] == theirs
 
 
@@ -298,10 +300,10 @@ def _values_text(prop: str) -> str:
 def _status_finder(type_name: str, prop: str) -> Tuple[str, Optional[str]]:
     """(function, list parameter) that filters `prop` on the server for `type_name`; a None list parameter
     means the property-value finder, which matches one value."""
-    if prop == "contentStatus":
-        if is_a(type_name, "DataAsset"):
-            return "AssetMaker.find_data_assets", "content_status_list"
-        return "ClassificationExplorer.find_authored_elements", "content_status_list"
+    # contentStatus: the property-value finder for every type. `find_authored_elements` (and its DataAsset
+    # sibling `find_data_assets`) misses non-ACTIVE content on laz: DRAFT + GlossaryTerm gave 0 where the
+    # property-value search finds all 86 (Architect read-back c7488781, 2026-11-14). find_data_assets
+    # returns only if a DataAsset DRAFT census check shows it complete.
     if prop == "deploymentStatus":
         if is_a(type_name, "Infrastructure"):
             return "AssetMaker.find_infrastructure", "deployment_status_list"
