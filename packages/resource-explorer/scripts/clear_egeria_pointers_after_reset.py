@@ -118,7 +118,7 @@ from resource_explorer.registry_guards import (  # noqa: E402,F401
 
 #: Written into every plan file and into its hash. A plan made by another version of this script is refused with
 #: its own sentence (not the registry-changed one). Bump it when the plan's shape or meaning changes.
-SCRIPT_VERSION = "2026-11-13.1"
+SCRIPT_VERSION = "2026-11-13.2"
 #: The exact prefix of the printed "to apply:" line: what actually works (see the docstring).
 RUN_PREFIX = "uv run python scripts/clear_egeria_pointers_after_reset.py"
 
@@ -197,7 +197,16 @@ EXTRA_READS = {
     "egeria_outbox_snapshot": ["claimed_at", "next_attempt_at", "completed_at", "last_error"],
     "activity_log": ["id", "status", "detail"], "runs": ["id", "state"],
     "databases": ["slug"], "projects": ["slug"], "file_systems": ["slug"],
+    "project_egeria_surveys": ["project_slug", "published_at", "egeria_report_guid"],
+    "project_published_analyses": ["project_slug", "published_at"],
+    "project_published_annotation_types": ["project_slug", "published_at"],
 }
+#: Publish-state tables that record WHEN a publish happened (database_surveys and filesystem_surveys keep only
+#: surveyed_at, so they cannot say). A row published after --reset-at is evidence of a post-reset publish even
+#: when no proof row exists: the survey-run publisher (surveyors/egeria_publisher.py, the path a scheduled
+#: RepoRefreshSurvey takes) records the asset GUID and project_egeria_surveys but writes no
+#: catalogue_commit_proofs row; only the Publish button's read-back path (repo_publish) does.
+PUBLISHED_AT_TABLES = ("project_egeria_surveys", "project_published_analyses", "project_published_annotation_types")
 
 NODE_DATABASE, NODE_REPO, NODE_OTHER = "database", "repo_report", "resource"
 
@@ -422,6 +431,17 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
                              "WHERE published_at IS NOT NULL AND published_at <> ''"):
             if _known(r["published_at"]) and _ts(r["published_at"]) < _ts(reset_at):
                 pub_earlier[r["project_slug"]] = pub_earlier.get(r["project_slug"], 0) + 1
+    # Publishes AFTER the reset, from the publish-state rows' own times: the proof rows alone miss a publish made
+    # by the survey-run publisher (it writes none). Reported beside the proofs' list; the liveness reads above are
+    # what actually keeps such a publish's pointers.
+    published_after: dict[tuple[str, str], str] = {}
+    for table in PUBLISHED_AT_TABLES:
+        for r in _rows(conn, f"SELECT project_slug, published_at FROM {table} "
+                             "WHERE published_at IS NOT NULL AND published_at <> ''"):
+            if _known(r["published_at"]) and _ts(r["published_at"]) > _ts(reset_at):
+                key = (r["project_slug"], table)
+                if key not in published_after or _ts(r["published_at"]) > _ts(published_after[key]):
+                    published_after[key] = r["published_at"]
     markers, after, marker_skipped = [], [], []
     for slug in sorted(set(by) | set(pub_earlier)):
         rows_for = by.get(slug, [])
@@ -447,6 +467,8 @@ def build_plan(conn, db_name: str, reset_at: str, old_id: str, new_id: str, sche
             "new_collection_id": new_id or "unknown", "actions": actions,
             "dead_outbox_untouched": [r["id"] for r in dead], "skipped_tables": skipped,
             "slugs_with_proofs_after_reset": after, "markers_skipped": marker_skipped,
+            "slugs_published_after_reset": [{"slug": slug, "table": table, "published_at": at}
+                                            for (slug, table), at in sorted(published_after.items())],
             "liveness": _liveness_summary(actions)}
     # the markers go FIRST (see ORDER in the module docstring)
     plan["actions"].sort(key=lambda a: a["kind"] != "write_markers")
@@ -512,6 +534,11 @@ def render(plan: dict, title: str) -> str:
     if plan["slugs_with_proofs_after_reset"]:
         out.append("WARNING proofs newer than the reset time exist for: "
                    + ", ".join(plan["slugs_with_proofs_after_reset"]) + " (published after the reset? check --reset-at)")
+    if plan.get("slugs_published_after_reset"):
+        out.append("WARNING publish rows newer than the reset time exist (a publish with no proof row, e.g. a scheduled "
+                   "survey's): " + ", ".join(f"{p['slug']} ({p['table']} {p['published_at']})"
+                                             for p in plan["slugs_published_after_reset"][:20])
+                   + "; their pointers are kept only if they still resolve (KEPT above)")
     out.append("kept untouched: every proof row, verdicts, scope events, enrichment, journal, groups, "
                "native_survey_annotations, step_runs, survey history, 'done' outbox rows, and every pointer "
                "that still resolves (KEPT above)")

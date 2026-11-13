@@ -134,6 +134,9 @@ step 4.
        treated as gone"). The kept rows, and what each GUID answered, are in the plan and its hash, so an answer
        that changes before the apply refuses the apply. A resource with a kept asset or report pointer gets no
        `egeria_reset` marker. If Egeria cannot be reached at all, the run refuses.
+     - It warns about a publish made after the reset that left no proof row: a scheduled survey publishes
+       through the survey-run publisher, which records `project_egeria_surveys` but writes no proof row, so the
+       proofs-only warning missed docling's 2026-11-12 publish.
      - It sets a project context or investigation that was `linked` to `unbound`.
      - It removes cache rows: materialized blueprints, `survey_definition_cache`, `egeria_linkage_status`, and
        the Egeria claim settings.

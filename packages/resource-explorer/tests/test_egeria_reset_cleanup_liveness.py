@@ -285,3 +285,36 @@ def test_a_plan_with_nothing_to_check_never_contacts_egeria(env):
     cap = Cap()
     assert S.run(["--reset-at", RESET, "--out-dir", str(env["dir"])], out=cap, now=NOW, reads_factory=factory) == 0
     assert called == []
+
+
+# ── the guard gap: a publish after the reset that left no proof row ─────────────────────────────────────────
+
+def test_a_publish_row_after_the_reset_is_reported_even_without_a_proof_row(env):
+    """2026-11-12 18:02Z: docling's scheduled RepoRefreshSurvey published through the survey-run publisher, which
+    records project_egeria_surveys (with published_at) but writes no catalogue_commit_proofs row, so the
+    proofs-only guard (slugs_with_proofs_after_reset) did not see it."""
+    ins(env["reg"], "project_egeria_surveys", project_slug="repo1", surveyed_at="2026-10-08T19:59:00",
+        egeria_report_guid=LIVE_G, published_at="2026-10-08T20:00:00", annotation_count=1)
+    egeria = FakeEgeria({LIVE_G: element("SurveyReport", "SurveyReport::GitHubRepo::repo1::x", AFTER)})
+    rc, cap, h, f = dry(env, egeria)
+    plan = plan_of(f)
+    assert plan["slugs_with_proofs_after_reset"] == []                    # the old guard alone misses it
+    assert {"slug": "repo1", "table": "project_egeria_surveys",
+            "published_at": "2026-10-08T20:00:00"} in plan["slugs_published_after_reset"]
+    assert "WARNING publish rows newer than the reset time exist" in cap.text
+    assert "repo1 (project_egeria_surveys 2026-10-08T20:00:00)" in cap.text
+    # its live report is kept, and so the resource gets no marker
+    assert LIVE_G in [k["row"]["egeria_report_guid"] for k in action(plan, "clear:project_egeria_surveys")["kept"]]
+    assert "repo1" in [m["slug"] for m in plan["markers_skipped"]]
+
+
+def test_publish_rows_before_the_reset_are_not_reported(env):
+    rc, cap, h, f = dry(env, FakeEgeria())
+    assert plan_of(f)["slugs_published_after_reset"] == []
+    assert "publish rows newer than the reset time" not in cap.text
+
+
+def test_the_survey_run_publisher_still_writes_no_proof_row_so_the_guard_must_read_publish_rows():
+    """Pins the cause: if the survey-run publisher starts writing proof rows, this guard's reason changes."""
+    src = (Path(S.__file__).resolve().parents[1] / "resource_explorer" / "surveyors" / "egeria_publisher.py").read_text()
+    assert "record_egeria_survey(" in src and "append_catalogue_commit_proof" not in src
