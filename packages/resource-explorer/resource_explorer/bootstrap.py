@@ -318,7 +318,7 @@ _prefect_pool_status_lock = threading.Lock()
 
 
 #: The last pool state logged at WARNING/INFO, so a state is said once, not on every pass:
-#: None (nothing logged yet), "live", "no_live", "none_registered".
+#: None (nothing logged yet), "live", "no_live", "none_registered", "unreachable".
 _prefect_pool_logged_state: str | None = None
 
 #: Prefect's default worker heartbeat interval, used when a worker does not report its own.
@@ -356,6 +356,23 @@ def prefect_pool_runs_locally_instead() -> list[str]:
     if get_config().prefect.route_local_steps:
         out.append("Resource Explorer's own steps (PREFECT_ROUTE_LOCAL_STEPS is on)")
     return out
+
+
+def prefect_pool_runs_locally_instead_safe() -> list[str]:
+    """prefect_pool_runs_locally_instead for the unreachable branch, which is already handling one failure:
+    a config that cannot be read there gives the generic words rather than a second exception."""
+    try:
+        return prefect_pool_runs_locally_instead()
+    except Exception as exc:  # noqa: BLE001 - reported in the list itself, never silently shorter
+        return [f"(could not list the dispatched steps: {type(exc).__name__})"]
+
+
+def unreachable_words(steps: list[str]) -> str:
+    """The banner's sentence while the Prefect server cannot be reached: nothing is recorded in Prefect, and
+    every dispatched step runs in RE's process (the fallback triggers before any flow run is created)."""
+    listed = f" ({', '.join(steps)})" if steps else ""
+    return (f"Runs are not recorded in Prefect; dispatched steps{listed} run in Resource Explorer's "
+            "process instead.")
 
 
 def runs_locally_words(steps: list[str]) -> str:
@@ -409,6 +426,15 @@ def _worker_is_live(worker, now: datetime, factor: float) -> bool:
     except (TypeError, ValueError):
         interval = _DEFAULT_WORKER_HEARTBEAT_S
     return (now - beat).total_seconds() <= factor * interval
+
+
+def _prefect_enabled() -> bool | None:
+    try:
+        from resource_explorer.config import get_config
+
+        return bool(get_config().prefect.enabled)
+    except Exception:  # noqa: BLE001 - None: the banner then claims nothing either way
+        return None
 
 
 def _live_factor() -> float:
@@ -511,9 +537,18 @@ def check_prefect_pool_workers(pool: str | None = None, *, now: datetime | None 
         else:
             log.debug("bootstrap: Prefect work pool %r: %s", pool, status.summary)
     except Exception as exc:
+        # The server could not be asked: never a 0 that reads as an empty pool, and never silence.
+        # Runs still happen (the local fallback), but none of them is recorded in Prefect.
         status.reachable = False
         status.last_check_error = str(exc)
-        log.warning("bootstrap: could not check Prefect pool %r workers: %s", pool, exc)
+        status.summary = "server not reachable; the pool could not be checked"
+        status.runs_locally_instead = prefect_pool_runs_locally_instead_safe()
+        if _prefect_pool_logged_state != "unreachable":
+            log.warning("bootstrap: Prefect work pool %r: %s (%s). %s", pool, status.summary, exc,
+                        unreachable_words(status.runs_locally_instead))
+            _prefect_pool_logged_state = "unreachable"
+        else:
+            log.debug("bootstrap: could not check Prefect pool %r workers: %s", pool, exc)
 
     with _prefect_pool_status_lock:
         global _prefect_pool_status
@@ -1782,7 +1817,11 @@ def get_status(docs_dir: Path = DOCS_DIR) -> dict:
             "worker_count": pool_st.worker_count if pool_st.reachable else None,
             "summary": pool_st.summary,
             "runs_locally_instead": list(pool_st.runs_locally_instead),
-            "runs_locally_words": runs_locally_words(pool_st.runs_locally_instead),
+            "runs_locally_words": (unreachable_words(pool_st.runs_locally_instead)
+                                   if pool_st.reachable is False
+                                   else runs_locally_words(pool_st.runs_locally_instead)),
+            # With Prefect off every step runs locally by configuration: nothing to warn about.
+            "enabled": _prefect_enabled(),
             "last_heartbeat": pool_st.last_heartbeat,
             "last_checked_at": pool_st.last_checked_at,
             "last_check_error": pool_st.last_check_error,

@@ -136,13 +136,20 @@ export function engineLine(status) {
   return null;
 }
 
-/** The Prefect pool's own line (2026-11-13): null, or {kind: 'no_live', word, runsLocally}. Drawn only when Prefect
- *  was reached and no worker is live: an unread or unreachable pool claims nothing here (reachable null/false), and
- *  a live pool needs no one's eye. The words are the server's (`summary`, `runs_locally_words`), so the banner and
- *  the log say the same thing. Nothing waits with no live worker: those steps run in RE's process instead. */
+/** The Prefect pool's own line (2026-11-13): null, or {kind, word, runsLocally}. Two warnings, in the server's
+ *  own words (`summary`, `runs_locally_words`), so the banner and the log say the same thing:
+ *    - 'unreachable': the Prefect server could not be asked. Runs still happen (the local fallback), but none is
+ *      recorded in Prefect, and dispatched steps run in RE's process (the Architect's ruling, 2026-11-13);
+ *    - 'no_live': the server answered and no worker is live; dispatched steps run in RE's process instead.
+ *  Nothing is drawn while the pool is unread (reachable null), while a worker is live, or when Prefect is off by
+ *  configuration (enabled false: every step runs locally by choice). Nothing waits in either warning state. */
 export function prefectPoolLine(status) {
   const p = status?.prefect_pool;
-  if (!p || p.reachable !== true || !(p.live_count === 0)) return null;
+  if (!p || p.enabled === false) return null;
+  if (p.reachable === false) {
+    return { kind: 'unreachable', word: `Prefect: ${p.summary || 'server not reachable'}`, runsLocally: p.runs_locally_words || '' };
+  }
+  if (p.reachable !== true || p.live_count !== 0) return null;
   return { kind: 'no_live', word: `Prefect: ${p.summary || 'no live worker'}`, runsLocally: p.runs_locally_words || '' };
 }
 

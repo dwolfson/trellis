@@ -127,7 +127,14 @@ class TestPoolWorkerLiveness:
         assert st["prefect_pool"]["reachable"] is False
         for key in ("live_count", "registered_count", "worker_count", "never_heard_from"):
             assert st["prefect_pool"][key] is None, f"{key}: an unreachable pool is not an empty one"
-        assert st["prefect_pool"]["runs_locally_instead"] == []
+        # Not silence either (Architect ruling 2026-11-13): an unreachable server is a warning of its own,
+        # worded apart from "no live worker".
+        assert st["prefect_pool"]["summary"] == "server not reachable; the pool could not be checked"
+        assert "no live worker" not in st["prefect_pool"]["summary"]
+        assert st["prefect_pool"]["runs_locally_words"].startswith(
+            "Runs are not recorded in Prefect; dispatched steps (Soda data-quality, ")
+        assert st["prefect_pool"]["runs_locally_words"].endswith(
+            "run in Resource Explorer's process instead.")
 
 
 class TestLiveNotRegistered:
@@ -228,3 +235,29 @@ class TestRunsLocallyInstead:
             bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=NOW)
         called = {c[0] for c in client.method_calls} - {"__aenter__", "__aexit__"}
         assert called == {"read_workers_for_work_pool"}
+
+
+class TestServerUnreachable:
+    def _down(self):
+        with patch("resource_explorer.surveyors.prefect_adapter.re_prefect_client",
+                   side_effect=ConnectionError("connection refused")):
+            return bs.check_prefect_pool_workers(pool="resource-explorer-pool", now=NOW)
+
+    def test_said_once_per_state_change(self, caplog):
+        caplog.set_level(logging.INFO, logger=bs.log.name)
+        self._down()
+        self._down()
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warns) == 1 and "server not reachable" in warns[0].getMessage()
+        assert "connection refused" in warns[0].getMessage(), "the cause is in the one warning"
+        caplog.clear()
+        _check([_fake_worker("w0", FRESH)], NOW)
+        said = [r for r in caplog.records if r.levelno >= logging.INFO]
+        assert [r.levelno for r in said] == [logging.INFO], "back: said once, at INFO"
+
+    def test_payload_says_whether_prefect_is_on(self, monkeypatch):
+        from resource_explorer.config import get_config
+        self._down()
+        assert bs.get_status()["prefect_pool"]["enabled"] is get_config().prefect.enabled
+        monkeypatch.setattr(get_config().prefect, "enabled", False)
+        assert bs.get_status()["prefect_pool"]["enabled"] is False

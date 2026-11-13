@@ -39,10 +39,29 @@ test('no live worker: one warning line in the server words, with what runs local
   assert.equal(bar.dataset.bootstrapKind, 'prefect-pool');
 });
 
-test('a live pool, an unread pool and an unreachable one draw no pool line', async () => {
+const UNREACHABLE = (over = {}) => POOL({ reachable: false, live_count: null, registered_count: null,
+  never_heard_from: null, worker_count: null, summary: 'server not reachable; the pool could not be checked',
+  runs_locally_words: 'Runs are not recorded in Prefect; dispatched steps (Soda data-quality) run in Resource '
+    + "Explorer's process instead.", last_check_error: 'connection refused', ...over });
+
+test('an unreachable Prefect server is a warning of its own, never silence and never "no live worker"', async () => {
+  const { document, mod } = await loadShell();
+  mod.renderBootstrapBanner(document, STATUS(UNREACHABLE()));
+  const bar = document.getElementById('bootstrap-banner');
+  assert.ok(bar, '"Prefect not running" must not be silent');
+  const line = bar.querySelector('[data-prefect-pool-line]');
+  assert.equal(line.dataset.prefectPoolLine, 'unreachable');
+  assert.equal(text(bar.querySelector('[data-prefect-pool-word]')), 'Prefect: server not reachable; the pool could not be checked');
+  assert.match(text(bar.querySelector('[data-prefect-pool-runs-locally]')), /^Runs are not recorded in Prefect; dispatched steps/);
+  assert.doesNotMatch(text(line), /no live worker/);
+  assert.match(line.className, /text-state-warn/);
+});
+
+test('a live pool, an unread pool, and Prefect switched off draw no pool line', async () => {
   const { document, mod } = await loadShell();
   for (const pool of [POOL({ live_count: 1, summary: '1 live worker(s) of 3 registered; last heartbeat 20 seconds ago' }),
-    undefined, POOL({ reachable: null, live_count: null }), POOL({ reachable: false, live_count: null })]) {
+    undefined, POOL({ reachable: null, live_count: null }),
+    UNREACHABLE({ enabled: false }), POOL({ enabled: false })]) {
     mod.renderBootstrapBanner(document, STATUS(pool));
     assert.equal(document.getElementById('bootstrap-banner'), null, JSON.stringify(pool));
   }
