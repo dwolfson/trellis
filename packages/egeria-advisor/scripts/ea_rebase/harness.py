@@ -313,17 +313,23 @@ def summary_md(mode: str, rows: List[Dict[str, Any]]) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=("baseline", "rebased"), required=True)
+    ap.add_argument("--mode", choices=("baseline", "rebased", "rebased_fixes"), required=True,
+                    help="baseline: EA as is; rebased: EA_SPEC_AUTHORING_V2 alone; rebased_fixes: plus "
+                         "EA_SPEC_ELICITOR_FIXES")
+    ap.add_argument("--questions", default=str(QUESTIONS), help="question set JSON (default: the 30)")
+    ap.add_argument("--tag", default="", help="suffix for the result files (e.g. holdout)")
     ap.add_argument("--offline", action="store_true", help="no Egeria at all: LLM + offline checks")
     ap.add_argument("--user", default="erinoverview")
     ap.add_argument("--ids", help="comma-separated question ids (default: all 30)")
     ap.add_argument("--out", default=str(HERE / "results"))
     args = ap.parse_args()
 
-    if args.mode == "rebased":
+    os.environ.pop("EA_SPEC_AUTHORING_V2", None)
+    os.environ.pop("EA_SPEC_ELICITOR_FIXES", None)
+    if args.mode in ("rebased", "rebased_fixes"):
         os.environ["EA_SPEC_AUTHORING_V2"] = "1"
-    else:
-        os.environ.pop("EA_SPEC_AUTHORING_V2", None)
+    if args.mode == "rebased_fixes":
+        os.environ["EA_SPEC_ELICITOR_FIXES"] = "1"
     sys.path.insert(0, str(PKG))
     storage = Path(tempfile.mkdtemp(prefix=f"ea-rebase-{args.mode}-"))
     _isolate_storage(storage)
@@ -335,10 +341,10 @@ def main() -> None:
     if not args.offline:
         client = _signin(args.user)
         run = _readonly_runner(client)
-        if args.mode == "rebased":
+        if args.mode != "baseline":
             ctx["start_kwargs"] = {"egeria_client": client}
 
-    qs = json.loads(QUESTIONS.read_text())["questions"]
+    qs = json.loads(Path(args.questions).read_text())["questions"]
     if args.ids:
         want = set(args.ids.split(","))
         qs = [q for q in qs if q["id"] in want]
@@ -364,9 +370,9 @@ def main() -> None:
         print(f"    phase={row.get('final_phase')} turns={row.get('turns')} target={c.get('target_type')} "
               f"valid={(c.get('pyegeria_validate') or {}).get('ok')} run={(c.get('run') or {}).get('ran')} "
               f"rows={(c.get('run') or {}).get('shown')} {row['total_s']}s {row.get('error') or ''}", flush=True)
-        suffix = "offline" if args.offline else "live"
+        suffix = ("offline" if args.offline else "live") + (f"_{args.tag}" if args.tag else "")
         (out_dir / f"results_{args.mode}_{suffix}.json").write_text(json.dumps(rows, indent=1, default=str))
-    suffix = "offline" if args.offline else "live"
+    suffix = ("offline" if args.offline else "live") + (f"_{args.tag}" if args.tag else "")
     (out_dir / f"summary_{args.mode}_{suffix}.md").write_text(summary_md(f"{args.mode} ({suffix})", rows))
     print(summary_md(f"{args.mode} ({suffix})", rows))
     print(f"storage (temp, discardable): {storage}")
