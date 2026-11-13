@@ -436,7 +436,9 @@ class GovernancePlanAgent:
         if refused:
             return _refused(doc_id, _steps_refused_words(refused))
         n = len(names)
-        rerun = action == "retry" or folder == "outbox"
+        from advisor.governance_docs import previously_executed
+        ran_before = previously_executed(content) if folder == "inbox" else None   # recovered from outbox
+        rerun = action == "retry" or folder == "outbox" or bool(ran_before)
         unsafe = non_idempotent_commands(names) if rerun else []
         pending = _PLAN_GATE.register(confirm_gate.caller_identity(conn), content,
                                       {"doc_id": doc_id, "source_folder": folder, "draft_id": draft_id,
@@ -449,12 +451,16 @@ class GovernancePlanAgent:
             "query": doc_id,
             "response": (
                 f"**Plan `{doc_id}`**: {n} command(s) would be processed in Egeria as **{conn['user_id']}**. "
-                f"**Nothing has been written.**\n\n```markdown\n{command_section.strip()}\n```\n\n"
+                f"**Nothing has been written.**"
+                + (f" This plan ran before ({ran_before}) and was recovered for editing, so running it is a "
+                   f"re-run." if ran_before else "")
+                + f"\n\n```markdown\n{command_section.strip()}\n```\n\n"
                 + (_unsafe_words(unsafe) + "\n\n" if unsafe else "")
                 + f"{reply} (Plan digest `{pending.digest[:12]}`; good for {PLAN_CONFIRM_TTL_S // 60} minutes. "
                 f"If the plan is edited before you confirm, it will not run.)"
             ),
             "rerun": rerun,
+            "previously_executed": ran_before,
             "ack_required": bool(unsafe),
             "non_idempotent": unsafe,
             "command_names": names,
