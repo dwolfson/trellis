@@ -401,3 +401,31 @@ def test_parser_dispatch_is_off_without_the_flag(monkeypatch):
                         lambda *a, **k: pytest.fail("V2 reader used with the flag off"))
     fs = parse_report_spec_markdown(md)   # EA's own parser, as before the prototype
     assert not [c for f in fs.formats or [] for c in f.attributes or []]
+
+
+@pytest.mark.parametrize("fixes", [False, True])
+def test_same_question_same_llm_reply_takes_a_different_path_with_and_without_the_fixes(
+        stores, monkeypatch, fixes):
+    """For the read-back: EA_SPEC_AUTHORING_V2 alone never reaches the clarify, conditions or
+    build-when-named code; with EA_SPEC_ELICITOR_FIXES it does. Same question, same LLM reply."""
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor, decompose_prompt
+    monkeypatch.setenv(v2.FLAG, "1")
+    if fixes:
+        monkeypatch.setenv(v2.FIXES_FLAG, "1")
+    else:
+        monkeypatch.delenv(v2.FIXES_FLAG, raising=False)
+    reply = {"clarify": "Which teams?", "title": "teams", "heading": "Teams", "target_type": "Team",
+             "conditions": {"limit_result_by_status": ["ACTIVE"]},
+             "columns": [{"name": "Name", "key": "display_name"}]}
+    built = {k: v for k, v in reply.items() if k != "clarify"}
+    fake = _llm(monkeypatch, reply, built)
+    r = ReportSpecElicitor().start("Which teams are active?")
+    prompts = "\n".join(fake.prompts)
+    if not fixes:
+        assert fake.prompts == [decompose_prompt("Which teams are active?", None)]   # EA's prompt, once
+        assert "clarify" not in prompts and "limit_result_by_status" not in prompts
+        assert r["phase"] == "confirm_action" and "Condition:** none" in r["response"]
+    else:
+        assert len(fake.prompts) == 2 and "names Team elements" in fake.prompts[1]  # build-when-named retry
+        assert "limit_result_by_status" in prompts
+        assert r["phase"] == "confirm_action" and "ACTIVE" in r["response"]
