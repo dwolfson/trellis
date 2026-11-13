@@ -2288,12 +2288,23 @@ def plan_command_names(command_section: str) -> List[str]:
     return [m.strip() for m in re.findall(r'^##\s+(.+?)\s*$', command_section, re.MULTILINE)]
 
 
+#: Verbs whose commands are unsafe to run twice when pyegeria's spec says nothing (`idempotent` unset), and why.
+#: pyegeria 6.2.40 sets the flag on no command, so today these decide. Read-back
+#: READBACK-ea-plan-rerun-ack-eae05be9-2026-11-13 widened them from Link alone.
+UNSAFE_FALLBACK_VERBS: Dict[str, str] = {
+    "link": "a Link command: running it again adds the relationship again",
+    "attach": "an Attach command: running it again attaches it again",
+    "initiate": "an Initiate command: running it again starts another run",
+    "import": "an Import command: running it again imports it again",
+}
+
+
 def non_idempotent_commands(names: List[str]) -> List[Dict[str, Any]]:
     """The commands a re-run would repeat with a different result: [{command, count, why}], first-seen order.
 
-    pyegeria's compact spec decides when it says (`idempotent`, on the command or its family). Where it says
-    nothing, a Link command is unsafe: running it again adds the relationship again. (MetadataExpert's Create
-    and Link Instance are covered once pyegeria flags them.)"""
+    pyegeria's compact spec decides when it says (`idempotent`, on the command or its family): false is unsafe,
+    true is safe whatever the verb. Where it says nothing, a command whose verb (pyegeria's spec verb, else the
+    name's first word) is in UNSAFE_FALLBACK_VERBS is unsafe: Link, Attach, Initiate, Import."""
     from advisor import compact_specs
     found: Dict[str, Dict[str, Any]] = {}
     for name in names:
@@ -2301,8 +2312,12 @@ def non_idempotent_commands(names: List[str]) -> List[Dict[str, Any]]:
         spec = compact_specs.command(name) or {}
         if flag is False:
             why = "its Dr.Egeria specification marks it non-idempotent"
-        elif flag is None and (name.split()[:1] == ["Link"] or str(spec.get("verb", "")).lower() == "link"):
-            why = "a Link command: running it again adds the relationship again"
+        elif flag is None:
+            verb = str(spec.get("verb", "")).lower()
+            first = (name.split()[:1] or [""])[0].lower()
+            why = UNSAFE_FALLBACK_VERBS.get(verb) or UNSAFE_FALLBACK_VERBS.get(first)
+            if not why:
+                continue
         else:
             continue
         found.setdefault(name, {"command": name, "count": 0, "why": why})["count"] += 1

@@ -40,8 +40,9 @@ class Specs:
     commands: Dict[str, Dict[str, Any]] = field(default_factory=dict)   # norm(name or alternate) -> the command
 
 
-def _names(c: Dict[str, Any]):
+def _names(c: Dict[str, Any], key: Optional[str] = None):
     yield c.get("display_name")
+    yield key           # a dict-shaped file keys commands by their header name ("Initiate Survey": initiate_survey)
     alts = c.get("alternate_names") or []
     if isinstance(alts, str):
         alts = re.split(r"[;,]", alts)
@@ -69,11 +70,11 @@ def load() -> Specs:
         specs.families[norm(family)] = {k: v for k, v in doc.items() if k not in ("commands", "attribute_definitions",
                                                                                  "bundles")}
         cmds = doc.get("commands") or []
-        for c in (cmds.values() if isinstance(cmds, dict) else cmds):
+        for key, c in (cmds.items() if isinstance(cmds, dict) else ((None, c) for c in cmds)):
             if not isinstance(c, dict):
                 continue
             entry = {**c, "family": c.get("family") or family}
-            for n in _names(c):
+            for n in _names(c, key):
                 if n and norm(n) not in specs.commands:
                     specs.commands[norm(n)] = entry
     return specs

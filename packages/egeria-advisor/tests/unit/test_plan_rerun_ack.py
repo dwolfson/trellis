@@ -9,7 +9,7 @@ Instance, as it adds the flag). So a re-run lists those commands and needs more 
 A plain "yes" is refused in words, and the shown plan stays confirmable. First runs are unaffected.
 
 Which commands: pyegeria's compact spec `idempotent` (on the command or its family) when it says; where it
-says nothing, any command whose verb is Link.
+says nothing, any command whose verb is Link, Attach, Initiate or Import (UNSAFE_FALLBACK_VERBS).
 """
 from __future__ import annotations
 
@@ -94,6 +94,45 @@ def test_a_family_marked_non_idempotent_covers_its_commands(specs):
     (specs / "commands_me.json").write_text(json.dumps({"family": "Metadata Expert", "idempotent": False,
         "commands": [{"display_name": "Create Instance", "family": "Metadata Expert", "verb": "Create"}]}))
     assert [u["command"] for u in non_idempotent_commands(["Create Instance"])] == ["Create Instance"]
+
+
+@pytest.mark.parametrize("name, verb", [
+    ("Link Term to Term", "Link"),
+    ("Attach Search Keyword", "Attach"),
+    ("Initiate Survey", "Initiate"),
+    ("Import Data Product", "Import"),
+])
+def test_without_a_flag_each_fallback_verb_is_unsafe(name, verb):
+    """pyegeria 6.2.40 flags nothing, so the verb decides: one real command of each fallback verb."""
+    out = non_idempotent_commands([name, "Create Glossary"])
+    assert [u["command"] for u in out] == [name]
+    assert out[0]["why"].startswith(f"a{'n' if verb[0] in 'AI' else ''} {verb} command")
+
+
+def test_the_spec_verb_decides_for_a_name_without_the_verb_word(specs):
+    """pyegeria keys 'Initiate Engine Action' as engine_action; a plan naming either is an Initiate command."""
+    (specs / "commands_aa.json").write_text(json.dumps({"family": "Action Author", "commands": {
+        "Initiate Engine Action": {"display_name": "engine_action", "verb": "Initiate"}}}))
+    out = non_idempotent_commands(["engine_action", "Initiate Engine Action"])
+    assert [u["command"] for u in out] == ["engine_action", "Initiate Engine Action"]
+    assert all(u["why"].startswith("an Initiate command") for u in out)
+
+
+@pytest.mark.parametrize("name, verb", [
+    ("Link Term to Term", "Link"),
+    ("Attach Search Keyword", "Attach"),
+    ("Initiate Survey", "Initiate"),
+    ("Import Data Product", "Import"),
+])
+def test_idempotent_true_overrides_the_fallback_verb(specs, name, verb):
+    """Keyed by name the way pyegeria's dict-shaped files are, so the flag reaches the plan's header name."""
+    (specs / "commands_y.json").write_text(json.dumps({"family": "F", "commands": {
+        name: {"display_name": name.lower().replace(" ", "_"), "verb": verb, "idempotent": True}}}))
+    assert non_idempotent_commands([name]) == []
+
+
+def test_other_verbs_stay_safe_without_a_flag():
+    assert non_idempotent_commands(["Create Glossary", "Update Glossary", "Classify Element", "Detach Term"]) == []
 
 
 # ── the gate ──────────────────────────────────────────────────────────────────
