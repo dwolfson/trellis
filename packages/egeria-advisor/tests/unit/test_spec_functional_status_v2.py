@@ -125,13 +125,14 @@ def test_draft_projects_is_projects_content_status(fixes_on, stores, monkeypatch
     assert spec["action_function"] == "ClassificationExplorer.find_elements_by_property_value"
 
 
-def test_content_status_takes_one_value_and_says_so(fixes_on, stores, monkeypatch):
-    # B15 "active and approved": contentStatus is one exact property-value search now (read-back c7488781)
+def test_content_status_keeps_every_value_and_says_how_it_runs(fixes_on, stores, monkeypatch):
+    # B15 "active and approved": one exact property-value search per value, merged by answer()
     _, spec = _elicit(monkeypatch, "Which governance policies are active and approved?", "GovernancePolicy",
                       ["ACTIVE", "APPROVED"])
     status = spec["conditions"]["functional_status"]
-    assert (status["property"], status["values"]) == ("contentStatus", ["ACTIVE"])
-    assert "APPROVED isn't applied" in spec["unmet"]
+    assert (status["property"], status["values"]) == ("contentStatus", ["ACTIVE", "APPROVED"])
+    assert not spec.get("unmet") and "merges one contentStatus search per value" in status["note"]
+    assert "the saved spec searches ACTIVE only" in status["note"]
 
 
 def test_two_properties_one_report_the_rest_unmet(fixes_on, stores, monkeypatch):
@@ -204,9 +205,15 @@ def test_each_property_has_a_server_side_finder_that_takes_it(type_name, prop, f
     assert action["spec_params"]["metadata_element_type"] == type_name
 
 
-def test_a_one_value_finder_takes_one_value_and_says_so():
+def test_a_one_value_finder_keeps_every_value_for_a_per_value_run():
     status, unmet = v2.ground_functional_status("Project", ["Active", "planned"])
-    assert status["values"] == ["Active"] and "Planned isn't applied" in unmet[0]
+    assert status["values"] == ["Active", "Planned"] and not unmet
+    spec = {"title": "t", "target_type": "Project", "conditions": {"functional_status": status},
+            "columns": [{"name": "Name", "key": "display_name"}]}
+    assert [s["conditions"]["functional_status"]["values"] for s in v2.per_value_specs(spec)] == [["Active"],
+                                                                                                   ["Planned"]]
+    one, _ = v2.ground_functional_status("Process", ["failed", "completed"])   # a list finder: one run
+    assert len(v2.per_value_specs({**spec, "target_type": "Process", "conditions": {"functional_status": one}})) == 1
 
 
 def test_a_name_filter_cannot_ride_with_a_property_value_status():
@@ -313,3 +320,47 @@ def test_the_request_filters_on_the_server_and_the_column_shows_it(egeria_offlin
     if body_key == "propertyValue":
         assert body["propertyNames"] == [{"Project": "projectStatus", "GlossaryTerm": "contentStatus"}[target]]
     assert out["result"]["rows"][0][cell[0]] == cell[1]
+
+
+def test_several_values_run_one_search_each_merged_by_guid_and_capped(egeria_offline, monkeypatch):
+    """Architect read-back 18add498: B15's first value (APPROVED) has no rows on laz; keeping only the first
+    value answered with 0 rows although ACTIVE policies exist."""
+    from pyegeria.core._server_client import ServerClient
+    calls, _ = egeria_offline
+    by_value = {"APPROVED": [], "ACTIVE": [_bean(contentStatus="ACTIVE") for _ in range(2)]}
+    by_value["ACTIVE"][1]["elementHeader"] = {**by_value["ACTIVE"][1]["elementHeader"], "guid": "g-2"}
+    by_value["DRAFT"] = [by_value["ACTIVE"][0], _bean(contentStatus="DRAFT")]   # g-1 again: dropped
+    by_value["DRAFT"][1]["elementHeader"] = {**by_value["DRAFT"][1]["elementHeader"], "guid": "g-3"}
+
+    class _Resp:
+        def __init__(self, elements):
+            self.elements = elements
+
+        def json(self):
+            return {"elements": self.elements}
+
+    async def per_value(self, request_type, endpoint, payload=None, *a, **k):
+        body = json.loads(payload) if isinstance(payload, str) else payload
+        calls.append((request_type, endpoint, body))
+        return _Resp(by_value[body["propertyValue"]])
+    monkeypatch.setattr(ServerClient, "_async_make_request", per_value)
+    cond, _, _ = v2.ground_conditions({"functional_status": ["APPROVED", "ACTIVE", "DRAFT"]}, "GovernancePolicy")
+    spec = {"title": "t", "target_type": "GovernancePolicy", "answers": {"Heading": "H"}, "conditions": cond,
+            "columns": [{"name": "Name", "key": "display_name"}, {"name": "GUID", "key": "guid"},
+                        {"name": "Status", "key": "content_status"}]}
+    out = v2.answer(spec, _Client())
+    assert out["ok"], out
+    assert [b["propertyValue"] for _, _, b in calls] == ["APPROVED", "ACTIVE", "DRAFT"]
+    assert [r["guid"] for r in out["result"]["rows"]] == ["g-1", "g-2", "g-3"]
+    assert [r["content_status"] for r in out["result"]["rows"]] == ["ACTIVE", "ACTIVE", "DRAFT"]
+    assert any("merged: 3 rows shown" in n for n in out["notes"]) and not out["capped"]
+    calls.clear()
+    capped = v2.answer(spec, _Client(), max_rows=2)
+    assert [r["guid"] for r in capped["result"]["rows"]] == ["g-1", "g-2"] and capped["capped"]
+    assert "there may be more" in capped["markdown"]
+
+
+def test_no_value_with_rows_says_so():
+    prevs = [{"result": {"kind": "empty"}, "notes": []}, {"result": {"kind": "empty"}, "notes": []}]
+    out = v2.merge_previews(prevs, ["APPROVED", "PROPOSED"], "contentStatus", 25)
+    assert out["notes"][-1] == "one contentStatus search per value (APPROVED, PROPOSED): none had rows"

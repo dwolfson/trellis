@@ -359,10 +359,6 @@ def ground_functional_status(type_name: Optional[str], values: Any
         return None, [f"{_plural(type_name)} have no {asked} status; their statuses are {theirs}"]
     chosen = [_canonical(best, k) for k in takes[best]]
     unmet: List[str] = []
-    if takes_one_value(type_name, best) and len(chosen) > 1:
-        unmet.append(f"one {best} search matches one value, so {', '.join(chosen[1:])} isn't applied "
-                     f"(filtered on {chosen[0]})")
-        chosen = chosen[:1]
     for k in keys:
         if k in takes[best]:
             continue
@@ -381,6 +377,10 @@ def ground_functional_status(type_name: Optional[str], values: Any
         others = sorted({p for p in props if p != best for c in both if _canonical(p, _status_key(c))})
         note += (f": {', '.join(both)} is also a {' and '.join(others)} value, and {best} is {type_name}'s "
                  f"most specific status")
+    if takes_one_value(type_name, best) and len(chosen) > 1:
+        # one exact search per value, merged by `answer`; a saved spec is one finder call, so it holds one
+        note += (f"; the answer here merges one {best} search per value, the saved spec searches "
+                 f"{chosen[0]} only")
     return {"property": best, "values": chosen, "note": note}, unmet
 
 
@@ -617,17 +617,67 @@ def search_of(spec: Dict[str, Any]) -> str:
     return DEFAULT_SEARCH
 
 
+def per_value_specs(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """`spec` once per status value when its finder matches one value (the property-value finder), else
+    `[spec]`. Each copy filters on one value; `answer` merges their rows."""
+    status = (spec.get("conditions") or {}).get("functional_status")
+    if not isinstance(status, dict) or len(status.get("values") or []) < 2 \
+            or not takes_one_value(spec.get("target_type"), status.get("property")):
+        return [spec]
+    return [{**spec, "conditions": {**spec["conditions"], "functional_status": {**status, "values": [v]}}}
+            for v in status["values"]]
+
+
+def merge_previews(prevs: List[Dict[str, Any]], values: List[str], prop: str, max_rows: int) -> Dict[str, Any]:
+    """One preview from several one-value runs: rows in value order, de-duplicated by GUID where the
+    table has one (elements matched by different values of one property are distinct anyway), capped at
+    `max_rows`, and capped whenever any run was."""
+    tables = [p for p in prevs if isinstance(p.get("result"), dict) and p["result"].get("kind") == "table"]
+    notes: List[str] = []
+    for v, p in zip(values, prevs):
+        notes += [f"{prop} {v}: {n}" for n in p.get("notes") or []]
+    if not tables:
+        return {**prevs[0], "notes": notes + [f"one {prop} search per value ({', '.join(values)}): none had rows"]}
+    rows, seen, capped = [], set(), any(bool(p.get("capped")) for p in prevs)
+    for p in tables:
+        for r in p["result"].get("rows") or []:
+            guid = r.get("guid") if isinstance(r, dict) else None
+            if guid:
+                if guid in seen:
+                    continue
+                seen.add(guid)
+            rows.append(r)
+    if len(rows) > max_rows:
+        rows, capped = rows[:max_rows], True
+    notes.append(f"one {prop} search per value ({', '.join(values)}), merged: {len(rows)} rows shown"
+                 + ("; there may be more" if capped else ""))
+    result = {**tables[0]["result"], "rows": rows}
+    return {**tables[0], "result": result, "capped": capped, "shown": len(rows), "notes": notes}
+
+
 def answer(spec: Dict[str, Any], client: Any, *, max_rows: int = ANSWER_ROWS) -> Dict[str, Any]:
-    """Run the spec as `client`'s user (structured TABLE, capped) and render it for the reply."""
+    """Run the spec as `client`'s user (structured TABLE, capped) and render it for the reply. A status
+    the finder matches one value at a time runs once per value, merged."""
     import time
     from pyegeria.authoring import preview
     t = time.time()
-    try:
-        prev = preview(spec_draft(spec), client=client, max_rows=max_rows,
-                       params={"start_from": 0, "search_string": search_of(spec)})
-    except Exception as exc:  # noqa: BLE001 -- the words go to the user
-        return {"ok": False, "error": " ".join(str(exc).split())[:400], "s": round(time.time() - t, 2),
-                "markdown": f"I couldn't run it: {' '.join(str(exc).split())[:300]}"}
+    runs = per_value_specs(spec)
+    prevs = []
+    for one in runs:
+        try:
+            prevs.append(preview(spec_draft(one), client=client, max_rows=max_rows,
+                                 params={"start_from": 0, "search_string": search_of(one)}))
+        except Exception as exc:  # noqa: BLE001 -- the words go to the user
+            which = ""
+            if len(runs) > 1:
+                which = f" ({one['conditions']['functional_status']['values'][0]})"
+            return {"ok": False, "error": " ".join(str(exc).split())[:400], "s": round(time.time() - t, 2),
+                    "markdown": f"I couldn't run it{which}: {' '.join(str(exc).split())[:300]}"}
+    if len(runs) > 1:
+        status = spec["conditions"]["functional_status"]
+        prev = merge_previews(prevs, status["values"], status["property"], max_rows)
+    else:
+        prev = prevs[0]
     out = {"ok": True, **prev, "s": round(time.time() - t, 2)}
     out["markdown"] = render_markdown(prev)
     return out
