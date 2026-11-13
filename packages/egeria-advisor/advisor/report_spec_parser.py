@@ -122,10 +122,14 @@ def parse_report_spec_markdown(content: str) -> FormatSet:
     Parse a Report Spec Document (.md) into a FormatSet model.
     Reuses md_processing's UniversalExtractor to extract commands and attributes.
 
-    A document pyegeria wrote (EA_SPEC_AUTHORING_V2: it carries a `### Microflow`) is read through its
-    microflow by pyegeria instead, so every caller of this function reads both kinds.
+    PROTOTYPE, only with EA_SPEC_AUTHORING_V2 on: a document pyegeria wrote (it carries a `### Microflow`)
+    is read through its microflow by pyegeria instead, so every caller reads both kinds. Callers this
+    reaches: agents/report_spec_agent.execute (non-V2 docs only; it reads V2 docs itself),
+    report_spec_docs (register on create/update, validate, inbox registration at load),
+    web/reports.py (draft preview, register on run, the validate and import routes).
     """
-    if "### Microflow" in content:
+    from advisor.spec_authoring_v2 import enabled as _v2_enabled
+    if _v2_enabled() and "### Microflow" in content:
         from advisor.spec_authoring_v2 import format_set_from_document
         m = re.search(r"^### Display Name\s*\n(.+)$", content, flags=re.M)
         return format_set_from_document(content, (m.group(1).strip() if m else "ea-spec"))

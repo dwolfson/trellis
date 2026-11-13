@@ -83,7 +83,8 @@ class ReportSpecAgent:
 
         # A document written by pyegeria (EA_SPEC_AUTHORING_V2) carries its spec as a microflow and was
         # validated by pyegeria when it was generated; EA's own parser and checks are for the old documents.
-        is_v2_doc = "### Microflow" in content
+        from advisor.spec_authoring_v2 import enabled as _v2_enabled
+        is_v2_doc = _v2_enabled() and "### Microflow" in content
         try:
             if is_v2_doc:
                 from advisor.spec_authoring_v2 import format_set_from_document
