@@ -14,8 +14,9 @@
 #
 # When RE_TREE's `resource-explorer prefect deploy` takes --work-queue (trellis re/prefect-worker-container),
 # the worker advertises its commit like the container worker does: it deploys re-survey-step-<sha12> from
-# RE_TREE (a Prefect write, once per start) and polls only queue re-<sha12> as re-worker-<sha12>-<host>, so RE
-# dispatches to it only on the same commit. Before that, it serves the default deployment as
+# RE_TREE, prunes per-commit deployments beyond the newest 3 (never one in use), and polls only queue
+# re-<sha12> as re-worker-<sha12>-<host>, so RE dispatches to it only on the same commit. Deploy and prune are
+# standing Prefect writes, at every start: the owner approves them by installing this agent. Before that, it serves the default deployment as
 # re-host-worker-<host> and says, at WARNING, that commit parity is not checked.
 #
 # Never prints a setting's value: the parity line names settings only.
@@ -46,6 +47,10 @@ run python -c 'from resource_explorer.engine_host import library_steps_line; pri
 
 if run resource-explorer prefect deploy --help 2>/dev/null | grep -q -- "--work-queue"; then
     run resource-explorer prefect deploy --name "re-survey-step-${sha12}" --work-queue "re-${sha12}"
+    # One deployment per commit: keep the newest 3, never one in use (Architect ruling 2026-11-13, §D). Every
+    # deleted name is printed; a failed prune is said and does not stop the worker.
+    run resource-explorer prefect prune-deployments --keep 3 \
+        || echo "re-prefect-worker: prune-deployments failed; continuing" >&2
     exec "$VENV_BIN/dotenv" -f "$RE_DOTENV" run -- prefect worker start --pool "$POOL" --type process \
         --work-queue "re-${sha12}" --name "re-worker-${sha12}-${HOST}"
 fi

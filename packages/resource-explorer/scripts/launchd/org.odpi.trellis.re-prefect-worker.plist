@@ -10,7 +10,10 @@
   target for container deployments (DESIGN-PREFECT-ROLE-AND-RE-WORKER-2026-11-13 §5/§6).
 
   NOT installed by anything in this repo: installing a login agent is a standing host change and
-  needs the owner's word. The paths below are laz's; replace them for another Mac. Install (or
+  needs the owner's word. Installing it ALSO approves a standing automated Prefect write: at every
+  worker start (login, KeepAlive restart, kickstart), once its tree's `resource-explorer prefect`
+  has the commands, the wrapper deploys re-survey-step-<commit> and prunes per-commit deployments
+  beyond the newest 3, never one in use, printing each name it deletes (Architect ruling 2026-11-13). The paths below are laz's; replace them for another Mac. Install (or
   re-install), from a checkout holding this directory:
 
     cp packages/resource-explorer/scripts/launchd/re-prefect-worker.sh ~/.re-gate/re-prefect-worker.sh
