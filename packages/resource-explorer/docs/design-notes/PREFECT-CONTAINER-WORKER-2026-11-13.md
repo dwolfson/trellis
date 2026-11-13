@@ -24,7 +24,12 @@ the A/B proof below comes first, on the demo machine.
   2. refuses to start if `library_steps_line()` reports a step missing;
   3. deploys its own deployment, `RE Survey Flow/re-survey-step-<sha12>`. Its flows load from the image's own
      source, and its runs land on queue `re-<sha12>`;
-  4. runs `prefect worker start --pool <PREFECT_WORK_POOL> --work-queue re-<sha12>` as
+  4. prunes per-commit deployments beyond the newest 3, with `resource-explorer prefect prune-deployments --keep 3`.
+     It never deletes the default deployment, another flow's or pool's, or one with a scheduled, pending,
+     running, paused or cancelling run, and it prints each name it deletes (Architect ruling, 2026-11-13, §D).
+     A failed prune is reported and doesn't stop the worker. Steps 3 and 4 are Prefect writes, run at every
+     start; the host worker under launchd does the same once its tree has this branch;
+  5. runs `prefect worker start --pool <PREFECT_WORK_POOL> --work-queue re-<sha12>` as
      `re-worker-<sha12>-<hostname>`. It polls only its own queue.
 
 ## Version parity at dispatch

@@ -2971,6 +2971,35 @@ def prefect_deploy(
         raise typer.Exit(1)
 
 
+@prefect_app.command(name="prune-deployments")
+def prefect_prune_deployments(
+    keep: int = typer.Option(3, "--keep", min=1, help="How many of the newest per-commit deployments to keep."),
+):
+    """Delete Resource Explorer's per-commit deployments (re-survey-step-<sha12>) beyond the newest KEEP.
+
+    Workers run this right after deploying their own commit's deployment, so a deployment per 8813 deploy
+    does not pile up. Never touches the default deployment, another flow's or pool's, or one with a scheduled,
+    pending, running, paused or cancelling flow run. Prints every name it deletes. A Prefect write.
+    """
+    import asyncio
+
+    from resource_explorer.config import get_config
+    from resource_explorer.surveyors.prefect_adapter import prune_commit_deployments
+
+    pool = get_config().prefect.work_pool
+    try:
+        out = asyncio.run(prune_commit_deployments(keep, pool))
+    except Exception as e:
+        console.print(f"[red]Could not prune deployments on pool {pool}: {e}[/red]")
+        raise typer.Exit(1)
+    for name in out["deleted"]:
+        console.print(f"deleted deployment {name}")
+    for name in out["skipped_active"]:
+        console.print(f"kept {name}: it has an active flow run")
+    console.print(f"prune-deployments on {pool}: kept {len(out['kept'])} newest, deleted {len(out['deleted'])}, "
+                  f"in use {len(out['skipped_active'])}")
+
+
 @prefect_app.command(name="worker")
 def prefect_worker(
     pool: Optional[str] = typer.Option(None, "--pool", "-p", help="Work pool name override"),

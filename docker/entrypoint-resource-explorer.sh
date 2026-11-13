@@ -87,7 +87,8 @@ EOF
 #   - refuses to start when a catalogued library step is missing from the image (the `uv sync --package`
 #     hazard): it would accept a run and fail it;
 #   - deploys its own deployment, re-survey-step-<sha12>, whose flows load from this image's source and land
-#     on queue re-<sha12>, then polls only that queue as re-worker-<sha12>-<host>. RE dispatches there only
+#     on queue re-<sha12>, prunes per-commit deployments beyond the newest 3 (never one in use), then polls only
+#     that queue as re-worker-<sha12>-<host>. Deploy and prune are Prefect writes, at every start. RE dispatches there only
 #     when it runs the same commit (prefect_adapter._choose_deployment); otherwise it warns and runs locally.
 # Needs the Prefect API (PREFECT_API_URL) and whatever a step needs (registry, Egeria) from the environment.
 run_prefect_worker() {
@@ -106,6 +107,9 @@ run_prefect_worker() {
         exit 1
     fi
     resource-explorer prefect deploy --name "re-survey-step-${sha12}" --work-queue "re-${sha12}"
+    # One deployment per commit: keep the newest 3, never one in use (Architect ruling 2026-11-13). A failed
+    # prune is said and does not stop the worker.
+    resource-explorer prefect prune-deployments --keep 3 || echo "[entrypoint] prefect-worker: prune-deployments failed; continuing" >&2
     exec prefect worker start --pool "$pool" --type process --work-queue "re-${sha12}" \
         --name "re-worker-${sha12}-$(hostname)" "$@"
 }

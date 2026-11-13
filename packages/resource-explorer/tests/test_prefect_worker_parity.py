@@ -209,6 +209,7 @@ def test_the_role_deploys_its_own_deployment_then_serves_only_its_queue(tmp_path
     assert r.returncode == 0, r.stderr
     assert calls.splitlines() == [
         f"resource-explorer prefect deploy --name re-survey-step-{OWN} --work-queue re-{OWN}",
+        "resource-explorer prefect prune-deployments --keep 3",
         (f"prefect worker start --pool resource-explorer-pool --type process --work-queue re-{OWN} "
          f"--name re-worker-{OWN}-pop-os"),
     ]
@@ -235,3 +236,67 @@ def test_the_image_carries_its_commit():
     assert "TRELLIS_RE_SHA=${{ github.sha }}" in (REPO / ".github" / "workflows" / "images.yml").read_text()
     assert "--build-arg TRELLIS_RE_SHA=" in (REPO / "Makefile").read_text()
     assert os.access(ENTRYPOINT, os.R_OK)
+
+
+# ── pruning per-commit deployments (Architect ruling 2026-11-13, §D) ──────────
+
+def _id(name):
+    import uuid
+    return uuid.uuid5(uuid.NAMESPACE_URL, name)
+
+
+def _dep(name, created, pool="resource-explorer-pool"):
+    return types.SimpleNamespace(id=_id(name), name=name, created=created, work_pool_name=pool)
+
+
+def _prune(deployments, active=(), keep=3):
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.read_deployments = AsyncMock(return_value=deployments)
+
+    async def runs(*, deployment_filter, flow_run_filter, limit):
+        return ["a run"] if deployment_filter.id.any_[0] in {_id(n) for n in active} else []
+
+    client.read_flow_runs = runs
+    client.delete_deployment = AsyncMock()
+    with patch.object(adapter, "re_prefect_client", return_value=client):
+        out = asyncio.run(adapter.prune_commit_deployments(keep, "resource-explorer-pool"))
+    return out, [c.args[0] for c in client.delete_deployment.call_args_list]
+
+
+def test_prune_keeps_the_newest_three_and_deletes_older_ones():
+    deps = [_dep(f"re-survey-step-{i:012x}", f"2026-11-{10 + i:02d}T00:00:00Z") for i in range(6)]
+    out, deleted = _prune(deps)
+    assert out["kept"] == [f"re-survey-step-{i:012x}" for i in (5, 4, 3)]
+    assert out["deleted"] == [f"re-survey-step-{i:012x}" for i in (2, 1, 0)]
+    assert deleted == [_id(f"re-survey-step-{i:012x}") for i in (2, 1, 0)]
+
+
+def test_prune_never_touches_a_deployment_in_use_the_default_or_another_pool():
+    old = "re-survey-step-000000000000"
+    deps = [_dep(f"re-survey-step-{i:012x}", f"2026-11-{10 + i:02d}T00:00:00Z") for i in range(4)]
+    deps += [_dep("re-survey-step-deployment", "2026-01-01T00:00:00Z"),
+             _dep("re-survey-step-aaaaaaaaaaaa", "2026-01-01T00:00:00Z", pool="other-pool"),
+             _dep("something-else", "2026-01-01T00:00:00Z")]
+    out, deleted = _prune(deps, active={old})
+    assert out["skipped_active"] == [old] and deleted == []
+    assert "re-survey-step-deployment" not in out["kept"] + out["deleted"]
+
+
+def test_prune_refuses_to_keep_none():
+    with pytest.raises(ValueError):
+        asyncio.run(adapter.prune_commit_deployments(0, "resource-explorer-pool"))
+
+
+def test_the_prune_command_prints_every_name_it_deletes():
+    from resource_explorer.cli.main import app
+
+    result = {"kept": ["re-survey-step-000000000005"], "deleted": ["re-survey-step-000000000001"],
+              "skipped_active": ["re-survey-step-000000000002"]}
+    with patch.object(adapter, "prune_commit_deployments", AsyncMock(return_value=result)) as prune:
+        out = CliRunner().invoke(app, ["prefect", "prune-deployments", "--keep", "3"])
+    assert out.exit_code == 0, out.output
+    assert prune.call_args.args[0] == 3
+    assert "deleted deployment re-survey-step-000000000001" in out.output
+    assert "kept re-survey-step-000000000002: it has an active flow run" in out.output

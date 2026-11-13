@@ -295,6 +295,49 @@ def sha_work_queue(sha12: str) -> str:
     return f"re-{sha12}"
 
 
+#: The deployments a worker creates for its own commit, and nothing else: prune touches only these.
+_COMMIT_DEPLOYMENT = re.compile(r"^re-survey-step-[0-9a-f]{12}$")
+#: A deployment with a flow run in one of these states is in use: never pruned.
+_ACTIVE_RUN_STATES = ("SCHEDULED", "PENDING", "RUNNING", "PAUSED", "CANCELLING")
+
+
+async def prune_commit_deployments(keep: int, pool: str) -> dict[str, list[str]]:
+    """Delete RE's per-commit deployments (`re-survey-step-<sha12>`, RE's flow, on `pool`) beyond the newest
+    `keep` by creation time (Architect ruling 2026-11-13, READBACK-re-launchd-worker-8f5af544 §D).
+
+    Never deleted: the default deployment, any other flow's or pool's, the newest `keep`, and any with a flow run
+    that is scheduled, pending, running, paused or cancelling. Returns {"kept", "deleted", "skipped_active"}, by
+    name; the caller logs each deleted name. A standing Prefect write: workers run it after their own deploy."""
+    from prefect.client.schemas.filters import (
+        DeploymentFilter, DeploymentFilterId, FlowFilter, FlowFilterName, FlowRunFilter, FlowRunFilterState,
+        FlowRunFilterStateType,
+    )
+    from prefect.client.schemas.objects import StateType
+
+    if keep < 1:
+        raise ValueError("keep must be at least 1: a worker's own deployment is never pruned")
+    flow_name = DEFAULT_DEPLOYMENT.split("/", 1)[0]
+    out: dict[str, list[str]] = {"kept": [], "deleted": [], "skipped_active": []}
+    async with re_prefect_client() as client:
+        deployments = await client.read_deployments(flow_filter=FlowFilter(name=FlowFilterName(any_=[flow_name])))
+        ours = [d for d in deployments
+                if _COMMIT_DEPLOYMENT.match(str(getattr(d, "name", ""))) and getattr(d, "work_pool_name", None) == pool]
+        ours.sort(key=lambda d: str(getattr(d, "created", "") or ""), reverse=True)
+        out["kept"] = [d.name for d in ours[:keep]]
+        active = FlowRunFilter(state=FlowRunFilterState(type=FlowRunFilterStateType(
+            any_=[StateType[s] for s in _ACTIVE_RUN_STATES])))
+        for d in ours[keep:]:
+            runs = await client.read_flow_runs(
+                deployment_filter=DeploymentFilter(id=DeploymentFilterId(any_=[d.id])),
+                flow_run_filter=active, limit=1)
+            if runs:
+                out["skipped_active"].append(d.name)
+                continue
+            await client.delete_deployment(d.id)
+            out["deleted"].append(d.name)
+    return out
+
+
 def worker_sha(worker: Any) -> str:
     """The commit a worker advertises in its name (`re-worker-<sha12>-<host>`), or "" for one that
     advertises none (a host worker, which runs the checkout's own code)."""
