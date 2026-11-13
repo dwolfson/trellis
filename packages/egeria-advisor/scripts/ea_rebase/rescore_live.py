@@ -67,9 +67,25 @@ SPEC_JUDGED = {
     },
 }
 
+# The quiet re-run (re-base + fixes only, 19:00-19:29Z, tip 3a1b2406: generic-find + paging fixes).
+SPEC_JUDGED[("rebased_fixes", "_quiet")] = {
+    "B01": ("1", "Asset names + description: lineage not shown"),
+    "B09": ("2", "DigitalProduct names + description"),
+    "B14": ("1", "GovernanceControl names + description: measurements and targets not shown"),
+    "B15": ("1", "GovernancePolicy, APPROVED + ACTIVE: a content status, so the condition isn't expressed"),
+    "C01": ("1", "Campaign-classified projects searched 'ninety day plan': not Jules Keeper's items"),
+    "C06": ("1", "DigitalProduct names, 'no product manager' not applied"),
+    "C07": ("1", "DigitalSubscription names: subscriptions, not the subscription types offered"),
+    "C09": ("1", "Asset names + description, 'no owner' not applied"),
+    "C10": ("1", "Asset oldest-updated first + update time; the 180-day bound not applied"),
+}
+SPEC_JUDGED[("rebased_fixes", "_holdout_quiet")] = {}
+
 # A column the question is about came back blank in every sampled row, though other columns had values.
 CONDITION_COLUMN_BLANK = {
     ("baseline", "", "B03"): "priorityLevel blank in every sampled row: priority not shown",
+    ("rebased_fixes", "_quiet", "C10"): "update_time blank in every sampled row: the dates aren't shown "
+                                        "(possibly never-updated elements, which have no updateTime; not checked)",
 }
 
 # Rows with values that still answer wrongly, read from the rows themselves (score, reason).
@@ -77,6 +93,8 @@ ROWS_WRONG = {
     ("rebased_fixes", "", "C03"): ("1", "importance is a string, so PROPERTY_DESCENDING sorts it alphabetically: "
                                         "Medium-High first, all four Critical risks last (Architect's blind "
                                         "re-score, 274ab8d1; confirmed from the rows)"),
+    ("rebased_fixes", "_quiet", "C03"): ("1", "same spec, same rows as before: importance sorted alphabetically, "
+                                              "Critical risks last"),
 }
 
 
@@ -120,10 +138,11 @@ def _spec_signature(r):
     return (c.get("target_type"), c.get("action_function"), cols, json.dumps(params, sort_keys=True))
 
 
-def rescore(mode, tag):
-    off = {r["id"]: r for r in json.loads((RES / f"results_{mode}_offline{tag}.json").read_text())}
+def rescore(mode, tag, off_tag=None):
+    off_tag = tag if off_tag is None else off_tag
+    off = {r["id"]: r for r in json.loads((RES / f"results_{mode}_offline{off_tag}.json").read_text())}
     live = json.loads((RES / f"results_{mode}_live{tag}.json").read_text())
-    off_scores = json.loads((RES / f"scores_{mode}_offline{tag}.json").read_text())
+    off_scores = json.loads((RES / f"scores_{mode}_offline{off_tag}.json").read_text())
     judged = SPEC_JUDGED.get((mode, tag), {})
     out = {}
     for r in live:
@@ -151,9 +170,13 @@ def rescore(mode, tag):
 
 
 def main():
-    for mode in MODES:
-        for tag in ("", "_holdout"):
-            scores = rescore(mode, tag)
+    runs = [(m, t, t) for m in MODES for t in ("", "_holdout")]
+    runs += [("rebased_fixes", "_quiet", ""), ("rebased_fixes", "_holdout_quiet", "_holdout")]
+    for mode, tag, off_tag in runs:
+        if not (RES / f"results_{mode}_live{tag}.json").exists():
+            continue
+        if True:
+            scores = rescore(mode, tag, off_tag)
             (RES / f"scores_{mode}_live{tag}.json").write_text(json.dumps(scores, indent=1) + "\n")
             n = len(scores)
             two = sum(1 for s in scores.values() if s["score"] == "2")
