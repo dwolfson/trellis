@@ -77,7 +77,8 @@ COPY packages/trellis-analytics packages/trellis-analytics
 # resource-explorer AND every reference step under trellis-analytics/examples/steps (2026-11-13). A bare
 # `--package resource-explorer` re-resolves the venv down to that one package and leaves the library steps
 # out, so every image (the web image too) carried none of them. The step list is read from the
-# tree, never hand-kept: a step added there is installed here.
+# tree, never hand-kept: a step added there is installed here. The prefect-worker role refuses to start if
+# `library_steps_line()` still reports one missing.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -eu; steps=""; \
     for f in packages/trellis-analytics/examples/steps/*/pyproject.toml; do \
@@ -126,6 +127,13 @@ RUN --mount=type=cache,target=/app/.cache/huggingface \
 
 # ---- runtime ----------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS runtime
+
+# The commit this image is built from (`make image-re` and CI pass it). Resource Explorer matches a Prefect
+# worker to its own code by it (resource_explorer/build_info.py); the prefect-worker role refuses to start
+# without it. Empty for an image built by hand without --build-arg.
+ARG TRELLIS_RE_SHA=""
+LABEL org.opencontainers.image.revision="${TRELLIS_RE_SHA}"
+ENV TRELLIS_RE_SHA="${TRELLIS_RE_SHA}"
 
 RUN groupadd --gid 1000 trellis && \
     useradd --uid 1000 --gid trellis --shell /bin/bash --create-home trellis && \
