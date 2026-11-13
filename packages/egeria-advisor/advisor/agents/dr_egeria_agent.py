@@ -674,7 +674,11 @@ class DrEgeriaActionAgent:
             return None
         best = matches[0]
         try:
-            return parse_template(best["file_path"])
+            template = parse_template(best["file_path"])
+            # where it came from: the chat policy refuses by family (advisor.chat_command_policy)
+            template.setdefault("family", best.get("family"))
+            template.setdefault("tier", best.get("tier"))
+            return template
         except Exception as e:
             logger.warning(f"Failed to parse template {best['file_path']}: {e}")
             return None
@@ -881,6 +885,17 @@ JSON:"""
 
         command_name = template["command_name"]
         logger.info(f"Selected template: {command_name}")
+
+        # Step 1b: some commands are never composed from chat (type system, raw instances), whatever
+        # the confirm gate would be answered: refused in words before anything is extracted or composed.
+        from advisor.chat_command_policy import chat_refusal
+        refusal = chat_refusal(command_name, template.get("family"))
+        if refusal:
+            logger.info(f"Chat action refused by policy: {command_name!r} (family {template.get('family')!r})")
+            out = _no_template_found(query)
+            out.update(response=refusal, command_name=command_name, family=template.get("family"),
+                       chat_refused=True, next_context=None)
+            return out
 
         # Step 2: Extract parameters
         params = self.extract_params(query, template)
