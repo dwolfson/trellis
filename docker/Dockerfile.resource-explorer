@@ -74,8 +74,17 @@ COPY packages/trellis-accel packages/trellis-accel
 COPY packages/trellis-feedback packages/trellis-feedback
 COPY packages/trellis-analytics packages/trellis-analytics
 
+# resource-explorer AND every reference step under trellis-analytics/examples/steps (2026-11-13). A bare
+# `--package resource-explorer` re-resolves the venv down to that one package and leaves the library steps
+# out, so every image (the web image too) carried none of them. The step list is read from the
+# tree, never hand-kept: a step added there is installed here.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --package resource-explorer
+    set -eu; steps=""; \
+    for f in packages/trellis-analytics/examples/steps/*/pyproject.toml; do \
+        n="$(sed -n 's/^name = "\(.*\)"$/\1/p' "$f" | head -1)"; \
+        [ -n "$n" ] && steps="$steps --package $n"; \
+    done; \
+    uv sync --frozen --no-dev --package resource-explorer $steps
 
 # Swap torch/torchvision for CPU-only builds and drop the CUDA runtime
 # packages torch's default linux wheel drags in, as the LAST dependency
