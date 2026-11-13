@@ -304,3 +304,38 @@ def test_refusals_stay_eas_type_with_the_flag_on(monkeypatch, call, words):
     monkeypatch.delenv(pub.RESTRICTED_PROOF_ENV, raising=False)
     with pytest.raises(pub.PublishRefused, match=words):
         call(pub)
+
+
+# ── named types, near-miss keys, Asset ───────────────────────────────────────
+
+@pytest.mark.parametrize("text,want", [
+    ("Which teams have no leader?", ["Team"]),
+    ("What data product catalogs exist?", ["DigitalProductCatalog"]),
+    ("which glossaries are approved", ["Glossary"]),
+    ("tell me about our stuff", []),
+    ("give me a report on everything", []),        # "report" says what to build, not what it's about
+    ("build me a dashboard for the board", []),
+])
+def test_types_named_in(text, want):
+    assert v2.types_named_in(text)[:1] == want
+
+
+def test_asset_is_offered_and_found_generically():
+    assert "Asset" in v2.known_types()
+    assert v2.find_action("Asset")["function"] == v2.GENERIC_FIND
+
+
+def test_a_near_miss_key_is_read_as_the_nearest_attribute_and_said():
+    cols, notes = v2.ground_columns("GovernanceMetric", [{"name": "Measurements", "key": "measurements"}])
+    assert [c["key"] for c in cols] == ["measurement"]
+    assert any("read as measurement" in n for n in notes)
+
+
+def test_a_question_that_names_its_type_is_built_not_asked(flag_on, stores, monkeypatch):
+    from advisor.agents.report_spec_elicitor import ReportSpecElicitor
+    fake = _llm(monkeypatch, {"clarify": "Teams, or something else?"},
+                {"title": "teams", "heading": "Teams", "target_type": "Team",
+                 "columns": [{"name": "Name", "key": "display_name"}]})
+    r = ReportSpecElicitor().start("Which teams have no leader?")
+    assert r["phase"] == "confirm_action" and "Team" in r["response"]
+    assert "names Team elements" in fake.prompts[1]

@@ -76,6 +76,12 @@ def _registry_by_type() -> Dict[str, List[Tuple[str, Any]]]:
 
 
 @lru_cache(maxsize=1)
+def _all_registry_types() -> List[str]:
+    from pyegeria.view.base_report_formats import get_report_registry
+    return sorted({_norm(fs.target_type) for fs in get_report_registry().values() if fs.target_type})
+
+
+@lru_cache(maxsize=1)
 def _catalog() -> Dict[str, tuple]:
     from md_processing.md_processing_utils.properties_class_fields import PROPERTIES_CLASS_FIELDS
     return PROPERTIES_CLASS_FIELDS
@@ -102,11 +108,41 @@ def resolve_type(name: Optional[str]) -> Optional[str]:
 def known_types() -> List[str]:
     """Types the elicitor may target: those with a registered find spec, Egeria's spelling."""
     out = []
-    for t in sorted(_registry_by_type()):
+    for t in _all_registry_types():
         r = resolve_type(t)
         if r and r not in out:
             out.append(r)
     return out
+
+
+#: Types whose names are also words for what the user wants built or for "anything": "a report on ...",
+#: "a dashboard for ...", "every element". They don't say what the report is about.
+OUTPUT_WORDS = {"Report", "Dashboard", "Element", "Referenceable", "OpenMetadataRoot"}
+
+
+def _singular(word: str) -> str:
+    w = word.lower()
+    for suf, rep_ in (("ies", "y"), ("sses", "ss"), ("s", "")):
+        if w.endswith(suf) and len(w) > len(suf) + 2:
+            return w[: -len(suf)] + rep_
+    return w
+
+
+def types_named_in(text: str) -> List[str]:
+    """Egeria types the text names outright ("data product catalogs" -> DigitalProductCatalog), longest
+    phrase first. Used to keep the elicitor from asking which kind of element when the user said so."""
+    known = set(known_types())
+    words = [_singular(w) for w in re.findall(r"[A-Za-z]+", text or "")]
+    found: List[str] = []
+    for size in (3, 2, 1):
+        for i in range(len(words) - size + 1):
+            phrase = "".join(w.capitalize() for w in words[i:i + size])
+            t = resolve_type(phrase)
+            if t in OUTPUT_WORDS:
+                continue
+            if t and t in known and t not in found and not any(t in f for f in found):
+                found.append(t)
+    return found
 
 
 def base_spec(type_name: str) -> Optional[Tuple[str, Any]]:
@@ -158,6 +194,7 @@ def attribute_menu(type_name: str) -> List[Tuple[str, str]]:
 def ground_columns(type_name: str, columns: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Columns kept for `type_name`, and words for each one dropped. A camelCase key becomes snake_case
     when that is the attribute; an unknown key is dropped, never sent to a run."""
+    import difflib
     menu = dict(attribute_menu(type_name))
     kept, dropped, seen = [], [], set()
     for col in columns or []:
@@ -168,8 +205,12 @@ def ground_columns(type_name: str, columns: List[Dict[str, Any]]) -> Tuple[List[
                 key = cand
                 break
         else:
-            dropped.append(f"'{name}' ({key or 'no key'}) isn't an attribute of {type_name}")
-            continue
+            near = difflib.get_close_matches(_snake(key.split(".")[-1]) if key else "", list(menu), n=1, cutoff=0.85)
+            if not near:
+                dropped.append(f"'{name}' ({key or 'no key'}) isn't an attribute of {type_name}")
+                continue
+            dropped.append(f"'{name}' ({key}) read as {near[0]}, the nearest attribute of {type_name}")
+            key = near[0]
         if key in seen:
             continue
         seen.add(key)

@@ -84,6 +84,17 @@ or
         logger.error(f"v2 decompose failed: {exc}")
         data = {"clarify": "I couldn't work out what to report on. Which kind of element do you mean "
                            "(for example projects, glossary terms or digital products), and what about them?"}
+    named = v2.types_named_in(query)
+    if data.get("clarify") and named:
+        # The user named the kind of element: build it rather than ask (one retry, told the type).
+        try:
+            data = _json(llm.generate(prompt + f"\nThe request names {named[0]} elements: do not ask; build "
+                                      f"the report with target_type {named[0]}.\n", temperature=0.1, max_tokens=700))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"v2 retry failed: {exc}")
+            data = {"target_type": named[0], "columns": []}
+        if data.get("clarify"):
+            data = {"target_type": named[0], "title": named[0], "heading": named[0], "columns": []}
     if data.get("clarify"):
         return _clarify(query, str(data["clarify"]))
     target = v2.resolve_type(data.get("target_type"))
