@@ -125,15 +125,22 @@ step 4.
    ```
 
    - *What it changes:*
-     - It clears every non-empty Egeria GUID column RE keeps: asset GUIDs, project and collection GUIDs,
-       report GUIDs, work-list, doc-source and RFA GUIDs.
+     - It clears every non-empty Egeria GUID column RE keeps that **no longer resolves**: asset GUIDs,
+       project and collection GUIDs, report GUIDs, work-list, doc-source and RFA GUIDs.
+     - It **keeps a pointer that still resolves** (**Decision (project owner, 2026-11-13):** fix the script so it
+       can keep live pointers, after the 11-11 recovery's dry run would have blanked three written after the
+       reset). Each GUID is read by GUID first, as RE's service account. A row whose GUID resolves is kept
+       ("keep: live, created <time>"), and so is one whose GUID cannot be read ("keep: unreadable (<why>): not
+       treated as gone"). The kept rows, and what each GUID answered, are in the plan and its hash, so an answer
+       that changes before the apply refuses the apply. A resource with a kept asset or report pointer gets no
+       `egeria_reset` marker. If Egeria cannot be reached at all, the run refuses.
      - It sets a project context or investigation that was `linked` to `unbound`.
      - It removes cache rows: materialized blueprints, `survey_definition_cache`, `egeria_linkage_status`, and
        the Egeria claim settings.
      - It supersedes outbox rows that are not terminal.
      - It writes one `egeria_reset` marker proof per resource.
      - It writes a 0600 snapshot of every changed row first, and one `activity_log` row.
-   - *What it never touches:* Egeria (it makes no Egeria call), any proof row, verdicts, scope events,
+   - *What it never touches:* Egeria (it only reads GUIDs there, never writes), any proof row, verdicts, scope events,
      enrichment, the journal, survey history, `done` outbox rows, and **the qualifiedName mirrors**. Those
      names are what step 4 re-attaches by.
    - *Guards:*
@@ -398,8 +405,9 @@ equivalent: it re-derives current state, and loses the history that
 
 ## 7. Traps, each of which cost time
 
-- **Do not run the clear script after the re-attach.** It blanks every pointer, re-attached ones
-  included. The order is the clear script, then the re-attach (§2.0). `scripts/sweep_stale_egeria_guids.py
+- **Do not run the clear script after the re-attach.** Since 2026-11-13 it keeps a pointer that resolves, so a
+  re-attached one should survive, but that is a safety net, not the procedure: the order is the clear script,
+  then the re-attach (§2.0). `scripts/sweep_stale_egeria_guids.py
   --apply` and the Alignment steps `clear_stale_investigations` / `clear_stale_contexts` also clear project
   and collection pointers, so none of them goes between the clear script and the re-attach either.
 - **On main today, `clear_stale_contexts` also blanks the stored name, and it is ticked by default.** So
