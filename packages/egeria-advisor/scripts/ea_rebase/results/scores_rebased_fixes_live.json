@@ -25,9 +25,9 @@
  },
  "B05": {
   "score": "0",
-  "spec_score": "2",
+  "spec_score": "1",
   "outcome": "error",
-  "why": "LIVE: error (=> CLIENT_ERROR_400 => Client error occurred with status code `https://localhost:9443/servers/qs-view-server/api/open-metadata/glossary-manager/glossaries/terms); spec 2: same spec as offline: GlossaryTerm, DRAFT filter + status"
+  "why": "LIVE: error (=> CLIENT_ERROR_400 => Client error occurred with status code `https://localhost:9443/servers/qs-view-server/api/open-metadata/glossary-manager/glossaries/terms); spec 1: same spec as offline: GlossaryTerm, DRAFT filter + status | REVISED 2 -> 1 (Architect, 2026-11-13): a content status (DRAFT/UNDER_DEVELOPMENT) in limit_result_by_status filters ElementStatus, so the condition is not expressed; Egeria rejects it live (HTTP 400)"
  },
  "B06": {
   "score": "0",
@@ -55,9 +55,9 @@
  },
  "B10": {
   "score": "0",
-  "spec_score": "2",
+  "spec_score": "1",
   "outcome": "error",
-  "why": "LIVE: error (=> CLIENT_ERROR_400 => Client error occurred with status code `https://localhost:9443/servers/qs-view-server/api/open-metadata/collection-manager/collections/by); spec 2: same spec as offline: DigitalProduct, DRAFT/UNDER_DEVELOPMENT + status"
+  "why": "LIVE: error (=> CLIENT_ERROR_400 => Client error occurred with status code `https://localhost:9443/servers/qs-view-server/api/open-metadata/collection-manager/collections/by); spec 1: same spec as offline: DigitalProduct, DRAFT/UNDER_DEVELOPMENT + status | REVISED 2 -> 1 (Architect, 2026-11-13): a content status (DRAFT/UNDER_DEVELOPMENT) in limit_result_by_status filters ElementStatus, so the condition is not expressed; Egeria rejects it live (HTTP 400)"
  },
  "B11": {
   "score": "0",
