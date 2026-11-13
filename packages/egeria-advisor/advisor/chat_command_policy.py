@@ -16,64 +16,18 @@ Names compare without case, spaces, underscores or hyphens, so "MetadataExpert" 
 """
 from __future__ import annotations
 
-import json
-import re
-from functools import lru_cache
-from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
-from loguru import logger
+from advisor import compact_specs
 
 #: Families no chat message composes, by name. See the module docstring for why this stays after the flag.
 CHAT_DENIED_FAMILIES = frozenset({"metadataexpert"})
 
 
-def _norm(name: Optional[str]) -> str:
-    return re.sub(r"[\s_\-]+", "", name or "").lower()
-
-
-def _compact_dir() -> Optional[Path]:
-    try:
-        import md_processing
-    except ImportError:
-        return None
-    d = Path(md_processing.__file__).parent / "data" / "compact_commands"
-    return d if d.is_dir() else None
-
-
-def _commands(doc: dict):
-    cmds = doc.get("commands") or []
-    return cmds.values() if isinstance(cmds, dict) else cmds
-
-
-@lru_cache(maxsize=1)
-def _spec_flags() -> Tuple[frozenset, Dict[str, str]]:
-    """(families pyegeria marks chat_allowed false, {command: its family} for commands marked so)."""
-    families, commands = set(), {}
-    d = _compact_dir()
-    if d is None:
-        return frozenset(), {}
-    for f in sorted(d.glob("*.json")):
-        try:
-            doc = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:   # a file we cannot read flags nothing; the deny-list still holds
-            logger.warning(f"chat_command_policy: could not read {f.name}: {exc}")
-            continue
-        if not isinstance(doc, dict):
-            continue
-        if doc.get("chat_allowed") is False:
-            families.add(_norm(doc.get("family")))
-        for c in _commands(doc):
-            if isinstance(c, dict) and c.get("chat_allowed") is False:
-                commands[_norm(c.get("display_name"))] = c.get("family") or doc.get("family") or ""
-    return frozenset(families), commands
-
-
 def chat_refusal(command_name: str, family: Optional[str]) -> Optional[str]:
     """The sentence that refuses composing `command_name` from chat, or None when chat may compose it."""
-    spec_families, spec_commands = _spec_flags()
-    fam = _norm(family)
-    if _norm(command_name) in spec_commands or (fam and fam in spec_families):
+    fam = compact_specs.norm(family)
+    if compact_specs.flag(command_name, "chat_allowed", family) is False:
         why = "its Dr.Egeria specification marks it as not available from chat"
     elif fam in CHAT_DENIED_FAMILIES:
         why = (f"the {family} commands change Egeria's type system and raw instances, so they are kept out of "

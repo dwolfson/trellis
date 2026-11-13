@@ -17,6 +17,7 @@ import pytest
 from test_dr_egeria_identity import USER, agent, fakes  # noqa: F401
 
 from advisor import chat_command_policy as policy
+from advisor import compact_specs
 from advisor.agents import dr_egeria_agent as mod
 from advisor.agents.dr_egeria_agent import TemplateIndex
 
@@ -41,10 +42,10 @@ def specs(tmp_path, monkeypatch):
     """pyegeria's compact command specs, as a directory this test writes; empty unless a test adds files."""
     d = tmp_path / "compact_commands"
     d.mkdir()
-    monkeypatch.setattr(policy, "_compact_dir", lambda: d)
-    policy._spec_flags.cache_clear()
+    monkeypatch.setattr(compact_specs, "compact_dir", lambda: d)
+    compact_specs.load.cache_clear()
     yield d
-    policy._spec_flags.cache_clear()
+    compact_specs.load.cache_clear()
 
 
 @pytest.fixture
@@ -98,12 +99,12 @@ def test_another_family_is_composed_and_validated_as_before(chat, fakes):  # noq
 
 def test_the_installed_pyegeria_specs_refuse_nothing_outside_the_deny_list():
     """On the real packaged compact specs: no ordinary command is refused, and the deny-list still holds."""
-    policy._spec_flags.cache_clear()
+    compact_specs.load.cache_clear()
     for command, family in [("Create Glossary", "Glossary"), ("Create Glossary Term", "Glossary"),
                             ("Create Project", "Project"), ("Link Term to Term", "Glossary")]:
         assert policy.chat_refusal(command, family) is None, command
     assert policy.chat_refusal("Delete Type Def", "MetadataExpert")
-    policy._spec_flags.cache_clear()
+    compact_specs.load.cache_clear()
 
 
 # ── pyegeria's chat_allowed flag ──────────────────────────────────────────────
