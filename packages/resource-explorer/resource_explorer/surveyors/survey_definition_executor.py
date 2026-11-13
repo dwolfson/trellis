@@ -30,6 +30,12 @@ log = logging.getLogger(__name__)
 
 from resource_explorer.activity_logger import PRESSED_ON, log_survey
 
+#: Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py) and have no
+#: STEP_REGISTRY entry: `_use_prefect` always sends them to Prefect. Module level so the pool
+#: liveness check (bootstrap.prefect_pool_runs_locally_instead) can name them from the same list;
+#: they should carry executes_at="prefect" once authored.
+PREFECT_ONLY_STEPS = ("soda_data_quality", "great_expectations_validation")
+
 
 class SurveyDefinitionExecutorError(RuntimeError):
     """Raised for executor-level errors (unknown entity type, ambiguous/missing
@@ -765,12 +771,6 @@ class SurveyDefinitionExecutor:
             PrefectFlowRunCancelled, PrefectFlowRunTimeout, run_prefect_step,
         )
 
-        # Steps that exist only as Prefect flows (resource_explorer/prefect/flows.py)
-        # and have no STEP_REGISTRY entry, so there is nothing local to run them
-        # with. Named here rather than inline so the list is findable from both
-        # sides; they should carry executes_at="prefect" once authored.
-        PREFECT_ONLY_STEPS = ("soda_data_quality", "great_expectations_validation")
-
         def _use_prefect(step) -> bool:
             """Which engine runs this step.
 
@@ -791,6 +791,14 @@ class SurveyDefinitionExecutor:
             force it onto. `executes_at="egeria"` steps never reach this
             function's True branches at all — they fall through to `return
             False` below regardless of engine_override, same as today.
+
+            This per-step path is the only one that uses the Prefect work
+            pool (`run_prefect_step` creates a flow run from the deployment).
+            A whole-definition run (`_run_via_prefect`) calls its flow in this
+            process and needs no worker. With no ONLINE worker on the pool, a
+            step this returns True for runs locally instead
+            (`_run_prefect_step_api`'s precheck); bootstrap's pool check
+            names those steps (`prefect_pool_runs_locally_instead`).
             """
             if step.executes_at == "prefect" or step.re_analysis_step in PREFECT_ONLY_STEPS:
                 return True
