@@ -45,7 +45,16 @@ names="$(run env | grep -E '^(EGERIA|PYEGERIA|PREFECT|RE|LLM_|REGISTRY|PGVECTOR|
 echo "re-prefect-worker: commit ${sha12} · tree ${RE_TREE} · settings ($(echo "$names" | wc -w | tr -d ' ')): ${names}"
 run python -c 'from resource_explorer.engine_host import library_steps_line; print("re-prefect-worker:", library_steps_line())'
 
-if run resource-explorer prefect deploy --help 2>/dev/null | grep -q -- "--work-queue"; then
+# Capture the help first, then search it. Never `… --help | grep -q`: under `set -o pipefail`, grep -q exits
+# at the first match, the help side gets SIGPIPE (141) once its output outgrows the pipe buffer, and the test
+# reads false although the option is there. That is how laz's worker missed its deployment on 2026-11-14.
+help_failed=0
+deploy_help="$(run resource-explorer prefect deploy --help 2>&1)" || {
+    echo "re-prefect-worker: WARNING 'resource-explorer prefect deploy --help' failed (exit $?); cannot tell" \
+         "whether this tree's 'prefect deploy' takes --work-queue" >&2
+    deploy_help=""; help_failed=1
+}
+if grep -q -- "--work-queue" <<<"$deploy_help"; then
     run resource-explorer prefect deploy --name "re-survey-step-${sha12}" --work-queue "re-${sha12}"
     # One deployment per commit: keep the newest 3, never one in use (Architect ruling 2026-11-13, §D). Every
     # deleted name is printed; a failed prune is said and does not stop the worker.
@@ -54,7 +63,12 @@ if run resource-explorer prefect deploy --help 2>/dev/null | grep -q -- "--work-
     exec "$VENV_BIN/dotenv" -f "$RE_DOTENV" run -- prefect worker start --pool "$POOL" --type process \
         --work-queue "re-${sha12}" --name "re-worker-${sha12}-${HOST}"
 fi
+if [ "$help_failed" -eq 1 ]; then
+    why="'prefect deploy --help' failed, see above"
+else
+    why="this tree's 'prefect deploy' has no --work-queue"
+fi
 echo "re-prefect-worker: WARNING commit parity not checked: worker re-host-worker-${HOST} advertises no commit" \
-     "(this tree's 'prefect deploy' has no --work-queue); it serves the default deployment" >&2
+     "(${why}); it serves the default deployment" >&2
 exec "$VENV_BIN/dotenv" -f "$RE_DOTENV" run -- prefect worker start --pool "$POOL" --type process \
     --name "re-host-worker-${HOST}"

@@ -14,7 +14,10 @@
 # Limitation: `ps eww` splits on spaces, so a value containing a space is fingerprinted by its first word.
 set -euo pipefail
 [ $# -eq 2 ] || { echo "usage: $0 <pid-a> <pid-b>" >&2; exit 2; }
-IGNORE=" ${RE_PARITY_IGNORE:-PREFECT_WORK_POOL PREFECT_SERVER_EPHEMERAL_ENABLED TRELLIS_RE_SHA} "
+# The default list: settings meant to differ between a web app and a worker, plus the worker wrapper's own
+# launch variables (RE_TREE, RE_DOTENV, RE_RUNTIME_ENV: set by the launchd plist, not read by RE). Anything
+# else found in only one process still reads DIFFERENT.
+IGNORE=" ${RE_PARITY_IGNORE:-PREFECT_WORK_POOL PREFECT_SERVER_EPHEMERAL_ENABLED TRELLIS_RE_SHA RE_TREE RE_DOTENV RE_RUNTIME_ENV} "
 
 prints() {
     ps eww -o command= -p "$1" | tr ' ' '\n' \
