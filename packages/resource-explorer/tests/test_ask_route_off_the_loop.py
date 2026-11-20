@@ -96,9 +96,10 @@ class TestAskDoesNotBlockTheLoop:
         # The whole point: /health must not have waited behind the slow
         # `ask` call. Before the fix this reliably took >= SLEEP_SECONDS
         # because both requests shared one blocked event-loop thread.
-        assert health_elapsed < SLEEP_SECONDS / 2, (
+        # The limit leaves a margin for slow CI runners (one run took 1.15 s) while still failing on a real block.
+        assert health_elapsed < 0.8 * SLEEP_SECONDS, (
             f"/health took {health_elapsed:.2f}s while ask() was sleeping "
-            f"{SLEEP_SECONDS}s — the event loop was blocked"
+            f"{SLEEP_SECONDS}s — the event loop appears blocked"
         )
         assert results["ask_status"] == 200
         assert results["ask_elapsed"] >= SLEEP_SECONDS
