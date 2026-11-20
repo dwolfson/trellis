@@ -542,6 +542,14 @@ Perspectives and purposes are Dr.Egeria valid-value lists. Purposes are suggesti
 
 A survey definition is a Dr.Egeria document that names the steps to run and the questions they are scoped by. It appears among the definitions on the resource's **Survey & analyses** tab.
 
+**Filesystem survey definitions.** Resource Explorer has two filesystem survey definitions:
+
+- **Filesystem Scouting Survey**: The fast pass over a file system: reachability check (resource_reachability), walk (filesystem_inventory) to count files/folders and measure sizes, file_profiles for tabular data-file schema profiling. The reachability check decides whether Egeria's Folder Survey or Resource Explorer's walk leads.
+
+- **Filesystem Analysis Survey**: Every catalog-intent: analysis file system analyses — resource_reachability (check whether Egeria or RE leads), filesystem_inventory (walk the filesystem), file_profiles (tabular data-file schema profiling), narrative_docs (read narrative files for content), file_data_class_match (match columns to data classes). The reachability check decides whether Egeria's Folder Survey or Resource Explorer's walk leads.
+
+Both survey definitions run through Prefect (when enabled) with `executes_at: resource-explorer` on each step, so "survey this file system" is one action visible in Egeria. Each survey definition produces a single SurveyReport with all the step annotations attached.
+
 ### Settings
 
 **Admin › Configure** holds the settings that change the cards' words and thresholds (section 8).
